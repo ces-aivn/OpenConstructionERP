@@ -147,6 +147,7 @@ class TestFullReviewCycle:
                 title="Shop Drawing — Structural Steel",
                 submittal_type="shop_drawing",
                 reviewer_id=reviewer,
+                date_required="2999-12-31",
             ),
             user_id=owner,
         )
@@ -227,6 +228,7 @@ class TestFullReviewCycle:
                 title="Product Data",
                 submittal_type="product_data",
                 reviewer_id=reviewer,
+                date_required="2999-12-31",
             ),
             user_id=owner,
         )
@@ -260,6 +262,7 @@ class TestFullReviewCycle:
                 title="Certificate",
                 submittal_type="certificate",
                 reviewer_id=reviewer,
+                date_required="2999-12-31",
             ),
             user_id=owner,
         )
@@ -305,6 +308,8 @@ class TestAttachmentVersioning:
                 project_id=project_id,
                 title="Shop Drawing — HVAC",
                 submittal_type="shop_drawing",
+                date_required="2999-12-31",
+                reviewer_id=owner,
             ),
             user_id=owner,
         )
@@ -379,6 +384,8 @@ class TestAttachmentVersioning:
                 project_id=project_id,
                 title="Test Report",
                 submittal_type="test_report",
+                date_required="2999-12-31",
+                reviewer_id=owner,
             ),
             user_id=owner,
         )
@@ -419,6 +426,8 @@ class TestAttachmentVersioning:
                 project_id=project_id,
                 title="Warranty Doc",
                 submittal_type="warranty",
+                date_required="2999-12-31",
+                reviewer_id=owner,
             ),
             user_id=owner,
         )
@@ -487,7 +496,9 @@ class TestClosePastDueDate:
             ),
             user_id=owner,
         )
-        sub = await service.submit_submittal(sub.id)
+        # Filed before the review was due (a register backfilled from paper),
+        # so submission passes the date-ordering check.
+        sub = await service.submit_submittal(sub.id, date_submitted="2019-12-01")
         sub = await service.approve_submittal(sub.id, approver_id=reviewer)
         await db_session.commit()
 
@@ -523,6 +534,8 @@ class TestMagicByteExtendedFormats:
                 project_id=project_id,
                 title="Legacy spec",
                 submittal_type="product_data",
+                date_required="2999-12-31",
+                reviewer_id=owner,
             ),
             user_id=owner,
         )
@@ -557,6 +570,8 @@ class TestMagicByteExtendedFormats:
                 project_id=project_id,
                 title="CAD drawing",
                 submittal_type="shop_drawing",
+                date_required="2999-12-31",
+                reviewer_id=owner,
             ),
             user_id=owner,
         )
@@ -592,6 +607,8 @@ class TestMagicByteExtendedFormats:
                 project_id=project_id,
                 title="Phishing drawing",
                 submittal_type="shop_drawing",
+                date_required="2999-12-31",
+                reviewer_id=owner,
             ),
             user_id=owner,
         )

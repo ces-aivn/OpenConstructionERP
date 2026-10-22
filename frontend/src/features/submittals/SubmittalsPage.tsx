@@ -39,6 +39,7 @@ import {
 } from '@/shared/ui';
 import { RequiresProject } from '@/shared/auth/RequiresProject';
 import { PageHeader } from '@/shared/ui/PageHeader';
+import { ProjectPeopleSelect } from '@/shared/ui/ProjectPeopleSelect';
 import { RecordPdfButton } from '@/shared/ui/RegisterExport';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { fetchProjectList } from '@/shared/lib/projectList';
@@ -51,6 +52,7 @@ import {
   updateSubmittal,
   submitSubmittal,
   submitReviewDecision,
+  fetchSubmittalFindings,
   fetchSubmittalSummary,
   downloadSubmittalPdf,
   type Submittal,
@@ -180,7 +182,19 @@ interface SubmittalFormData extends ProcurementFormData {
   type: SubmittalType;
   date_required: string;
   description: string;
+  /** User id of the reviewer; `reviewer_name` is only for showing it. */
+  reviewer_id: string;
+  reviewer_name: string;
+  /** The day it actually went in; empty means "on submission, today". */
+  date_submitted: string;
 }
+
+/** Today as `YYYY-MM-DD` in the user's own calendar, the cap on a submission date. */
+const localToday = (): string => {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+};
 
 /** The fields whose errors wait until the user has left them. */
 type TouchedField = 'title' | 'spec_section' | 'type' | 'date_required' | 'description';
@@ -191,6 +205,9 @@ const EMPTY_FORM: SubmittalFormData = {
   type: 'shop_drawing',
   date_required: '',
   description: '',
+  reviewer_id: '',
+  reviewer_name: '',
+  date_submitted: '',
   ...EMPTY_PROCUREMENT_FORM,
 };
 
@@ -214,6 +231,9 @@ export function submittalFormData(existing?: Submittal): SubmittalFormData {
     type: existing.type,
     date_required: existing.date_required ?? '',
     description: existing.description ?? '',
+    reviewer_id: existing.reviewer_id ?? '',
+    reviewer_name: existing.reviewer_name ?? '',
+    date_submitted: existing.date_submitted ?? '',
     ...procurementFormData(existing),
   };
 }
@@ -245,6 +265,8 @@ export function buildSubmittalPatch(
   if (form.date_required !== base.date_required) {
     data.date_required = form.date_required || null;
   }
+  if (form.reviewer_id !== base.reviewer_id) data.reviewer_id = form.reviewer_id || null;
+  if (form.date_submitted !== base.date_submitted) data.date_submitted = form.date_submitted || null;
   // The register columns follow the same rule: only what was changed.
   return { ...data, ...buildProcurementPatch(form, base) };
 }
@@ -266,7 +288,10 @@ function SubmittalFormModal({
   onSubmit,
   isPending,
   vocabulary,
+  projectId,
 }: {
+  /** Whose roster the reviewer picker offers. */
+  projectId: string;
   mode: 'create' | 'edit';
   existing?: Submittal;
   onClose: () => void;
@@ -305,8 +330,13 @@ function SubmittalFormModal({
 
   const titleError = touched.title && form.title.trim().length === 0;
   const specError = touched.spec_section && form.spec_section.trim().length === 0;
+  const today = localToday();
+  const dateSubmittedError = form.date_submitted !== '' && form.date_submitted > today;
   const canSubmit =
-    form.title.trim().length > 0 && form.spec_section.trim().length > 0 && !hasProcurementErrors(form);
+    form.title.trim().length > 0 &&
+    form.spec_section.trim().length > 0 &&
+    !dateSubmittedError &&
+    !hasProcurementErrors(form);
 
   const handleSubmit = () => {
     setTouched({
@@ -441,6 +471,52 @@ function SubmittalFormModal({
             value={form.date_required}
             onChange={(e) => set('date_required', e.target.value)}
             className={inputCls}
+          />
+        </WideModalField>
+
+        <WideModalField
+          label={t('submittals.field_reviewer', { defaultValue: 'Reviewer' })}
+          htmlFor={`${idPrefix}-reviewer`}
+          hint={t('submittals.reviewer_hint', {
+            defaultValue: 'The person who reviews it. A submittal cannot be submitted without one.',
+          })}
+        >
+          <ProjectPeopleSelect
+            id={`${idPrefix}-reviewer`}
+            projectId={projectId}
+            value={form.reviewer_id}
+            displayValue={form.reviewer_name}
+            onChange={(userId, displayName) =>
+              setForm((prev) => ({ ...prev, reviewer_id: userId, reviewer_name: displayName }))
+            }
+            placeholder={t('submittals.reviewer_placeholder', { defaultValue: 'Search project people...' })}
+          />
+        </WideModalField>
+
+        <WideModalField
+          label={t('submittals.field_date_submitted', { defaultValue: 'Date submitted' })}
+          htmlFor={`${idPrefix}-date-submitted`}
+          hint={t('submittals.date_submitted_hint', {
+            defaultValue: 'Only for a package that already went in. Leave empty to use the day you submit it.',
+          })}
+          error={
+            dateSubmittedError
+              ? t('submittals.date_submitted_future', {
+                  defaultValue: 'The submission date cannot be in the future.',
+                })
+              : undefined
+          }
+        >
+          <input
+            id={`${idPrefix}-date-submitted`}
+            type="date"
+            max={today}
+            value={form.date_submitted}
+            onChange={(e) => set('date_submitted', e.target.value)}
+            className={clsx(
+              inputCls,
+              dateSubmittedError && 'border-semantic-error focus:ring-red-300 focus:border-semantic-error',
+            )}
           />
         </WideModalField>
 
@@ -682,6 +758,21 @@ const SubmittalRow = React.memo(function SubmittalRow({
   // Maker and model as one line under the title; absent on a row without them.
   const product = [submittal.manufacturer, submittal.model_reference].filter(Boolean).join(' / ');
   const statusCfg = STATUS_CONFIG[submittal.status] ?? STATUS_CONFIG.draft;
+  // The server refuses a submission while a check at error level fails, so
+  // the button says so up front instead of failing on click. Same query key as
+  // the findings block in the detail, so the open row fetches them once.
+  const canBeSubmitted = submittal.status === 'draft' || submittal.status === 'revise_and_resubmit';
+  const { data: findings = [] } = useQuery({
+    queryKey: ['submittals', 'findings', submittal.id, submittal.updated_at],
+    queryFn: () => fetchSubmittalFindings(submittal.id),
+    enabled: expanded && canBeSubmitted,
+    retry: false,
+  });
+  const blockingCount = canBeSubmitted ? findings.filter((f) => f.severity === 'error').length : 0;
+  const blockedHint = t('submittals.submit_blocked_hint', {
+    defaultValue: 'Fix the {{count}} check(s) marked Error before submitting.',
+    count: blockingCount,
+  });
   const downloadPdf = useCallback(
     (locale: string) => downloadSubmittalPdf(submittal.id, locale, submittal.submittal_number),
     [submittal.id, submittal.submittal_number],
@@ -692,7 +783,7 @@ const SubmittalRow = React.memo(function SubmittalRow({
       {/* Main row */}
       <div
         className={clsx(
-          'flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-surface-secondary/50 transition-colors',
+          'flex items-center gap-3 px-4 py-3 min-w-[760px] cursor-pointer hover:bg-surface-secondary/50 transition-colors',
           expanded && 'bg-surface-secondary/30',
         )}
         onClick={() => setExpanded((prev) => !prev)}
@@ -742,10 +833,13 @@ const SubmittalRow = React.memo(function SubmittalRow({
           {submittal.spec_section}
         </span>
 
-        {/* Type badge */}
-        <Badge variant="neutral" size="sm" className="hidden md:inline-flex">
-          {t(`submittals.type_${submittal.type}`, { defaultValue: submittalTypeLabel(submittal.type) })}
-        </Badge>
+        {/* Type badge, inside a cell as wide as its header so the columns
+            after it stay under their own headings. */}
+        <span className="w-28 shrink-0 hidden md:block min-w-0">
+          <Badge variant="neutral" size="sm" className="max-w-full truncate">
+            {t(`submittals.type_${submittal.type}`, { defaultValue: submittalTypeLabel(submittal.type) })}
+          </Badge>
+        </span>
 
         {/* Status badge + pipeline. Stacked column so the dot-stepper
             never pushes the row width (matches the procurement pattern
@@ -787,7 +881,7 @@ const SubmittalRow = React.memo(function SubmittalRow({
 
         {/* Date Required + overdue countdown badge. Stacked column so
             the badge does not steal width from the date. */}
-        <div className="text-xs w-20 shrink-0 hidden lg:flex lg:flex-col lg:items-start lg:gap-0.5">
+        <div className="text-xs w-28 shrink-0 hidden lg:flex lg:flex-col lg:items-start lg:gap-0.5">
           <DateDisplay value={submittal.date_required} className="text-xs text-content-tertiary" />
           <DueDateBadge
             dateRequired={submittal.date_required}
@@ -797,7 +891,7 @@ const SubmittalRow = React.memo(function SubmittalRow({
 
         {/* Approval needed by: required on site less the lead time. */}
         {showApprovalBy && (
-          <div className="text-xs w-24 shrink-0 hidden lg:flex lg:flex-col lg:items-start lg:gap-0.5">
+          <div className="text-xs w-32 shrink-0 hidden lg:flex lg:flex-col lg:items-start lg:gap-0.5">
             <ApprovalNeededBy submittal={submittal} />
           </div>
         )}
@@ -914,29 +1008,27 @@ const SubmittalRow = React.memo(function SubmittalRow({
 
           {/* Actions */}
           <div className="flex items-center gap-2 pt-1">
-            {submittal.status === 'draft' && (
+            {canBeSubmitted && (
               <Button
                 variant="primary"
                 size="sm"
+                disabled={blockingCount > 0}
+                title={blockingCount > 0 ? blockedHint : undefined}
+                data-testid={`submittal-submit-${submittal.id}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   onSubmit(submittal.id);
                 }}
               >
-                {t('submittals.action_submit', { defaultValue: 'Submit' })}
+                {submittal.status === 'draft'
+                  ? t('submittals.action_submit', { defaultValue: 'Submit' })
+                  : t('submittals.action_resubmit', { defaultValue: 'Resubmit' })}
               </Button>
             )}
-            {submittal.status === 'revise_and_resubmit' && (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSubmit(submittal.id);
-                }}
-              >
-                {t('submittals.action_resubmit', { defaultValue: 'Resubmit' })}
-              </Button>
+            {blockingCount > 0 && (
+              <span className="text-xs text-semantic-error" data-testid={`submittal-submit-blocked-${submittal.id}`}>
+                {blockedHint}
+              </span>
             )}
             {(submittal.status === 'submitted' || submittal.status === 'under_review') && (
               <Button
@@ -1347,6 +1439,8 @@ export function SubmittalsPage() {
         spec_section: formData.spec_section || undefined,
         submittal_type: formData.type,
         date_required: formData.date_required || undefined,
+        reviewer_id: formData.reviewer_id || undefined,
+        date_submitted: formData.date_submitted || undefined,
         ...buildProcurementCreate(formData),
         ...(containerId && { metadata: { cde_container_id: containerId } }),
       });
@@ -1547,7 +1641,13 @@ export function SubmittalsPage() {
 
       {/* One register, cut by type: the shop drawing register, the material
           approvals and the method statements are tabs, not pages. */}
-      <SubmittalTypeTabs filters={filters} onFilters={setFilters} summary={summary} typeLabel={typeLabel} />
+      <SubmittalTypeTabs
+        filters={filters}
+        onFilters={setFilters}
+        summary={summary}
+        vocabulary={vocabulary}
+        typeLabel={typeLabel}
+      />
 
       {/* Toolbar */}
       <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-3">
@@ -1652,7 +1752,7 @@ export function SubmittalsPage() {
             </p>
             <Card padding="none" className="overflow-x-auto">
               {/* Table header */}
-              <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border-light bg-surface-secondary/30 text-2xs font-medium text-content-tertiary uppercase tracking-wider min-w-[640px]">
+              <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border-light bg-surface-secondary/30 text-2xs font-medium text-content-tertiary uppercase tracking-wider min-w-[760px]">
                 <span className="w-5" />
                 <SortableHeader
                   label="#"
@@ -1683,7 +1783,7 @@ export function SubmittalsPage() {
                 <span className="w-20 hidden lg:block">
                   {t('submittals.col_spec', { defaultValue: 'Spec' })}
                 </span>
-                <span className="w-24 hidden md:block">
+                <span className="w-28 shrink-0 hidden md:block">
                   {t('submittals.col_type', { defaultValue: 'Type' })}
                 </span>
                 <SortableHeader
@@ -1715,7 +1815,7 @@ export function SubmittalsPage() {
                   sortable={isServerSortable(vocabulary, 'date_required')}
                   sort={sort}
                   onSort={setSort}
-                  className="w-20 hidden lg:block"
+                  className="w-28 shrink-0 hidden lg:block"
                 />
                 {showApprovalBy && (
                   <SortableHeader
@@ -1724,7 +1824,7 @@ export function SubmittalsPage() {
                     sortable={isServerSortable(vocabulary, 'required_on_site_date')}
                     sort={sort}
                     onSort={setSort}
-                    className="w-24 hidden lg:block"
+                    className="w-32 shrink-0 hidden lg:block"
                   />
                 )}
               </div>
@@ -1757,6 +1857,7 @@ export function SubmittalsPage() {
           onSubmit={handleCreateSubmit}
           isPending={createMut.isPending}
           vocabulary={vocabulary}
+          projectId={projectId}
         />
       )}
 
@@ -1780,6 +1881,7 @@ export function SubmittalsPage() {
           onSubmit={handleEditSubmit}
           isPending={updateMut.isPending}
           vocabulary={vocabulary}
+          projectId={projectId}
         />
       )}
 

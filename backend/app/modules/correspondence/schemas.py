@@ -3,10 +3,10 @@
 """Correspondence Pydantic schemas - request/response models."""
 
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # The kinds of correspondence the register can hold. Stated once, because the
 # create and update schemas both gate on it and the frontend keeps a matching
@@ -21,6 +21,56 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 CORRESPONDENCE_TYPES: tuple[str, ...] = ("letter", "email", "notice", "memo", "report")
 
 CORRESPONDENCE_TYPE_PATTERN = rf"^({'|'.join(CORRESPONDENCE_TYPES)})$"
+
+# A party (sender or recipient) is a directory contact id or a typed name. The
+# cap matches the ``from_name`` column, so an over-long value is refused by
+# validation instead of reaching the database as an insert error.
+PARTY_MAX_LENGTH = 255
+
+# Width of the ``from_contact_id`` column: a UUID, or a short typed name.
+_SENDER_REF_MAX_LENGTH = 36
+
+# Links to other registers are record ids. They are stored in 36-character
+# columns, so anything that is not a UUID is refused here, by validation.
+_UUID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+
+PartyRef = Annotated[str, Field(min_length=1, max_length=PARTY_MAX_LENGTH)]
+RecordRef = Annotated[str, Field(pattern=_UUID_PATTERN)]
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _route_sender(model: BaseModel, *, partial: bool) -> None:
+    """Put a typed sender name where a name fits.
+
+    ``from_contact_id`` has always accepted either a contact UUID or a typed
+    name, and every reader of the register treats it that way. Its column is
+    36 characters wide, so a longer name is moved to ``from_name`` (the
+    human-readable sender) and the id is left empty. A short name stays in
+    ``from_contact_id`` too, so readers that only look there see what they
+    always saw. ``partial`` is the update case: nothing is touched unless the
+    caller sent the sender.
+    """
+    fields_set = model.model_fields_set
+    if partial and "from_contact_id" not in fields_set and "from_name" not in fields_set:
+        return
+    ref = getattr(model, "from_contact_id", None)
+    name = getattr(model, "from_name", None)
+    if ref and not _is_uuid(ref):
+        if not name:
+            model.from_name = ref
+        if len(ref) > _SENDER_REF_MAX_LENGTH:
+            model.from_contact_id = None
+    elif "from_contact_id" in fields_set and "from_name" not in fields_set:
+        # A new contact picked (or the sender cleared) without a name: the
+        # old name would describe the previous sender, so it goes too.
+        model.from_name = None
 
 
 def _sanitize_email_header_value(value: str) -> str:
@@ -66,14 +116,16 @@ class CorrespondenceCreate(BaseModel):
     project_id: UUID
     direction: str = Field(..., pattern=r"^(incoming|outgoing)$")
     subject: str = Field(..., min_length=1, max_length=500)
-    from_contact_id: str | None = None
-    to_contact_ids: list[str] = Field(default_factory=list)
+    from_contact_id: str | None = Field(default=None, max_length=PARTY_MAX_LENGTH)
+    from_name: str | None = Field(default=None, max_length=PARTY_MAX_LENGTH)
+    to_contact_ids: list[PartyRef] = Field(default_factory=list, max_length=100)
     date_sent: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     date_received: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     correspondence_type: str = Field(..., pattern=CORRESPONDENCE_TYPE_PATTERN)
-    linked_document_ids: list[str] = Field(default_factory=list)
-    linked_transmittal_id: str | None = None
-    linked_rfi_id: str | None = None
+    linked_document_ids: list[RecordRef] = Field(default_factory=list)
+    linked_transmittal_id: RecordRef | None = None
+    linked_rfi_id: RecordRef | None = None
+    linked_change_order_id: RecordRef | None = None
     status: str = Field(
         default="open",
         pattern=r"^(open|awaiting_response|responded|closed)$",
@@ -103,6 +155,11 @@ class CorrespondenceCreate(BaseModel):
         cleaned = _sanitize_readable_text(value)
         return cleaned or None
 
+    @model_validator(mode="after")
+    def _sender_fits(self) -> "CorrespondenceCreate":
+        _route_sender(self, partial=False)
+        return self
+
 
 class CorrespondenceUpdate(BaseModel):
     """Partial update for a correspondence record."""
@@ -111,14 +168,16 @@ class CorrespondenceUpdate(BaseModel):
 
     direction: str | None = Field(default=None, pattern=r"^(incoming|outgoing)$")
     subject: str | None = Field(default=None, min_length=1, max_length=500)
-    from_contact_id: str | None = None
-    to_contact_ids: list[str] | None = None
+    from_contact_id: str | None = Field(default=None, max_length=PARTY_MAX_LENGTH)
+    from_name: str | None = Field(default=None, max_length=PARTY_MAX_LENGTH)
+    to_contact_ids: list[PartyRef] | None = Field(default=None, max_length=100)
     date_sent: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     date_received: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     correspondence_type: str | None = Field(default=None, pattern=CORRESPONDENCE_TYPE_PATTERN)
-    linked_document_ids: list[str] | None = None
-    linked_transmittal_id: str | None = None
-    linked_rfi_id: str | None = None
+    linked_document_ids: list[RecordRef] | None = None
+    linked_transmittal_id: RecordRef | None = None
+    linked_rfi_id: RecordRef | None = None
+    linked_change_order_id: RecordRef | None = None
     status: str | None = Field(
         default=None,
         pattern=r"^(open|awaiting_response|responded|closed)$",
@@ -146,6 +205,11 @@ class CorrespondenceUpdate(BaseModel):
         cleaned = _sanitize_readable_text(value)
         return cleaned or None
 
+    @model_validator(mode="after")
+    def _sender_fits(self) -> "CorrespondenceUpdate":
+        _route_sender(self, partial=True)
+        return self
+
 
 class CorrespondenceResponse(BaseModel):
     """Correspondence returned from the API."""
@@ -158,6 +222,7 @@ class CorrespondenceResponse(BaseModel):
     direction: str
     subject: str
     from_contact_id: str | None = None
+    from_name: str | None = None
     to_contact_ids: list[str] = Field(default_factory=list)
     date_sent: str | None = None
     date_received: str | None = None
@@ -165,6 +230,7 @@ class CorrespondenceResponse(BaseModel):
     linked_document_ids: list[str] = Field(default_factory=list)
     linked_transmittal_id: str | None = None
     linked_rfi_id: str | None = None
+    linked_change_order_id: str | None = None
     status: str = "open"
     response_required_by: str | None = None
     contract_clause_ref: str | None = None

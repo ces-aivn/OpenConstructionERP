@@ -183,5 +183,35 @@ export function buildTransmittalsInsights(
     { ...base, id: 'bar-days-by-company', title: t('transmittals.insights.c_days_by_company', { defaultValue: 'Average days to acknowledge by company' }), chart: 'bar', dimension: 'company', measure: 'days_waiting', agg: 'avg', color: 5 },
   ];
 
-  return { datasets: [dataset], builtins };
+  // The register itself, one row per transmittal and drafts included. The
+  // distribution lines above leave a register of drafts with nothing to
+  // chart, which read as "no data" on a register that plainly holds records.
+  const register: InsightDataset = {
+    id: 'register',
+    label: t('transmittals.insights.ds_register', { defaultValue: 'Transmittals, one row each' }),
+    currency: '',
+    fields: [
+      { key: 'transmittal', label: t('transmittals.insights.f_transmittal', { defaultValue: 'Transmittal' }), kind: 'dimension' },
+      { key: 'purpose', label: t('transmittals.insights.f_purpose', { defaultValue: 'Purpose' }), kind: 'dimension' },
+      { key: 'status', label: t('transmittals.insights.f_status', { defaultValue: 'Status' }), kind: 'dimension' },
+      { key: 'month', label: t('transmittals.insights.f_month_created', { defaultValue: 'Month created' }), kind: 'dimension' },
+      { key: 'transmittals', label: t('transmittals.insights.f_transmittals', { defaultValue: 'Transmittals' }), kind: 'measure', format: 'number' },
+      { key: 'recipients', label: t('transmittals.insights.f_recipients', { defaultValue: 'Recipients' }), kind: 'measure', format: 'number' },
+    ],
+    rows: transmittals.map((tr) => ({
+      transmittal: tr.transmittal_number,
+      purpose: purposeLabel(tr.purpose, t),
+      status: statusLabel(tr.status, t),
+      month: tr.created_at ? monthKey(tr.created_at) : '—',
+      transmittals: 1,
+      recipients: tr.recipients.length,
+    })),
+  };
+  const reg = { datasetId: 'register', builtin: true } as const;
+  builtins.unshift(
+    { ...reg, id: 'donut-by-status', title: t('transmittals.insights.c_by_status', { defaultValue: 'Transmittals by status' }), chart: 'donut', dimension: 'status', measure: 'transmittals', agg: 'sum', color: 0 },
+    { ...reg, id: 'bar-by-purpose', title: t('transmittals.insights.c_by_purpose', { defaultValue: 'Transmittals by purpose' }), chart: 'bar', dimension: 'purpose', measure: 'transmittals', agg: 'sum', color: 3 },
+  );
+
+  return { datasets: [dataset, register], builtins };
 }

@@ -518,6 +518,7 @@ async def test_submit_emits_structured_state_change_log(db_session, caplog) -> N
             title="Log me",
             submittal_type="sample",
             reviewer_id="rev-1",
+            date_required="2999-12-31",
         ),
         user_id=owner,
     )

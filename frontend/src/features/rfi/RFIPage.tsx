@@ -71,6 +71,8 @@ import {
   type UpdateRFIPayload,
   type RespondRFIPayload,
 } from './api';
+import { countRfis, isRfiOverdue } from './rfiStatusRules';
+import { IssueHubLink } from '@/features/issues/IssueHubLink';
 import { rfiGuide } from './rfiGuide';
 import {
   DEFAULT_REQUEST_TYPE,
@@ -1522,7 +1524,7 @@ const RFIRow = React.memo(function RFIRow({
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const days = rfi.days_open ?? daysOpen(rfi.created_at, null);
-  const isOverdue = rfi.is_overdue ?? (rfi.response_due_date && rfi.status === 'open' && new Date(rfi.response_due_date) < new Date());
+  const isOverdue = isRfiOverdue(rfi);
   const statusCfg = STATUS_CONFIG[rfi.status] ?? STATUS_CONFIG.draft;
   const bicSide = ballInCourtSide(rfi, viewerId);
   const bicCfg = BIC_SIDE_CFG[bicSide];
@@ -2072,7 +2074,7 @@ export function RFIPage() {
         // counts it.
         if (ballInCourtSide(r, viewerId) !== 'you') return false;
       } else if (quickView === 'overdue') {
-        if (!r.is_overdue) return false;
+        if (!isRfiOverdue(r)) return false;
       }
       return true;
     });
@@ -2108,10 +2110,7 @@ export function RFIPage() {
       };
     }
     const total = rfis.length;
-    const open = rfis.filter((r) => r.status === 'open').length;
-    const overdue = rfis.filter(
-      (r) => r.is_overdue ?? (r.status === 'open' && r.response_due_date && new Date(r.response_due_date) < new Date()),
-    ).length;
+    const { open, overdue } = countRfis(rfis);
     const avgDays =
       rfis.length > 0
         ? Math.round(rfis.reduce((sum, r) => sum + (r.days_open ?? daysOpen(r.created_at, null)), 0) / rfis.length)
@@ -2371,6 +2370,8 @@ export function RFIPage() {
         actions={
           <>
             <InsightsToggleButton open={insights.open} onClick={insights.toggle} />
+            {/* Overdue RFIs also feed the Issue Hub, so the register links back. */}
+            <IssueHubLink />
             {/* How it works guide - explains the raise / attach / track /
                 respond flow and the impact-to-Variation handoff. Sits at the
                 head of the action cluster as the leading help pill. */}
@@ -2841,7 +2842,7 @@ export function RFIPage() {
             <div className="md:hidden space-y-3">
               {filtered.map((rfi) => {
                 const days = rfi.days_open ?? daysOpen(rfi.created_at, null);
-                const isOverdue = rfi.is_overdue ?? (rfi.response_due_date && rfi.status === 'open' && new Date(rfi.response_due_date) < new Date());
+                const isOverdue = isRfiOverdue(rfi);
                 const statusCfg = STATUS_CONFIG[rfi.status] ?? STATUS_CONFIG.draft;
                 const bicSide = ballInCourtSide(rfi, viewerId);
                 const bicCfg = BIC_SIDE_CFG[bicSide];

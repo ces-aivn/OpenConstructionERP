@@ -463,7 +463,8 @@ describe('the shop drawing register and the other cuts', () => {
     await screen.findByText(LEGACY.title);
 
     const tab = screen.getByTestId('submittals-type-tab-shop_drawing');
-    expect(tab.textContent).toContain('Shop drawings');
+    // The tab carries the same label as the type picker and the type filter.
+    expect(tab.textContent).toContain('Shop Drawing');
     expect(tab.textContent).toContain('17');
     fireEvent.click(tab);
     await waitFor(() => expect(lastListQuery().get('type')).toBe('shop_drawing'));
@@ -654,5 +655,28 @@ describe('recording a review', () => {
       code: 'AAN',
       resubmit_for_record: true,
     });
+  });
+});
+
+describe('submitting against the checks', () => {
+  it('holds the Submit button while a check at error level fails, and says why', async () => {
+    // LEGACY is a draft; the served findings carry one error.
+    serve({ rows: [LEGACY], summary: SUMMARY, vocabulary: VOCABULARY });
+    renderPage();
+    fireEvent.click(await screen.findByText(LEGACY.title));
+
+    const button = (await screen.findByTestId('submittal-submit-s-1')) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(true));
+    expect(screen.getByTestId('submittal-submit-blocked-s-1').textContent).toContain('1 check(s) marked Error');
+  });
+
+  it('offers a tab for every type, labelled as the type picker labels it', async () => {
+    serve({ rows: [LEGACY], summary: SUMMARY, vocabulary: VOCABULARY });
+    renderPage();
+    await screen.findByText(LEGACY.title);
+    for (const entry of VOCABULARY.types) {
+      expect(screen.getByTestId(`submittals-type-tab-${entry.code}`)).toBeTruthy();
+    }
+    expect(screen.getByTestId('submittals-type-tab-sample').textContent).toContain('Sample');
   });
 });

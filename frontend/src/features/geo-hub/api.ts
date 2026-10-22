@@ -551,10 +551,51 @@ function _suggestCacheSet(key: string, data: GeocodeSuggestResponse): void {
 /** Test-only — clear the client-side suggest cache. */
 export function _clearSuggestCacheForTests(): void {
   _suggestCache.clear();
+  forgetGeocodingConsent();
+}
+
+// Whether addresses may leave the server, remembered briefly so a map that
+// geocodes on open does not ask before every lookup. Matches the server's own
+// 30-second consent cache.
+const CONSENT_TTL_MS = 30_000;
+let _consentAllowed: { at: number; allowed: boolean } | null = null;
+let _consentRequest: Promise<boolean> | null = null;
+
+/** Test and answer-change hook: forget the remembered consent answer. */
+export function forgetGeocodingConsent(): void {
+  _consentAllowed = null;
+  _consentRequest = null;
+}
+
+/**
+ * Whether this installation lets addresses go to a geocoder.
+ *
+ * Fails closed: an unanswered question, a "do not send" answer, an operator
+ * switch, or a consent lookup that itself failed all mean no.
+ */
+export async function geocodingAllowed(): Promise<boolean> {
+  if (_consentAllowed && Date.now() - _consentAllowed.at < CONSENT_TTL_MS) return _consentAllowed.allowed;
+  if (!_consentRequest) {
+    _consentRequest = getGeocodingConsent()
+      .then((c) => !!c.nominatim_url)
+      .catch(() => false)
+      .then((allowed) => {
+        _consentAllowed = { at: Date.now(), allowed };
+        _consentRequest = null;
+        return allowed;
+      });
+  }
+  return _consentRequest;
 }
 
 /**
  * Autocomplete address suggestions from Nominatim (via backend proxy).
+ *
+ * Sends nothing at all unless the installation has agreed that addresses may
+ * go to a geocoder; the answer then comes back empty with
+ * ``geocoder_disabled`` set, exactly as the server would answer. When it is
+ * allowed, the search text goes in a ``POST`` body, never on the query
+ * string, where proxies and access logs would keep a private site address.
  *
  * Performs no client-side debouncing — the caller is expected to debounce
  * keystrokes (300 ms is the recommended setting per Wave 7 plan). Uses
@@ -567,23 +608,27 @@ export async function geocodeSuggest(
 ): Promise<GeocodeSuggestResponse> {
   const trimmed = q.trim();
   const limit = options?.limit ?? 5;
+  if (!(await geocodingAllowed())) {
+    return { query: trimmed, suggestions: [], geocoder_disabled: true };
+  }
+  if (options?.signal?.aborted) throw new DOMException('The lookup was cancelled', 'AbortError');
   const cacheKey = `${limit}:${trimmed.toLowerCase()}`;
   const cached = _suggestCacheGet(cacheKey);
   if (cached) return cached;
-  const qs = new URLSearchParams({ q: trimmed, limit: String(limit) });
-  const url = `${BASE}/geocode/suggest?${qs.toString()}`;
-  // ``apiGet`` doesn't accept AbortSignal, so for cancellation support
+  // ``apiPost`` doesn't accept AbortSignal, so for cancellation support
   // we hand-roll the fetch with the shared headers. Imports the auth
   // store at call time to avoid a circular dependency at module load.
   const token = useAuthStore.getState().accessToken;
   const headers: Record<string, string> = {
     Accept: 'application/json',
+    'Content-Type': 'application/json',
     'X-DDC-Client': 'OE/1.0',
   };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`/api${url}`, {
-    method: 'GET',
+  const res = await fetch(`/api${BASE}/geocode/suggest`, {
+    method: 'POST',
     headers,
+    body: JSON.stringify({ q: trimmed, limit }),
     signal: options?.signal,
   });
   if (!res.ok) {
@@ -622,11 +667,15 @@ export function getGeocodingConsent(): Promise<GeocodingConsent> {
   return apiGet<GeocodingConsent>(`${BASE}/geocoding-consent`);
 }
 
-export function setGeocodingConsent(body: {
+export async function setGeocodingConsent(body: {
   choice: 'allow' | 'deny' | 'mirror';
   mirror_url?: string | null;
 }): Promise<GeocodingConsent> {
-  return apiPut<GeocodingConsent>(`${BASE}/geocoding-consent`, body);
+  const saved = await apiPut<GeocodingConsent>(`${BASE}/geocoding-consent`, body);
+  // The next lookup reads the new answer instead of a remembered one.
+  forgetGeocodingConsent();
+  _suggestCache.clear();
+  return saved;
 }
 
 export function getGeocodeCacheStats(): Promise<GeocodeCacheStats> {

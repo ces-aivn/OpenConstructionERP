@@ -102,6 +102,7 @@ def _to_response(item: object) -> CorrespondenceResponse:
         direction=item.direction,  # type: ignore[attr-defined]
         subject=item.subject,  # type: ignore[attr-defined]
         from_contact_id=item.from_contact_id,  # type: ignore[attr-defined]
+        from_name=getattr(item, "from_name", None),
         to_contact_ids=item.to_contact_ids or [],  # type: ignore[attr-defined]
         date_sent=item.date_sent,  # type: ignore[attr-defined]
         date_received=item.date_received,  # type: ignore[attr-defined]
@@ -109,6 +110,7 @@ def _to_response(item: object) -> CorrespondenceResponse:
         linked_document_ids=item.linked_document_ids or [],  # type: ignore[attr-defined]
         linked_transmittal_id=item.linked_transmittal_id,  # type: ignore[attr-defined]
         linked_rfi_id=item.linked_rfi_id,  # type: ignore[attr-defined]
+        linked_change_order_id=getattr(item, "linked_change_order_id", None),
         status=getattr(item, "status", "open") or "open",
         response_required_by=getattr(item, "response_required_by", None),
         contract_clause_ref=getattr(item, "contract_clause_ref", None),

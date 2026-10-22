@@ -200,6 +200,17 @@ def response_due_error(
     return None
 
 
+# Purposes that ask the recipient for an answer by a date. A transmittal sent
+# for approval with no response due date has no deadline anybody can be
+# chased against, so the approval it asks for can sit unanswered for ever.
+RESPONSE_REQUIRED_PURPOSES: frozenset[str] = frozenset({"for_approval"})
+
+
+def response_due_missing(purpose_code: str | None, response_due_date: str | None) -> bool:
+    """True when ``purpose_code`` asks for an answer and no due date is set."""
+    return purpose_code in RESPONSE_REQUIRED_PURPOSES and not (response_due_date or "").strip()
+
+
 # ── Readiness to issue ────────────────────────────────────────────────────
 
 

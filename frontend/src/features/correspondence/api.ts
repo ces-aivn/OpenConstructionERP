@@ -34,6 +34,8 @@ export interface Correspondence {
   direction: CorrespondenceDirection;
   correspondence_type: CorrespondenceType;
   from_contact_id: string | null;
+  /** The sender as people read it: a typed name or the picked contact's name. */
+  from_name?: string | null;
   to_contact_ids: string[];
   date_sent: string | null;
   date_received: string | null;
@@ -43,6 +45,8 @@ export interface Correspondence {
   linked_transmittal_id: string | null;
   /** Optional link back to the RFI this letter relates to. */
   linked_rfi_id: string | null;
+  /** Optional link to the change order this letter (e.g. a delay notice) concerns. */
+  linked_change_order_id?: string | null;
   /** Lifecycle state of the record. */
   status: CorrespondenceStatus;
   /** ISO date (yyyy-mm-dd) a reply is contractually due, if any. */
@@ -74,12 +78,14 @@ export interface CreateCorrespondencePayload {
   direction: CorrespondenceDirection;
   correspondence_type: CorrespondenceType;
   from_contact_id?: string;
+  from_name?: string;
   to_contact_ids?: string[];
   date_sent?: string;
   date_received?: string;
   linked_document_ids?: string[];
   linked_transmittal_id?: string | null;
   linked_rfi_id?: string | null;
+  linked_change_order_id?: string | null;
   status?: CorrespondenceStatus;
   response_required_by?: string | null;
   contract_clause_ref?: string | null;
@@ -95,6 +101,7 @@ export interface UpdateCorrespondencePayload {
    * key and the old value survives, so emptying the field would do nothing.
    */
   from_contact_id?: string | null;
+  from_name?: string | null;
   to_contact_ids?: string[];
   /**
    * `null` clears the date. An empty string is rejected: the backend field
@@ -106,6 +113,7 @@ export interface UpdateCorrespondencePayload {
   linked_document_ids?: string[];
   linked_transmittal_id?: string | null;
   linked_rfi_id?: string | null;
+  linked_change_order_id?: string | null;
   status?: CorrespondenceStatus;
   response_required_by?: string | null;
   contract_clause_ref?: string | null;

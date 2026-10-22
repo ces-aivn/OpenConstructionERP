@@ -25,7 +25,7 @@ from app.modules.ncr.schemas import (
     NCRResponse,
     NCRUpdate,
 )
-from app.modules.ncr.service import NCRService
+from app.modules.ncr.service import NCRService, require_responsible_party
 
 router = APIRouter(tags=["ncr"])
 logger = logging.getLogger(__name__)
@@ -88,6 +88,9 @@ def _to_response(item: object) -> NCRResponse:
         location_accuracy_m=item.location_accuracy_m,  # type: ignore[attr-defined]
         linked_inspection_id=item.linked_inspection_id,  # type: ignore[attr-defined]
         change_order_id=item.change_order_id,  # type: ignore[attr-defined]
+        responsible_party_id=getattr(item, "responsible_party_id", None),
+        responsible_party_name=getattr(item, "responsible_party_name", None),
+        responsible_party_kind=getattr(item, "responsible_party_kind", None),
         created_by=item.created_by,  # type: ignore[attr-defined]
         metadata=getattr(item, "metadata_", {}),
         created_at=item.created_at,  # type: ignore[attr-defined]
@@ -138,8 +141,23 @@ async def create_ncr(
     _perm: None = Depends(RequirePermission("ncr.create")),
     service: NCRService = Depends(_get_service),
 ) -> NCRResponse:
-    """Create a new non-conformance report."""
+    """Create a new non-conformance report.
+
+    A person raising an NCR must name who is responsible for correcting it;
+    the automatic raisers (clash, validation, construction control) call the
+    service directly and leave the party for triage.
+    """
     await verify_project_access(data.project_id, user_id, session)
+    party_id, party_name, party_kind = require_responsible_party(
+        data.responsible_party_id, data.responsible_party_name, data.responsible_party_kind
+    )
+    data = data.model_copy(
+        update={
+            "responsible_party_id": party_id,
+            "responsible_party_name": party_name,
+            "responsible_party_kind": party_kind,
+        }
+    )
     ncr = await service.create_ncr(data, user_id=user_id)
     return _to_response(ncr)
 

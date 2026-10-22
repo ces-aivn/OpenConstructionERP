@@ -98,7 +98,15 @@ def _client(db_session, caller_id: str) -> httpx.AsyncClient:
 
 
 async def _create(client: httpx.AsyncClient, project_id: str, **fields: object) -> dict:
-    body = {"project_id": project_id, "title": "Chiller product data", "submittal_type": "product_data", **fields}
+    # A reviewer and a due date by default: submission is refused without them.
+    body = {
+        "project_id": project_id,
+        "title": "Chiller product data",
+        "submittal_type": "product_data",
+        "reviewer_id": str(uuid.uuid4()),
+        "date_required": "2999-12-31",
+        **fields,
+    }
     response = await client.post("/v1/submittals/", json=body)
     assert response.status_code == 201, response.text
     return response.json()

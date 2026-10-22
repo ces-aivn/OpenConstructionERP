@@ -197,4 +197,16 @@ describe('buildTransmittalsInsights', () => {
     expect(new Set(builtins.map((b) => b.id)).size).toBe(builtins.length);
   });
 
+
+  it('charts a register of drafts by status and purpose instead of showing no data', () => {
+    const { datasets, builtins } = build([
+      transmittal({ status: 'draft', issued_date: null }),
+      transmittal({ id: 'tr2', transmittal_number: 'TR-0019', status: 'draft', purpose: 'for_review' }),
+    ]);
+    const register = datasets.find((d) => d.id === 'register');
+    expect(register?.rows).toHaveLength(2);
+    expect(register?.rows.map((r) => r.status)).toEqual(['Draft', 'Draft']);
+    // The register charts come first, so the panel opens on something drawn.
+    expect(builtins[0]?.datasetId).toBe('register');
+  });
 });

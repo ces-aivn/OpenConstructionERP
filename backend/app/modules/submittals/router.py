@@ -64,6 +64,7 @@ from app.modules.submittals.schemas import (
     SubmittalCreate,
     SubmittalResponse,
     SubmittalReviewRequest,
+    SubmittalSubmitRequest,
     SubmittalUpdate,
 )
 from app.modules.submittals.service import SubmittalService
@@ -168,7 +169,10 @@ async def _name_map(session: AsyncSession, submittals: Iterable[object]) -> dict
     row names a supplier, which keeps a page of older rows at one query.
     """
     rows = list(submittals)
-    names = await _fetch_user_names(session, (getattr(s, "ball_in_court", None) for s in rows))
+    names = await _fetch_user_names(
+        session,
+        [getattr(s, "ball_in_court", None) for s in rows] + [getattr(s, "reviewer_id", None) for s in rows],
+    )
     suppliers = [getattr(s, "supplier", None) for s in rows]
     if any(suppliers):
         from app.core.party_names import resolve_party_names
@@ -216,6 +220,7 @@ def _to_response(item: object, name_map: dict[str, str] | None = None) -> Submit
         current_revision=item.current_revision,  # type: ignore[attr-defined]
         submitted_by_org=item.submitted_by_org,  # type: ignore[attr-defined]
         reviewer_id=str(item.reviewer_id) if item.reviewer_id else None,  # type: ignore[attr-defined]
+        reviewer_name=names.get(str(item.reviewer_id)) if item.reviewer_id else None,  # type: ignore[attr-defined]
         approver_id=str(item.approver_id) if item.approver_id else None,  # type: ignore[attr-defined]
         date_submitted=item.date_submitted,  # type: ignore[attr-defined]
         date_required=item.date_required,  # type: ignore[attr-defined]
@@ -386,13 +391,21 @@ async def submit_submittal(
     submittal_id: uuid.UUID,
     session: SessionDep,
     user_id: CurrentUserId = None,  # type: ignore[assignment]
+    body: SubmittalSubmitRequest | None = None,
     _perm: None = Depends(RequirePermission("submittals.update")),
     service: SubmittalService = Depends(_get_service),
 ) -> SubmittalResponse:
-    """Move a submittal from draft to submitted."""
+    """Move a submittal from draft to submitted.
+
+    Refused with ``submittal_validation_blocked`` while a check of error
+    level fails. An optional body may carry the actual submission date.
+    """
     existing = await service.get_submittal(submittal_id)
     await verify_project_access(existing.project_id, str(user_id), session)
-    submittal = await service.submit_submittal(submittal_id)
+    submittal = await service.submit_submittal(
+        submittal_id,
+        date_submitted=body.date_submitted if body else None,
+    )
     name_map = await _name_map(session, [submittal])
     return _to_response(submittal, name_map)
 

@@ -8,7 +8,7 @@
  *   1. Debounce 300 ms (per Nominatim ToS — also reduces backend load)
  *   2. Skip queries shorter than 3 chars
  *   3. Check the 5-minute in-memory cache (in api.ts)
- *   4. Hit ``GET /api/v1/geo-hub/geocode/suggest`` with AbortController
+ *   4. Hit ``POST /api/v1/geo-hub/geocode/suggest`` with AbortController
  *   5. Render up to 5 results with display name + country flag + coords
  *
  * Keyboard nav: ↑/↓ move highlight, Enter selects, Esc closes, Tab keeps

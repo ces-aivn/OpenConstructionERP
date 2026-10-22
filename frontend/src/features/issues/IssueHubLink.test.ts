@@ -29,6 +29,9 @@ const SOURCE_PAGES: Record<string, string> = {
   markup: 'markups/MarkupsPage.tsx',
   punch: 'punchlist/PunchListPage.tsx',
   ncr: 'ncr/NCRPage.tsx',
+  // NCRs raised from a BOQ validation run are kept in the NCR register.
+  validation: 'ncr/NCRPage.tsx',
+  rfi: 'rfi/RFIPage.tsx',
   // The BCF panel is reused inside the model viewer, so the link belongs to
   // the route wrapper rather than the panel: in the viewer the user has not
   // navigated to a register and a "back to the hub" button would be noise.
@@ -52,7 +55,7 @@ function declaredSources(): string[] {
 
 describe('issue hub back-links', () => {
   it('parses the source union from the file that defines it', () => {
-    expect(declaredSources().sort()).toEqual(['bcf', 'clash', 'markup', 'ncr', 'neighbour', 'punch']);
+    expect(declaredSources().sort()).toEqual(['bcf', 'clash', 'markup', 'ncr', 'neighbour', 'punch', 'rfi', 'validation']);
   });
 
   it('maps every declared source to a page', () => {

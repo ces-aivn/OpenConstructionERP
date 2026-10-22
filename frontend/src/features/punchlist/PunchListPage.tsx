@@ -85,6 +85,8 @@ import { VoiceEntry, getField } from '@/features/voice';
 import { fmtDate } from '@/shared/lib/formatters';
 import { PunchContractField } from './PunchContractField';
 import { isDateOnlyPast } from '@/shared/lib/dates';
+import { PUNCH_LIVE_STATUSES, punchIsLive } from './punchlistFsm';
+import { usePartyOptions } from '@/features/ncr/PartyPicker';
 import { IssueHubLink } from '@/features/issues/IssueHubLink';
 
 // The pin board pulls in the PDF renderer (pdfjs-dist), which is heavy. Keep it
@@ -324,11 +326,11 @@ function PunchKpiBand({
   const metrics = useMemo(() => {
     const byStatus = summary?.by_status ?? {};
 
-    // "Open" = the live workload still to be worked (open + in progress).
-    // The server counts urgent_open over those same two states, so this
-    // tile and the urgent one can never contradict each other.
+    // "Open" = the live workload still to be worked (open, assigned, in
+    // progress). The server counts urgent_open and overdue over those same
+    // states, so the tiles can never contradict each other.
     return {
-      open: (byStatus['open'] ?? 0) + (byStatus['in_progress'] ?? 0),
+      open: PUNCH_LIVE_STATUSES.reduce((sum, st) => sum + (byStatus[st] ?? 0), 0),
       resolved: byStatus['resolved'] ?? 0,
       overdue: summary?.overdue ?? 0,
       urgentOpen: summary?.urgent_open ?? 0,
@@ -536,6 +538,10 @@ function AddPunchModal({
   // group header says nothing.
   const rosterPeople = teamMembers.filter((m) => m.on_roster);
   const otherPeople = teamMembers.filter((m) => !m.on_roster);
+  // A snag is usually fixed by the subcontractor whose work it is, and most
+  // of them have no login. They are offered from the subcontractor register;
+  // the server names the assignee from that register too.
+  const subcontractors = usePartyOptions(['subcontractor']);
   const assigneeOption = (m: TeamMember) => (
     <option key={m.id} value={m.id} disabled={m.assignable === false}>
       {m.assignable === false
@@ -703,6 +709,15 @@ function AddPunchModal({
                   </optgroup>
                 ) : null}
               </>
+            )}
+            {subcontractors.length > 0 && (
+              <optgroup label={t('punch.group_subcontractors', { defaultValue: 'Subcontractors' })}>
+                {subcontractors.map((sub) => (
+                  <option key={`sub-${sub.id}`} value={sub.id}>
+                    {sub.detail ? `${sub.name} — ${sub.detail}` : sub.name}
+                  </option>
+                ))}
+              </optgroup>
             )}
           </select>
         </WideModalField>
@@ -872,11 +887,7 @@ const PunchKanbanCard = React.memo(function PunchKanbanCard({
   const { t } = useTranslation();
   const transitions = STATUS_TRANSITION[item.status] ?? [];
 
-  const isOverdue =
-    item.due_date &&
-    item.status !== 'closed' &&
-    item.status !== 'verified' &&
-    isDateOnlyPast(item.due_date);
+  const isOverdue = item.due_date && punchIsLive(item.status) && isDateOnlyPast(item.due_date);
 
   return (
     <Card
@@ -2030,11 +2041,7 @@ const PunchTableRow = React.memo(function PunchTableRow({
     return () => window.clearTimeout(timer);
   }, [highlight]);
 
-  const isOverdue =
-    item.due_date &&
-    item.status !== 'closed' &&
-    item.status !== 'verified' &&
-    isDateOnlyPast(item.due_date);
+  const isOverdue = item.due_date && punchIsLive(item.status) && isDateOnlyPast(item.due_date);
 
   const formattedDueDate = useMemo(() => {
     if (!item.due_date) return '-';

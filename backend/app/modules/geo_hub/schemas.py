@@ -745,6 +745,18 @@ class GeocodeSuggestionResponse(BaseModel):
     address_parts: dict[str, str] | None = None
 
 
+class GeocodeSuggestRequest(BaseModel):
+    """Body of ``POST /geocode/suggest``.
+
+    The search text is often a private site address, so it travels in the
+    body rather than on the query string, where proxies and access logs
+    keep it.
+    """
+
+    q: str = Field(..., min_length=1, max_length=200)
+    limit: int = Field(default=5, ge=1, le=10)
+
+
 class GeocodeSuggestResponse(BaseModel):
     """Response wrapper for the autocomplete suggest endpoint."""
 

@@ -42,6 +42,7 @@ from app.modules.geo_hub.schemas import (
     GeocodeCachePurgeResponse,
     GeocodeCacheStatsResponse,
     GeocodeSuggestionResponse,
+    GeocodeSuggestRequest,
     GeocodeSuggestResponse,
     GeocodingConsentResponse,
     GeocodingConsentUpdate,
@@ -919,6 +920,48 @@ async def bulk_anchor_from_address(
 # ── Geocode (Nominatim) - suggest + admin cache ────────────────────────
 
 
+async def _suggest_response(q: str, limit: int) -> GeocodeSuggestResponse:
+    """Suggestions for ``q``, empty with ``geocoder_disabled`` when consent is absent."""
+    from app.modules.geo_hub.consent import resolve_outbound
+    from app.modules.geo_hub.geocoder import suggest_addresses
+
+    disabled = not (await resolve_outbound()).allowed
+    results = [] if disabled else await suggest_addresses(q, limit=limit)
+    return GeocodeSuggestResponse(
+        query=q,
+        geocoder_disabled=disabled,
+        suggestions=[
+            GeocodeSuggestionResponse(
+                display_name=r.display_name,
+                lat=r.lat,
+                lon=r.lon,
+                country_code=r.country_code,
+                addresstype=r.addresstype,
+                osm_type=r.osm_type,
+                bbox=list(r.bbox) if r.bbox else None,
+                address_parts=dict(r.address_parts) if r.address_parts else None,
+            )
+            for r in results
+        ],
+    )
+
+
+@router.post("/geocode/suggest", response_model=GeocodeSuggestResponse)
+async def geocode_suggest_post(
+    body: GeocodeSuggestRequest,
+    payload: CurrentUserPayload = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("geo_hub.read")),
+) -> GeocodeSuggestResponse:
+    """Address suggestions with the search text in the body.
+
+    Same answer as the ``GET`` form, which stays for older clients. A site
+    address is often a private home; on a query string it lands in proxy
+    and access logs, in the body it does not.
+    """
+    _ = payload
+    return await _suggest_response(body.q, body.limit)
+
+
 @router.get("/geocode/suggest", response_model=GeocodeSuggestResponse)
 async def geocode_suggest(
     q: str = Query(..., min_length=1, max_length=200),
@@ -944,28 +987,7 @@ async def geocode_suggest(
     # to match the convention used by every other read endpoint in this
     # module so security audits can grep for it uniformly.
     _ = payload
-    from app.modules.geo_hub.consent import resolve_outbound
-    from app.modules.geo_hub.geocoder import suggest_addresses
-
-    disabled = not (await resolve_outbound()).allowed
-    results = [] if disabled else await suggest_addresses(q, limit=limit)
-    return GeocodeSuggestResponse(
-        query=q,
-        geocoder_disabled=disabled,
-        suggestions=[
-            GeocodeSuggestionResponse(
-                display_name=r.display_name,
-                lat=r.lat,
-                lon=r.lon,
-                country_code=r.country_code,
-                addresstype=r.addresstype,
-                osm_type=r.osm_type,
-                bbox=list(r.bbox) if r.bbox else None,
-                address_parts=dict(r.address_parts) if r.address_parts else None,
-            )
-            for r in results
-        ],
-    )
+    return await _suggest_response(q, limit)
 
 
 @router.get(

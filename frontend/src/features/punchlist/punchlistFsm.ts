@@ -68,3 +68,14 @@ export function punchNextMoves(status: PunchStatus): {
   }
   return { forward, backward };
 }
+
+/**
+ * Statuses that are still work to do: the server's `LIVE_STATUSES`. Only
+ * these count as open, and only these can be overdue. A resolved item is
+ * fixed and waits for verification, so its due date has been met.
+ */
+export const PUNCH_LIVE_STATUSES: readonly PunchStatus[] = ['open', 'assigned', 'in_progress'] as const;
+
+export function punchIsLive(status: PunchStatus): boolean {
+  return PUNCH_LIVE_STATUSES.includes(status);
+}

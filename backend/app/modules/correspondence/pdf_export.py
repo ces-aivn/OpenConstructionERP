@@ -44,6 +44,21 @@ __all__ = [
 ]
 
 
+def _sender(item: Any, people: Mapping[str, str] | None) -> str:
+    """The sender by name: a directory contact's current name, else the stored name."""
+    ref = getattr(item, "from_contact_id", None)
+    printed = person_name(ref, people)
+    name = (getattr(item, "from_name", None) or "").strip()
+    if not name:
+        return printed
+    # A resolved directory id prints the directory's name; anything else
+    # (no id, a typed short name, an id the lookup no longer knows) prints the
+    # name the entry was saved with.
+    if ref and printed not in (EMPTY, str(ref).strip()):
+        return printed
+    return name
+
+
 def _recipients(item: Any, people: Mapping[str, str] | None) -> str:
     """Every addressee by name, comma separated, or a dash."""
     names = [person_name(value, people) for value in (getattr(item, "to_contact_ids", None) or []) if value]
@@ -91,7 +106,7 @@ def correspondence_register(
             CATALOGUE.label("direction", getattr(item, "direction", None), locale),
             CATALOGUE.label("type", getattr(item, "correspondence_type", None), locale),
             getattr(item, "subject", ""),
-            person_name(getattr(item, "from_contact_id", None), people),
+            _sender(item, people),
             _recipients(item, people),
             getattr(item, "date_sent", None),
             getattr(item, "date_received", None),
@@ -162,7 +177,7 @@ def correspondence_record(
         [
             (tr(locale, "col_direction"), CATALOGUE.label("direction", getattr(item, "direction", None), locale)),
             (tr(locale, "col_type"), CATALOGUE.label("type", getattr(item, "correspondence_type", None), locale)),
-            (tr(locale, "col_from"), person_name(getattr(item, "from_contact_id", None), people)),
+            (tr(locale, "col_from"), _sender(item, people)),
             (tr(locale, "col_to"), _recipients(item, people)),
             (tr(locale, "col_date_sent"), _date("date_sent")),
             (tr(locale, "col_date_received"), _date("date_received")),

@@ -63,6 +63,11 @@ _SOURCE_TO_MODULE = {
     "markup": "markups",
     "punch": "punchlist",
     "ncr": "ncr",
+    # NCRs auto-raised from a BOQ validation run live in the ncr module; the
+    # hub files them under their own source because they are data findings.
+    "validation": "ncr",
+    # Only overdue RFIs reach the hub, read from the rfi module.
+    "rfi": "rfi",
     "bcf": "bcf",
     "clash": "clash",
     "neighbour": "site_logistics",

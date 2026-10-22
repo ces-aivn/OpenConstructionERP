@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Any
 
 from sqlalchemy import select
 
@@ -262,6 +263,44 @@ async def _on_clash_high_severity(event: Event) -> None:
 
 # ── validation.results.errors_found → raise an NCR ──────────────────────
 
+# The wording of a validation-raised record, in the project's language. These
+# records are data findings, not quality non-conformances on site, so the title
+# says where they came from; the hub lists them under their own source. The
+# key and params are also stored in metadata so a client can render the title
+# in the reader's language instead of the project's.
+_VALIDATION_TEXT: dict[str, dict[str, str]] = {
+    "en": {
+        "title": "BOQ validation findings ({count})",
+        "intro": "Raised automatically from a BOQ validation run with {count} blocking error(s).",
+        "rule_set": "Rule set",
+        "report": "Validation report",
+        "more": "... and {more} more",
+        "at": "at",
+        "none": "n/a",
+    },
+    "vi": {
+        "title": "Phát hiện từ kiểm tra BOQ ({count})",
+        "intro": "Tự động tạo từ một lần kiểm tra BOQ có {count} lỗi chặn.",
+        "rule_set": "Bộ quy tắc",
+        "report": "Báo cáo kiểm tra",
+        "more": "... và {more} lỗi khác",
+        "at": "tại",
+        "none": "không có",
+    },
+}
+
+
+async def _project_text(session: Any, project_id: uuid.UUID) -> dict[str, str]:
+    """The validation wording for the project's language, English when unknown."""
+    try:
+        from app.modules.projects.models import Project
+
+        project = await session.get(Project, project_id)
+        locale = str(getattr(project, "locale", "") or "").lower().split("-")[0]
+    except Exception:
+        locale = ""
+    return _VALIDATION_TEXT.get(locale, _VALIDATION_TEXT["en"])
+
 
 async def _on_validation_errors_found(event: Event) -> None:
     """``validation.results.errors_found`` → raise one NCR per validation run.
@@ -305,21 +344,21 @@ async def _on_validation_errors_found(event: Event) -> None:
 
             rule_set = str(data.get("rule_set") or "").strip()
             target_id = str(data.get("target_id") or "").strip()
+            text = await _project_text(session, project_id)
             top = errors[:5]
             bullet_lines = "\n".join(
                 f"- [{e.get('rule_id') or '?'}] {e.get('message') or ''}"
-                + (f" (at {e.get('element_ref')})" if e.get("element_ref") else "")
+                + (f" ({text['at']} {e.get('element_ref')})" if e.get("element_ref") else "")
                 for e in top
             )
             more = error_count - len(top)
             if more > 0:
-                bullet_lines += f"\n- ... and {more} more"
-            title = f"Validation errors in BOQ ({error_count})"[:500]
+                bullet_lines += "\n- " + text["more"].format(more=more)
+            title = text["title"].format(count=error_count)[:500]
             description = (
-                f"Auto-raised from a validation run that produced {error_count} "
-                f"blocking error(s).\n"
-                f"Rule set: {rule_set or 'n/a'}\n"
-                f"Validation report: {report_id_s}\n\n"
+                text["intro"].format(count=error_count) + "\n"
+                f"{text['rule_set']}: {rule_set or text['none']}\n"
+                f"{text['report']}: {report_id_s}\n\n"
                 f"{bullet_lines}"
             )[:10000]
 
@@ -343,6 +382,8 @@ async def _on_validation_errors_found(event: Event) -> None:
                     "rule_set": rule_set,
                     "error_count": error_count,
                     "errors": top,
+                    "title_key": "ncr.validation_title",
+                    "title_params": {"count": error_count},
                 },
             )
             session.add(ncr)

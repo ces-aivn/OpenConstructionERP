@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, ArrowUpRight, ListChecks, Loader2, Plus, Trash2 } from 'lucide-react';
 import { Badge, Button } from '@/shared/ui';
@@ -106,6 +107,16 @@ function ActionRow({
               {t('meetings.overdue', { defaultValue: 'Overdue' })}
             </Badge>
           )}
+          {action.task_id && (
+            <Link
+              to="/tasks"
+              className="inline-flex items-center gap-0.5 text-2xs text-oe-blue hover:underline"
+              data-testid={`meeting-action-task-${action.id}`}
+            >
+              <ListChecks size={11} aria-hidden />
+              {t('meetings.action_on_task_board', { defaultValue: 'On the task board' })}
+            </Link>
+          )}
         </div>
       </div>
 
@@ -177,6 +188,8 @@ export function ActionRegisterPanel({ meetingId, seriesId }: ActionRegisterPanel
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ['meeting-actions', meetingId] });
+    // Every saved action is also a task, so the task board is stale too.
+    void qc.invalidateQueries({ queryKey: ['tasks'] });
     if (seriesId) void qc.invalidateQueries({ queryKey: ['series-actions', seriesId] });
   };
 

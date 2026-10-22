@@ -88,8 +88,8 @@ async def test_complete_from_failed_state_rejected() -> None:
     with pytest.raises(HTTPException) as exc_info:
         await service.complete_inspection(inspection.id, "pass")
     assert exc_info.value.status_code == 400
-    detail = (exc_info.value.detail or "").lower()
-    assert "failed" in detail or "reschedule" in detail
+    assert exc_info.value.detail["code"] == "inspection_failed_reschedule_first"
+    assert "reschedule" in exc_info.value.detail["message"].lower()
 
 
 @pytest.mark.asyncio

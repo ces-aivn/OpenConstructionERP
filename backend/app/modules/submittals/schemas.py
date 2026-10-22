@@ -189,6 +189,17 @@ class SubmittalReviewRequest(BaseModel):
     resubmit_for_record: bool = False
 
 
+class SubmittalSubmitRequest(BaseModel):
+    """Optional request body for submitting a submittal.
+
+    ``date_submitted`` records the day the package actually went in, for a
+    register backfilled from paper. Left out, the date already on the draft
+    or today is used. A future date is refused by the service.
+    """
+
+    date_submitted: str | None = Field(default=None, pattern=_DATE_PATTERN)
+
+
 class SubmittalApproveRequest(BaseModel):
     """Optional request body for final approval.
 
@@ -226,6 +237,8 @@ class SubmittalResponse(BaseModel):
     current_revision: int = 1
     submitted_by_org: str | None = None
     reviewer_id: str | None = None
+    # The reviewer as a name, resolved from the users table; None when unknown.
+    reviewer_name: str | None = None
     approver_id: str | None = None
     date_submitted: str | None = None
     date_required: str | None = None

@@ -40,7 +40,17 @@ class Correspondence(Base):
     reference_number: Mapped[str] = mapped_column(String(50), nullable=False)
     direction: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     subject: Mapped[str] = mapped_column(String(500), nullable=False)
+    # ``from_contact_id`` holds a directory contact's UUID, or (as it always
+    # has) a short typed name. ``from_name`` is the sender as people read it:
+    # the typed name or the picked contact's name, up to 255 characters. The
+    # id column is 36 characters wide, and the form used to put the display
+    # name into it, so a longer name ("FabriTec Structures - Estimating
+    # Dept") reached the database as an over-long value and every create
+    # answered 500. The schema now routes a name to ``from_name``; the width
+    # of the id column is left alone because installs heal added columns on
+    # boot but never change the type of an existing one.
     from_contact_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    from_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # To contact IDs: array of contact UUID strings
     to_contact_ids: Mapped[list] = mapped_column(  # type: ignore[assignment]
@@ -64,6 +74,7 @@ class Correspondence(Base):
 
     linked_transmittal_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     linked_rfi_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    linked_change_order_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     # Lifecycle + legal-deadline tracking. A correspondence record, and above
     # all a formal notice, often carries a contractual response deadline; with

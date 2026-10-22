@@ -46,12 +46,19 @@ class QualityInspection(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     location: Mapped[str | None] = mapped_column(String(500), nullable=True)
     wbs_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # ``inspector_id`` is a reference only: a platform user or a directory
+    # contact. Who the inspector is in words lives in ``inspector_name``, so an
+    # outside special inspector who is in neither register can still be named
+    # without forcing a free-text name into a 36-character id column.
     inspector_id: Mapped[str | None] = mapped_column(GUID(), nullable=True)
+    inspector_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     inspection_date: Mapped[str | None] = mapped_column(String(40), nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="scheduled", index=True)
     result: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     # Checklist: [{id, category, question, response_type, response, notes, critical}]
+    # ``response`` carries the per-item verdict once the result is recorded:
+    # ``pass``, ``fail`` or ``na``; empty means the item was not assessed.
     checklist_data: Mapped[list] = mapped_column(  # type: ignore[assignment]
         JSON,
         nullable=False,

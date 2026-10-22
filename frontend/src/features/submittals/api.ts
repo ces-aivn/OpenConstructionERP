@@ -142,6 +142,9 @@ export interface Submittal extends SubmittalRegisterFields {
   status: SubmittalStatus;
   ball_in_court: string | null;
   ball_in_court_name: string | null;
+  /** The user the submittal waits on; `reviewer_name` is the same person as a name. */
+  reviewer_id: string | null;
+  reviewer_name: string | null;
   revision: number;
   date_submitted: string | null;
   date_required: string | null;
@@ -199,6 +202,10 @@ export interface CreateSubmittalPayload extends RegisterFieldsPayload {
   spec_section?: string;
   submittal_type: SubmittalType;
   date_required?: string;
+  /** The user who reviews it; submission is refused without one. */
+  reviewer_id?: string;
+  /** The day the package actually went in (history); never a future date. */
+  date_submitted?: string;
   /** Optional blob persisted as-is; used to record the source CDE container. */
   metadata?: Record<string, unknown>;
 }
@@ -218,6 +225,10 @@ export interface UpdateSubmittalPayload extends RegisterFieldsPayload {
    * `''` is rejected with a 422 rather than treated as "no date".
    */
   date_required?: string | null;
+  /** `null` clears the reviewer. */
+  reviewer_id?: string | null;
+  /** `null` clears the recorded submission date. */
+  date_submitted?: string | null;
 }
 
 export interface ReviewSubmittalPayload {
@@ -312,6 +323,8 @@ type SubmittalWire = Omit<
   description?: string | null;
   review_notes?: string | null;
   ball_in_court_name?: string | null;
+  reviewer_id?: string | null;
+  reviewer_name?: string | null;
   linked_boq_item_ids?: string[] | null;
   metadata?: Record<string, unknown> | null;
 } & {
@@ -360,6 +373,8 @@ function normaliseSubmittal(s: SubmittalWire): Submittal {
     description: s.description ?? null,
     review_notes: s.review_notes ?? null,
     ball_in_court_name: s.ball_in_court_name ?? null,
+    reviewer_id: s.reviewer_id ?? null,
+    reviewer_name: s.reviewer_name ?? null,
     linked_boq_item_ids: s.linked_boq_item_ids ?? [],
     metadata: s.metadata ?? {},
     discipline: s.discipline ?? null,
@@ -541,8 +556,18 @@ export async function updateSubmittal(id: string, data: UpdateSubmittalPayload):
   return normaliseSubmittal(row);
 }
 
-export async function submitSubmittal(id: string): Promise<Submittal> {
-  const row = await apiPost<SubmittalWire>(`/v1/submittals/${id}/submit/`);
+/**
+ * Submit a draft or a returned submittal. The server refuses it with
+ * `submittal_validation_blocked` while a check at error level fails.
+ *
+ * @param dateSubmitted The day it actually went in, for a register filled in
+ *   after the fact. Left out, the date on the draft or today is used.
+ */
+export async function submitSubmittal(id: string, dateSubmitted?: string): Promise<Submittal> {
+  const row = await apiPost<SubmittalWire>(
+    `/v1/submittals/${id}/submit/`,
+    dateSubmitted ? { date_submitted: dateSubmitted } : undefined,
+  );
   return normaliseSubmittal(row);
 }
 

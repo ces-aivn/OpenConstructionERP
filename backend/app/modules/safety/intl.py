@@ -482,18 +482,21 @@ _LOCALIZATIONS: dict[str, dict[str, dict[str, str]]] = {
         "en": {
             "first_aid": "First aid",
             "medical": "Medical treatment",
+            "lost_time": "Lost-time injury (LTI)",
             "hospital": "Hospitalization",
             "fatality": "Fatality",
         },
         "de": {
             "first_aid": "Erste Hilfe",
             "medical": "Ärztliche Behandlung",
+            "lost_time": "Arbeitsunfall mit Ausfallzeit",
             "hospital": "Krankenhaus",
             "fatality": "Todesfall",
         },
         "ru": {
             "first_aid": "Первая помощь",
             "medical": "Медицинская помощь",
+            "lost_time": "Травма с потерей рабочего времени",
             "hospital": "Госпитализация",
             "fatality": "Смертельный исход",
         },

@@ -30,6 +30,8 @@ import {
   Radar,
   MessageSquare,
   Megaphone,
+  HelpCircle,
+  ClipboardCheck,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -49,6 +51,7 @@ import { fetchProjectList } from '@/shared/lib/projectList';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useAllIssues, SOURCE_ORDER } from './useAllIssues';
 import {
+  isActiveIssue,
   isOverdue,
   type IssueSource,
   type IssuePriority,
@@ -78,19 +81,84 @@ function assigneeLabel(token: string): string {
   return UUID_RE.test(token) ? `#${token.slice(0, 8)}` : token;
 }
 
+/**
+ * `labelKey` is the full source name (filter chips, warnings); `chipKey` is the
+ * short name printed in the narrow Source column of each row, where a long
+ * name such as "Báo cáo không phù hợp (NCR)" used to run over the title.
+ */
 const SOURCE_META: Record<
   IssueSource,
-  { icon: LucideIcon; labelKey: string; labelDefault: string; variant: BadgeVariant }
+  {
+    icon: LucideIcon;
+    labelKey: string;
+    labelDefault: string;
+    chipKey: string;
+    chipDefault: string;
+    variant: BadgeVariant;
+  }
 > = {
-  punch: { icon: ListChecks, labelKey: 'issues.source_punch', labelDefault: 'Punch', variant: 'warning' },
-  ncr: { icon: AlertOctagon, labelKey: 'issues.source_ncr', labelDefault: 'NCR', variant: 'error' },
-  clash: { icon: Radar, labelKey: 'issues.source_clash', labelDefault: 'Clash', variant: 'blue' },
-  markup: { icon: PenTool, labelKey: 'issues.source_markup', labelDefault: 'Mark-up', variant: 'blue' },
-  bcf: { icon: MessageSquare, labelKey: 'issues.source_bcf', labelDefault: 'BCF', variant: 'neutral' },
+  punch: {
+    icon: ListChecks,
+    labelKey: 'issues.source_punch',
+    labelDefault: 'Punch',
+    chipKey: 'issues.source_chip_punch',
+    chipDefault: 'Punch',
+    variant: 'warning',
+  },
+  ncr: {
+    icon: AlertOctagon,
+    labelKey: 'issues.source_ncr',
+    labelDefault: 'NCR',
+    chipKey: 'issues.source_chip_ncr',
+    chipDefault: 'NCR',
+    variant: 'error',
+  },
+  rfi: {
+    icon: HelpCircle,
+    labelKey: 'issues.source_rfi',
+    labelDefault: 'Overdue RFI',
+    chipKey: 'issues.source_chip_rfi',
+    chipDefault: 'RFI',
+    variant: 'warning',
+  },
+  validation: {
+    icon: ClipboardCheck,
+    labelKey: 'issues.source_validation',
+    labelDefault: 'BOQ validation',
+    chipKey: 'issues.source_chip_validation',
+    chipDefault: 'Validation',
+    variant: 'neutral',
+  },
+  clash: {
+    icon: Radar,
+    labelKey: 'issues.source_clash',
+    labelDefault: 'Clash',
+    chipKey: 'issues.source_chip_clash',
+    chipDefault: 'Clash',
+    variant: 'blue',
+  },
+  markup: {
+    icon: PenTool,
+    labelKey: 'issues.source_markup',
+    labelDefault: 'Mark-up',
+    chipKey: 'issues.source_chip_markup',
+    chipDefault: 'Mark-up',
+    variant: 'blue',
+  },
+  bcf: {
+    icon: MessageSquare,
+    labelKey: 'issues.source_bcf',
+    labelDefault: 'BCF',
+    chipKey: 'issues.source_chip_bcf',
+    chipDefault: 'BCF',
+    variant: 'neutral',
+  },
   neighbour: {
     icon: Megaphone,
     labelKey: 'issues.source_neighbour',
     labelDefault: 'Neighbour',
+    chipKey: 'issues.source_chip_neighbour',
+    chipDefault: 'Neighbour',
     variant: 'warning',
   },
 };
@@ -127,6 +195,9 @@ const STATUS_LABEL_DEFAULT: Record<IssueStatusBucket, string> = {
 
 const UNASSIGNED = '__unassigned__';
 
+/** Status filter values: `active` (open + in progress) is the default view. */
+type StatusFilter = IssueStatusBucket | 'active' | 'all';
+
 /* --- Page ----------------------------------------------------------------- */
 
 export function IssuesHubPage() {
@@ -148,7 +219,7 @@ export function IssuesHubPage() {
   // Filters + sort
   const [sortKey, setSortKey] = useState<IssueSortKey>('priority');
   const [filterSource, setFilterSource] = useState<IssueSource | 'all'>('all');
-  const [filterStatus, setFilterStatus] = useState<IssueStatusBucket | 'all'>('all');
+  const [filterStatus, setFilterStatus] = useState<StatusFilter>('active');
   const [filterAssignee, setFilterAssignee] = useState<string>('all');
   const [filterPriority, setFilterPriority] = useState<IssuePriority | 'all'>('all');
   const [overdueOnly, setOverdueOnly] = useState(false);
@@ -159,7 +230,12 @@ export function IssuesHubPage() {
     sortKey,
   );
 
-  // KPI metrics reflect the whole project, not the filtered view.
+  // Open work by the one rule the list, chips and KPIs share: a resolved item
+  // awaiting verification is neither open nor overdue.
+  const activeIssues = useMemo(() => issues.filter(isActiveIssue), [issues]);
+
+  // KPI metrics reflect the project's open work, not the filtered view. Each
+  // tile counts the set its click filters the list to.
   const metrics = useMemo(() => {
     const now = new Date();
     let overdue = 0;
@@ -167,15 +243,15 @@ export function IssuesHubPage() {
     let high = 0;
     let medium = 0;
     let low = 0;
-    for (const i of issues) {
+    for (const i of activeIssues) {
       if (isOverdue(i, now)) overdue += 1;
       if (i.priority === 'critical') critical += 1;
       else if (i.priority === 'high') high += 1;
       else if (i.priority === 'medium') medium += 1;
       else if (i.priority === 'low') low += 1;
     }
-    return { total: issues.length, overdue, critical, high, medium, low };
-  }, [issues]);
+    return { total: activeIssues.length, overdue, critical, high, medium, low };
+  }, [activeIssues]);
 
   const assigneeOptions = useMemo(() => {
     const set = new Set<string>();
@@ -188,7 +264,11 @@ export function IssuesHubPage() {
     const q = search.trim().toLowerCase();
     return issues.filter((i) => {
       if (filterSource !== 'all' && i.source !== filterSource) return false;
-      if (filterStatus !== 'all' && i.status !== filterStatus) return false;
+      if (filterStatus === 'active') {
+        if (!isActiveIssue(i)) return false;
+      } else if (filterStatus !== 'all' && i.status !== filterStatus) {
+        return false;
+      }
       if (filterPriority !== 'all' && i.priority !== filterPriority) return false;
       if (filterAssignee !== 'all') {
         if (filterAssignee === UNASSIGNED) {
@@ -199,17 +279,18 @@ export function IssuesHubPage() {
       }
       if (overdueOnly && !isOverdue(i, now)) return false;
       if (q) {
-        const inTitle = i.title.toLowerCase().includes(q);
+        const inTitle =
+          i.title.toLowerCase().includes(q) || issueTitle(i, t).toLowerCase().includes(q);
         const inAssignee = (i.assignee ?? '').toLowerCase().includes(q);
         if (!inTitle && !inAssignee) return false;
       }
       return true;
     });
-  }, [issues, filterSource, filterStatus, filterPriority, filterAssignee, overdueOnly, search]);
+  }, [issues, filterSource, filterStatus, filterPriority, filterAssignee, overdueOnly, search, t]);
 
   const hasActiveFilters =
     filterSource !== 'all' ||
-    filterStatus !== 'all' ||
+    filterStatus !== 'active' ||
     filterPriority !== 'all' ||
     filterAssignee !== 'all' ||
     overdueOnly ||
@@ -217,7 +298,7 @@ export function IssuesHubPage() {
 
   const clearFilters = () => {
     setFilterSource('all');
-    setFilterStatus('all');
+    setFilterStatus('active');
     setFilterPriority('all');
     setFilterAssignee('all');
     setOverdueOnly(false);
@@ -226,6 +307,7 @@ export function IssuesHubPage() {
 
   const showPriority = (p: IssuePriority) => {
     setFilterPriority((prev) => (prev === p ? 'all' : p));
+    setFilterStatus('active');
     setOverdueOnly(false);
   };
 
@@ -252,6 +334,7 @@ export function IssuesHubPage() {
       onClick: () => {
         setOverdueOnly(true);
         setFilterPriority('all');
+        setFilterStatus('active');
       },
       ariaLabel: t('issues.kpi_overdue_aria', { defaultValue: 'Filter to overdue issues' }),
     },
@@ -311,7 +394,7 @@ export function IssuesHubPage() {
         srTitle={t('issues.title', { defaultValue: 'Issue Hub' })}
         subtitle={t('issues.subtitle', {
           defaultValue:
-            'One list of everything open on the project - punch items, NCRs, clashes, mark-ups and coordination topics - so nothing falls between the cracks.',
+            'One list of everything open on the project - punch items, NCRs, overdue RFIs, BOQ validation findings, clashes, mark-ups and coordination topics - so nothing is missed.',
         })}
         actions={
           <Button
@@ -352,7 +435,7 @@ export function IssuesHubPage() {
               aria-pressed={filterSource === 'all'}
             >
               {t('issues.source_all', { defaultValue: 'All sources' })}
-              <span className="tabular-nums font-semibold">{issues.length}</span>
+              <span className="tabular-nums font-semibold">{activeIssues.length}</span>
             </button>
             {SOURCE_ORDER.map((source) => {
               const state = sources.find((s) => s.source === source);
@@ -437,17 +520,22 @@ export function IssuesHubPage() {
 
               <select
                 value={filterStatus}
-                onChange={(e) => setFilterStatus(e.target.value as IssueStatusBucket | 'all')}
+                onChange={(e) => setFilterStatus(e.target.value as StatusFilter)}
                 aria-label={t('issues.filter_status', { defaultValue: 'Status' })}
                 className={controlCls}
               >
+                <option value="active">
+                  {t('issues.status_active', { defaultValue: 'Open and in progress' })}
+                </option>
                 <option value="all">{t('issues.all_statuses', { defaultValue: 'All statuses' })}</option>
                 <option value="open">{t('issues.status_open', { defaultValue: 'Open' })}</option>
                 <option value="in_progress">
                   {t('issues.status_in_progress', { defaultValue: 'In progress' })}
                 </option>
                 <option value="resolved">
-                  {t('issues.status_resolved', { defaultValue: 'Resolved' })}
+                  {t('issues.status_resolved_awaiting', {
+                    defaultValue: 'Resolved, awaiting verification',
+                  })}
                 </option>
               </select>
 
@@ -552,13 +640,18 @@ export function IssuesHubPage() {
                 {t('issues.showing_count', {
                   defaultValue: 'Showing {{count}} of {{total}} open issues',
                   count: filtered.length,
-                  total: issues.length,
+                  // Out of open work while the status filter stays inside it;
+                  // out of every live item once resolved ones are asked for.
+                  total:
+                    filterStatus === 'active' || filterStatus === 'open' || filterStatus === 'in_progress'
+                      ? activeIssues.length
+                      : issues.length,
                 })}
               </p>
               <Card padding="none" className="overflow-x-auto">
                 {/* Header */}
-                <div className="flex items-center gap-3 border-b border-border-light bg-surface-secondary/30 px-4 py-2.5 text-2xs font-medium uppercase tracking-wider text-content-tertiary min-w-[760px]">
-                  <span className="w-24 shrink-0">{t('issues.col_source', { defaultValue: 'Source' })}</span>
+                <div className="flex items-center gap-3 border-b border-border-light bg-surface-secondary/30 px-4 py-2.5 text-2xs font-medium uppercase tracking-wider text-content-tertiary min-w-[800px]">
+                  <span className="w-32 shrink-0">{t('issues.col_source', { defaultValue: 'Source' })}</span>
                   <span className="flex-1 min-w-0">{t('issues.col_title', { defaultValue: 'Title' })}</span>
                   <span className="w-24 shrink-0 text-center">
                     {t('issues.col_priority', { defaultValue: 'Priority' })}
@@ -589,11 +682,30 @@ export function IssuesHubPage() {
 
 /* --- Row ------------------------------------------------------------------ */
 
+type TFn = ReturnType<typeof useTranslation>['t'];
+
+/** The row title: a person's words as written, a derived title localized. */
+function issueTitle(issue: UnifiedIssue, t: TFn): string {
+  if (!issue.titleKey) return issue.title;
+  return t(issue.titleKey, { defaultValue: TITLE_DEFAULTS[issue.titleKey] ?? issue.title, ...issue.titleParams });
+}
+
+const TITLE_DEFAULTS: Record<string, string> = {
+  'issues.title_validation_errors': '{{code}}: {{count}} BOQ validation errors',
+  'issues.title_punch_item': 'Punch item',
+  'issues.title_markup_callout': 'Mark-up call-out ({{type}})',
+  'issues.title_clash': 'Clash {{ref}}',
+  'issues.title_neighbour_complaint': 'Neighbour complaint: {{kind}}',
+  'issues.title_bcf_topic': 'Topic {{ref}}',
+};
+
 function IssueRow({ issue, onOpen }: { issue: UnifiedIssue; onOpen: () => void }) {
   const { t } = useTranslation();
   const meta = SOURCE_META[issue.source];
   const SourceIcon = meta.icon;
   const overdue = isOverdue(issue);
+  const title = issueTitle(issue, t);
+  const sourceLabel = t(meta.labelKey, { defaultValue: meta.labelDefault });
 
   return (
     <div
@@ -608,22 +720,23 @@ function IssueRow({ issue, onOpen }: { issue: UnifiedIssue; onOpen: () => void }
       }}
       title={t('issues.open_in_module', { defaultValue: 'Open in its module' })}
       className={clsx(
-        'flex cursor-pointer items-center gap-3 border-b border-border-light px-4 py-3 text-sm transition-colors last:border-b-0 min-w-[760px]',
+        'flex cursor-pointer items-center gap-3 border-b border-border-light px-4 py-3 text-sm transition-colors last:border-b-0 min-w-[800px]',
         'hover:bg-surface-secondary/50 focus:outline-none focus-visible:bg-surface-secondary/60',
         overdue && 'bg-red-50/40 dark:bg-red-950/15',
       )}
     >
-      {/* Source */}
-      <span className="w-24 shrink-0">
-        <Badge variant={meta.variant} size="sm">
+      {/* Source - a fixed column that clips its own chip, so a long source
+          name can never run over the title next to it. */}
+      <span className="w-32 shrink-0 overflow-hidden" title={sourceLabel}>
+        <Badge variant={meta.variant} size="sm" className="max-w-full">
           <SourceIcon size={11} className="mr-1 shrink-0" />
-          {t(meta.labelKey, { defaultValue: meta.labelDefault })}
+          <span className="truncate">{t(meta.chipKey, { defaultValue: meta.chipDefault })}</span>
         </Badge>
       </span>
 
       {/* Title */}
-      <span className="min-w-0 flex-1 truncate text-content-primary" title={issue.title}>
-        {issue.title}
+      <span className="min-w-0 flex-1 truncate text-content-primary" title={title}>
+        {title}
       </span>
 
       {/* Priority */}

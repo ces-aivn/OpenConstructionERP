@@ -52,6 +52,12 @@ SEVERITY_CODES: tuple[str, ...] = ("low", "medium", "high", "critical")
 # This mirrors the open/closed split used by the PDF cover page in service.py.
 DONE_STATUSES: frozenset[str] = frozenset({"verified", "closed"})
 
+# Statuses past which a due date no longer applies. The due date is the
+# deadline for the fix; a resolved item has been fixed and only waits for a
+# second pair of eyes, so it is neither open work nor overdue. The register,
+# the summary tiles and the issue hub all read overdue against this set.
+NOT_DUE_STATUSES: frozenset[str] = frozenset({"resolved", "verified", "closed"})
+
 # Severity ranking, low to high, so a mixed set can report its worst item.
 SEVERITY_RANK: dict[str, int] = {code: rank for rank, code in enumerate(SEVERITY_CODES)}
 
@@ -261,7 +267,7 @@ def is_overdue(
     reference_date: datetime | str,
     *,
     status: str | None = None,
-    done_statuses: Iterable[str] = DONE_STATUSES,
+    done_statuses: Iterable[str] = NOT_DUE_STATUSES,
     grace_days: float = 0.0,
 ) -> bool:
     """Decide whether an item is overdue, with no hidden locale or clock.
@@ -274,9 +280,10 @@ def is_overdue(
         due_date: The item's due date, or ``None`` when it has none.
         reference_date: The date to compare against ("today" is the caller's
             choice, passed in explicitly for testability and timezone safety).
-        status: The item's status. When it is a done status the item is not
-            overdue regardless of the dates.
-        done_statuses: Statuses that count as done. Defaults to verified/closed.
+        status: The item's status. When the fix is done (resolved, verified
+            or closed) the item is not overdue regardless of the dates.
+        done_statuses: Statuses past the due date's reach. Defaults to
+            ``NOT_DUE_STATUSES``.
         grace_days: Days of slack added to the due date before it counts as
             overdue. Must be a finite number (may be negative to be stricter).
 

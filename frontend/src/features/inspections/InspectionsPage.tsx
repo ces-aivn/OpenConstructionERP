@@ -34,6 +34,7 @@ import {
   MinusCircle,
   Network,
   ArrowRight,
+  Paintbrush,
 } from 'lucide-react';
 import { Button, Card, Badge, EmptyState, Breadcrumb, ConfirmDialog, RecoveryCard, SkeletonTable, IntroRichText, ModuleGuideButton, CollapsibleSection } from '@/shared/ui';
 import { RequiresProject } from '@/shared/auth/RequiresProject';
@@ -61,10 +62,15 @@ import {
   type CreateInspectionPayload,
   type UpdateInspectionPayload,
   type ChecklistEntryPayload,
+  type ChecklistItemResultPayload,
+  type ChecklistVerdict,
 } from './api';
 import { inspectionsGuide } from './inspectionsGuide';
+import { EMPTY_PARTY, PartyPicker, usePartyOptions, type PartyValue } from '@/features/ncr/PartyPicker';
+import { CreateNCRModal, ncrFormPayload, type NCRFormData } from '@/features/ncr/CreateNCRModal';
 import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/features/insights';
 import { buildInspectionsInsights } from './inspectionsInsights';
+import { ChecklistTemplatePicker, type ChecklistRow } from './ChecklistTemplatePicker';
 
 /* -- Constants ------------------------------------------------------------- */
 
@@ -87,6 +93,7 @@ const INSPECTION_TYPE_COLORS: Record<
   mep: 'warning',
   fire_stopping: 'error',
   handover: 'success',
+  finishes: 'success',
   general: 'neutral',
 };
 
@@ -118,11 +125,13 @@ const inputCls =
 
 const INSPECTION_TYPES: InspectionType[] = [
   'structural',
+  'concrete',
+  'mep',
   'electrical',
   'plumbing',
   'fire_safety',
-  'concrete',
   'waterproofing',
+  'finishes',
   'general',
 ];
 
@@ -137,6 +146,7 @@ const TYPE_CARD_CONFIG: Record<InspectionType, { icon: React.ElementType; color:
   fire_stopping: { icon: Flame, color: 'text-red-600 bg-red-50 border-red-200 dark:text-red-400 dark:bg-red-950/30 dark:border-red-800' },
   structural: { icon: Columns3, color: 'text-purple-600 bg-purple-50 border-purple-200 dark:text-purple-400 dark:bg-purple-950/30 dark:border-purple-800' },
   handover: { icon: Eye, color: 'text-green-600 bg-green-50 border-green-200 dark:text-green-400 dark:bg-green-950/30 dark:border-green-800' },
+  finishes: { icon: Paintbrush, color: 'text-emerald-600 bg-emerald-50 border-emerald-200 dark:text-emerald-400 dark:bg-emerald-950/30 dark:border-emerald-800' },
   general: { icon: Eye, color: 'text-gray-600 bg-gray-50 border-gray-200 dark:text-gray-400 dark:bg-gray-800/50 dark:border-gray-700' },
 };
 
@@ -149,19 +159,16 @@ const INSPECTION_STATUSES: InspectionStatus[] = [
 
 /* -- Create Inspection Modal ----------------------------------------------- */
 
-interface ChecklistRow {
-  question: string;
-  critical: boolean;
-  notes: string;
-}
-
 interface InspectionFormData {
   title: string;
   inspection_type: InspectionType;
   date: string;
-  inspector: string;
+  /** Typed name, or a picked user/contact with its name. */
+  inspector: PartyValue;
   location: string;
   checklist: ChecklistRow[];
+  /** The template the checklist was last loaded from; '' when none. */
+  checklist_template: string;
 }
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
@@ -170,9 +177,10 @@ const EMPTY_FORM: InspectionFormData = {
   title: '',
   inspection_type: 'general',
   date: todayStr(),
-  inspector: '',
+  inspector: EMPTY_PARTY,
   location: '',
   checklist: [],
+  checklist_template: '',
 };
 
 /**
@@ -210,13 +218,18 @@ export function inspectionFormData(inspection: Inspection): InspectionFormData {
     title: inspection.title,
     inspection_type: inspection.inspection_type,
     date: inspection.date || todayStr(),
-    inspector: inspection.inspector || '',
+    inspector: {
+      id: inspection.inspector_id ?? '',
+      name: inspection.inspector || '',
+      kind: inspection.inspector_id ? 'user' : 'text',
+    },
     location: inspection.location || '',
     checklist: inspection.checklist.map((c) => ({
       question: c.description,
       critical: c.critical,
       notes: c.notes,
     })),
+    checklist_template: '',
   };
 }
 
@@ -227,7 +240,7 @@ export function inspectionFormData(inspection: Inspection): InspectionFormData {
  * body is left alone in the database, which is what makes omission the right
  * tool. Hand-written rather than a generic key diff because the payload renames
  * on the way out (`date` becomes `inspection_date`, `inspector` becomes
- * `inspector_id`); a name-matched diff would find no form field behind the
+ * `inspector_id` + `inspector_name`); a name-matched diff would find no form field behind the
  * renamed key, read it as unchanged and drop the user's edit on every save.
  */
 export function buildInspectionPatch(
@@ -238,7 +251,12 @@ export function buildInspectionPatch(
   if (form.title !== base.title) data.title = form.title;
   if (form.inspection_type !== base.inspection_type) data.inspection_type = form.inspection_type;
   if (form.date !== base.date) data.inspection_date = form.date || null;
-  if (form.inspector !== base.inspector) data.inspector_id = form.inspector || null;
+  if (form.inspector.id !== base.inspector.id || form.inspector.name.trim() !== base.inspector.name.trim()) {
+    // Both halves travel together: a new name with the old id would label the
+    // previously linked person with someone else's name.
+    data.inspector_id = form.inspector.id || null;
+    data.inspector_name = form.inspector.name.trim() || null;
+  }
   if (form.location !== base.location) data.location = form.location || null;
   // Compared by content, not identity: rebuilding the baseline makes fresh row
   // objects every time, so a reference test would resend the whole checklist on
@@ -266,6 +284,16 @@ function CreateInspectionModal({
   const isEdit = !!initialData;
   const [form, setForm] = useState<InspectionFormData>(initialData ?? EMPTY_FORM);
   const [touched, setTouched] = useState(false);
+  const inspectorOptions = usePartyOptions(['user', 'contact']);
+  // "Add checklist item" moves the caret into the new row, so typing straight
+  // on goes into the new item instead of being appended to the first one.
+  const questionRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const focusNewRow = useRef(false);
+  useEffect(() => {
+    if (!focusNewRow.current) return;
+    focusNewRow.current = false;
+    questionRefs.current[form.checklist.length - 1]?.focus();
+  }, [form.checklist.length]);
 
   const set = <K extends keyof InspectionFormData>(key: K, value: InspectionFormData[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -440,13 +468,13 @@ function CreateInspectionModal({
               <label htmlFor="inspection-inspector" className="block text-sm font-medium text-content-primary mb-1.5">
                 {t('inspections.field_inspector', { defaultValue: 'Inspector' })}
               </label>
-              <input
+              <PartyPicker
                 id="inspection-inspector"
                 value={form.inspector}
-                onChange={(e) => set('inspector', e.target.value)}
-                className={inputCls}
-                placeholder={t('inspections.inspector_placeholder', {
-                  defaultValue: 'Name of the inspector',
+                onChange={(v) => set('inspector', v)}
+                options={inspectorOptions}
+                placeholder={t('inspections.inspector_picker_placeholder', {
+                  defaultValue: 'Team member or contact - or type the inspector\'s name',
                 })}
               />
             </div>
@@ -490,6 +518,13 @@ function CreateInspectionModal({
                 'Add the items to verify on site. When you complete the inspection you mark each item pass/fail; failed items pre-fill any Punch List item or NCR you raise.',
             })}
           </p>
+          <ChecklistTemplatePicker
+            inspectionType={form.inspection_type}
+            rows={form.checklist}
+            onLoad={(code, rows) =>
+              setForm((prev) => ({ ...prev, checklist: rows, checklist_template: code }))
+            }
+          />
           <div className="space-y-2">
             {form.checklist.map((row, idx) => (
               <div
@@ -498,6 +533,10 @@ function CreateInspectionModal({
               >
                 <div className="flex items-start gap-2">
                   <input
+                    ref={(el) => {
+                      questionRefs.current[idx] = el;
+                    }}
+                    maxLength={500}
                     value={row.question}
                     onChange={(e) =>
                       set(
@@ -574,9 +613,10 @@ function CreateInspectionModal({
               variant="secondary"
               size="sm"
               type="button"
-              onClick={() =>
-                set('checklist', [...form.checklist, { question: '', critical: false, notes: '' }])
-              }
+              onClick={() => {
+                focusNewRow.current = true;
+                set('checklist', [...form.checklist, { question: '', critical: false, notes: '' }]);
+              }}
             >
               <Plus size={14} className="mr-1.5" />
               {t('inspections.checklist_add', { defaultValue: 'Add checklist item' })}
@@ -609,6 +649,47 @@ function CreateInspectionModal({
   );
 }
 
+/**
+ * The NCR form's starting point for a failed inspection, written in the
+ * reader's language. The user reviews it, picks the responsible party and
+ * confirms; nothing is raised until they do.
+ */
+export function ncrDraftFromInspection(
+  inspection: Inspection,
+  t: ReturnType<typeof useTranslation>['t'],
+): Partial<NCRFormData> {
+  const failed = inspection.checklist.filter((item) => item.result === 'fail');
+  const lines = [
+    t('inspections.ncr_desc_intro', {
+      defaultValue: 'Raised from inspection {{number}}: {{title}}',
+      number: inspection.inspection_number,
+      title: inspection.title,
+    }),
+  ];
+  if (inspection.notes) lines.push('', inspection.notes);
+  if (failed.length > 0) {
+    lines.push('', t('inspections.ncr_desc_failed_items', { defaultValue: 'Failed checklist items:' }));
+    for (const item of failed) {
+      const critical = item.critical ? ` (${t('inspections.critical', { defaultValue: 'Critical' })})` : '';
+      lines.push(`- ${item.description}${critical}${item.notes ? ` - ${item.notes}` : ''}`);
+    }
+  }
+  const type = inspection.inspection_type as string;
+  const ncrType = (['design', 'documentation', 'safety', 'material'] as const).find((x) => x === type) ?? 'workmanship';
+  const criticalFailure = failed.some((item) => item.critical);
+  return {
+    title: t('inspections.ncr_title_from_inspection', {
+      defaultValue: 'NCR from inspection {{number}}: {{title}}',
+      number: inspection.inspection_number,
+      title: inspection.title,
+    }).slice(0, 500),
+    description: lines.join('\n').slice(0, 10000),
+    ncr_type: ncrType,
+    severity: criticalFailure || inspection.result === 'fail' ? 'critical' : 'major',
+    location: inspection.location || '',
+  };
+}
+
 /* -- Record-result Dialog -------------------------------------------------- */
 
 const RESULT_OPTIONS: {
@@ -637,6 +718,23 @@ const RESULT_OPTIONS: {
   },
 ];
 
+const VERDICT_OPTIONS: { value: ChecklistVerdict; icon: React.ElementType; on: string }[] = [
+  { value: 'pass', icon: CheckCircle2, on: 'border-green-400 bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-300' },
+  { value: 'fail', icon: XCircle, on: 'border-red-400 bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300' },
+  { value: 'na', icon: MinusCircle, on: 'border-gray-400 bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300' },
+];
+
+/**
+ * The overall result the item verdicts allow. Any failed item fails the
+ * inspection: the server applies the same rule and would override a pass.
+ */
+export function resultForVerdicts(
+  chosen: InspectionResult,
+  verdicts: (ChecklistVerdict | null)[],
+): InspectionResult {
+  return verdicts.includes('fail') ? 'fail' : chosen;
+}
+
 function CompleteInspectionDialog({
   inspection,
   onClose,
@@ -645,11 +743,16 @@ function CompleteInspectionDialog({
 }: {
   inspection: Inspection;
   onClose: () => void;
-  onConfirm: (result: InspectionResult) => void;
+  onConfirm: (result: InspectionResult, itemResults: ChecklistItemResultPayload[]) => void;
   isPending: boolean;
 }) {
   const { t } = useTranslation();
-  const [result, setResult] = useState<InspectionResult>('pass');
+  const [chosen, setChosen] = useState<InspectionResult>('pass');
+  const [verdicts, setVerdicts] = useState<(ChecklistVerdict | null)[]>(() =>
+    inspection.checklist.map((item) => item.result),
+  );
+  const anyFailed = verdicts.includes('fail');
+  const result = resultForVerdicts(chosen, verdicts);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -673,17 +776,28 @@ function CompleteInspectionDialog({
       defaultValue: 'Did not meet acceptance criteria. Raise a Punch List item or NCR.',
     }),
   };
+  const verdictLabels: Record<ChecklistVerdict, string> = {
+    pass: t('inspections.item_pass', { defaultValue: 'Pass' }),
+    fail: t('inspections.item_fail', { defaultValue: 'Fail' }),
+    na: t('inspections.item_na', { defaultValue: 'N/A' }),
+  };
+
+  const itemResults = (): ChecklistItemResultPayload[] =>
+    inspection.checklist.flatMap((item, index) => {
+      const verdict = verdicts[index];
+      return verdict ? [{ id: item.id, index, result: verdict }] : [];
+    });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-lg animate-fade-in">
       <div
-        className="w-full max-w-md bg-surface-elevated rounded-xl shadow-xl border border-border animate-card-in mx-4"
+        className="w-full max-w-lg bg-surface-elevated rounded-xl shadow-xl border border-border animate-card-in mx-4 max-h-[90vh] flex flex-col"
         role="dialog"
         aria-modal="true"
         aria-label={t('inspections.record_result_title', { defaultValue: 'Record inspection result' })}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border-light">
-          <div>
+        <div className="flex items-start justify-between gap-3 px-6 py-4 border-b border-border-light">
+          <div className="min-w-0 flex-1">
             <h2 className="text-lg font-semibold text-content-primary">
               {t('inspections.record_result_title', { defaultValue: 'Record inspection result' })}
             </h2>
@@ -700,40 +814,99 @@ function CompleteInspectionDialog({
           </button>
         </div>
 
-        <div className="px-6 py-5 space-y-2">
-          <p className="text-sm text-content-secondary mb-2">
-            {t('inspections.record_result_prompt', {
-              defaultValue: 'Choose the outcome. A fail or partial result lets you raise a Punch List item or NCR.',
+        <div className="px-6 py-5 space-y-4 overflow-y-auto">
+          {inspection.checklist.length > 0 && (
+            <div>
+              <p className="text-sm font-medium text-content-primary mb-2">
+                {t('inspections.record_items_prompt', { defaultValue: 'Mark each checklist item' })}
+              </p>
+              <ul className="space-y-2">
+                {inspection.checklist.map((item, index) => (
+                  <li key={item.id} className="rounded-lg border border-border bg-surface-primary px-3 py-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <span className={clsx('text-sm text-content-primary min-w-0', item.critical && 'font-medium')}>
+                        {item.description}
+                        {item.critical && (
+                          <Badge variant="error" size="sm" className="ml-2">
+                            {t('inspections.critical', { defaultValue: 'Critical' })}
+                          </Badge>
+                        )}
+                      </span>
+                      <div
+                        className="flex shrink-0 gap-1"
+                        role="radiogroup"
+                        aria-label={t('inspections.item_verdict', { defaultValue: 'Item result' })}
+                      >
+                        {VERDICT_OPTIONS.map((opt) => {
+                          const OptIcon = opt.icon;
+                          const selected = verdicts[index] === opt.value;
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              role="radio"
+                              aria-checked={selected}
+                              onClick={() =>
+                                setVerdicts((prev) => prev.map((v, i) => (i === index ? opt.value : v)))
+                              }
+                              className={clsx(
+                                'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors',
+                                selected ? opt.on : 'border-border text-content-tertiary hover:bg-surface-secondary',
+                              )}
+                            >
+                              <OptIcon size={12} aria-hidden="true" />
+                              {verdictLabels[opt.value]}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <p className="text-sm text-content-secondary">
+              {anyFailed
+                ? t('inspections.record_result_forced_fail', {
+                    defaultValue: 'A checklist item failed, so the inspection result is Fail.',
+                  })
+                : t('inspections.record_result_prompt', {
+                    defaultValue: 'Choose the outcome. A fail or partial result lets you raise a Punch List item or NCR.',
+                  })}
+            </p>
+            {RESULT_OPTIONS.map((opt) => {
+              const OptIcon = opt.icon;
+              const selected = result === opt.value;
+              const locked = anyFailed && opt.value !== 'fail';
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  disabled={locked}
+                  onClick={() => setChosen(opt.value)}
+                  className={clsx(
+                    'flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-all',
+                    selected ? opt.ringCls : 'border-border bg-surface-primary hover:bg-surface-secondary',
+                    locked && 'opacity-50 cursor-not-allowed',
+                  )}
+                  aria-pressed={selected}
+                >
+                  <OptIcon size={18} className={clsx('mt-0.5 shrink-0', opt.iconCls)} />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium text-content-primary">
+                      {resultLabels[opt.value]}
+                    </span>
+                    <span className="block text-xs text-content-tertiary">
+                      {resultDescriptions[opt.value]}
+                    </span>
+                  </span>
+                </button>
+              );
             })}
-          </p>
-          {RESULT_OPTIONS.map((opt) => {
-            const OptIcon = opt.icon;
-            const selected = result === opt.value;
-            return (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => setResult(opt.value)}
-                className={clsx(
-                  'flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-all',
-                  selected
-                    ? opt.ringCls
-                    : 'border-border bg-surface-primary hover:bg-surface-secondary',
-                )}
-                aria-pressed={selected}
-              >
-                <OptIcon size={18} className={clsx('mt-0.5 shrink-0', opt.iconCls)} />
-                <span className="min-w-0">
-                  <span className="block text-sm font-medium text-content-primary">
-                    {resultLabels[opt.value]}
-                  </span>
-                  <span className="block text-xs text-content-tertiary">
-                    {resultDescriptions[opt.value]}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
+          </div>
         </div>
 
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-border-light">
@@ -742,7 +915,7 @@ function CompleteInspectionDialog({
           </Button>
           <Button
             variant="primary"
-            onClick={() => onConfirm(result)}
+            onClick={() => onConfirm(result, itemResults())}
             disabled={isPending}
           >
             {isPending ? (
@@ -755,6 +928,45 @@ function CompleteInspectionDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+/** One checklist item's verdict: a tick only for a recorded pass. */
+function ChecklistVerdictIcon({ verdict }: { verdict: ChecklistVerdict | null }) {
+  const { t } = useTranslation();
+  if (verdict === 'pass') {
+    return (
+      <CheckCircle2
+        size={14}
+        className="text-semantic-success mt-0.5 shrink-0"
+        aria-label={t('inspections.item_pass', { defaultValue: 'Pass' })}
+      />
+    );
+  }
+  if (verdict === 'fail') {
+    return (
+      <XCircle
+        size={14}
+        className="text-semantic-error mt-0.5 shrink-0"
+        aria-label={t('inspections.item_fail', { defaultValue: 'Fail' })}
+      />
+    );
+  }
+  if (verdict === 'na') {
+    return (
+      <MinusCircle
+        size={14}
+        className="text-content-tertiary mt-0.5 shrink-0"
+        aria-label={t('inspections.item_na', { defaultValue: 'N/A' })}
+      />
+    );
+  }
+  return (
+    <span
+      className="mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border border-content-quaternary"
+      role="img"
+      aria-label={t('inspections.item_not_assessed', { defaultValue: 'Not assessed' })}
+    />
   );
 }
 
@@ -848,12 +1060,15 @@ const InspectionRow = React.memo(function InspectionRow({
           {inspection.title}
         </span>
 
-        {/* Type badge */}
-        <Badge variant={typeCfg} size="sm">
-          {t(`inspections.type_${inspection.inspection_type}`, {
-            defaultValue: inspection.inspection_type.replace(/_/g, ' '),
-          })}
-        </Badge>
+        {/* Type badge - in a cell as wide as its header, so the chip sits
+            under "Type" and not under the inspector column. */}
+        <span className="w-24 shrink-0 flex justify-center">
+          <Badge variant={typeCfg} size="sm" className="max-w-full truncate">
+            {t(`inspections.type_${inspection.inspection_type}`, {
+              defaultValue: inspection.inspection_type.replace(/_/g, ' '),
+            })}
+          </Badge>
+        </span>
 
         {/* Inspector */}
         <span
@@ -869,6 +1084,7 @@ const InspectionRow = React.memo(function InspectionRow({
         </span>
 
         {/* Result badge */}
+        <span className="w-16 shrink-0 flex justify-center">
         {resultCfg ? (
           <Badge variant={resultCfg.variant} size="sm" className={resultCfg.cls}>
             {t(`inspections.result_${inspection.result}`, {
@@ -889,13 +1105,16 @@ const InspectionRow = React.memo(function InspectionRow({
             <span className="sr-only">{t('common.not_set', { defaultValue: 'Not set' })}</span>
           </span>
         )}
+        </span>
 
         {/* Status badge */}
-        <Badge variant={statusCfg.variant} size="sm" className={statusCfg.cls}>
-          {t(`inspections.status_${inspection.status}`, {
-            defaultValue: inspection.status.replace(/_/g, ' '),
-          })}
-        </Badge>
+        <span className="w-24 shrink-0 flex justify-center">
+          <Badge variant={statusCfg.variant} size="sm" className={statusCfg.cls}>
+            {t(`inspections.status_${inspection.status}`, {
+              defaultValue: inspection.status.replace(/_/g, ' '),
+            })}
+          </Badge>
+        </span>
       </div>
 
       {/* Expanded detail */}
@@ -913,14 +1132,10 @@ const InspectionRow = React.memo(function InspectionRow({
                     key={item.id}
                     className={clsx(
                       'flex items-start gap-2 text-sm rounded-md px-2 py-1',
-                      item.critical && !item.passed && 'bg-red-50 dark:bg-red-950/20',
+                      item.result === 'fail' && 'bg-red-50 dark:bg-red-950/20',
                     )}
                   >
-                    {item.passed ? (
-                      <CheckCircle2 size={14} className="text-semantic-success mt-0.5 shrink-0" />
-                    ) : (
-                      <XCircle size={14} className="text-semantic-error mt-0.5 shrink-0" />
-                    )}
+                    <ChecklistVerdictIcon verdict={item.result} />
                     <div className="flex-1 min-w-0">
                       <span
                         className={clsx(
@@ -1226,6 +1441,8 @@ export function InspectionsPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingInspection, setEditingInspection] = useState<Inspection | null>(null);
   const [completingId, setCompletingId] = useState<string | null>(null);
+  // The inspection whose NCR form is open, prefilled for the user to confirm.
+  const [ncrDraftId, setNcrDraftId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<InspectionStatus | ''>('');
   const [typeFilter, setTypeFilter] = useState<InspectionType | ''>('');
@@ -1319,8 +1536,15 @@ export function InspectionsPage() {
   });
 
   const completeMut = useMutation({
-    mutationFn: ({ id, result }: { id: string; result: InspectionResult }) =>
-      completeInspection(id, result),
+    mutationFn: ({
+      id,
+      result,
+      itemResults,
+    }: {
+      id: string;
+      result: InspectionResult;
+      itemResults: ChecklistItemResultPayload[];
+    }) => completeInspection(id, result, itemResults),
     onSuccess: (data) => {
       invalidateAll();
       setCompletingId(null);
@@ -1362,9 +1586,14 @@ export function InspectionsPage() {
         title: formData.title,
         inspection_type: formData.inspection_type,
         inspection_date: formData.date,
-        inspector_id: formData.inspector || undefined,
+        inspector_id: formData.inspector.id || undefined,
+        inspector_name: formData.inspector.name.trim() || undefined,
         location: formData.location || undefined,
         checklist_data: checklist.length > 0 ? checklist : undefined,
+        // Recorded with the inspection. Sent only with rows: with none, the
+        // server would load the template's items the person just removed.
+        checklist_template:
+          checklist.length > 0 && formData.checklist_template ? formData.checklist_template : undefined,
       });
     },
     [createMut, projectId, addToast, t],
@@ -1505,11 +1734,13 @@ export function InspectionsPage() {
     [createDefectMut],
   );
 
-  // Raise a formal NCR pre-filled from the failed inspection via the real
-  // backend endpoint (idempotent), then deep-link to the created NCR.
+  // Raise a formal NCR from the failed inspection once the user has confirmed
+  // the prefilled form (the endpoint is idempotent), then deep-link to it.
   const createNcrMut = useMutation({
-    mutationFn: (inspectionId: string) => createNcrFromInspection(inspectionId),
+    mutationFn: ({ inspectionId, form }: { inspectionId: string; form: NCRFormData }) =>
+      createNcrFromInspection(inspectionId, ncrFormPayload(form)),
     onSuccess: (data) => {
+      setNcrDraftId(null);
       addToast(
         {
           type: 'success',
@@ -1536,12 +1767,7 @@ export function InspectionsPage() {
       }),
   });
 
-  const handleCreateNcr = useCallback(
-    (id: string) => {
-      createNcrMut.mutate(id);
-    },
-    [createNcrMut],
-  );
+  const handleCreateNcr = useCallback((id: string) => setNcrDraftId(id), []);
 
   // Walk a scheduled inspection into in_progress so the in_progress state is
   // actually reachable from the UI (the FSM allows scheduled -> in_progress).
@@ -1567,6 +1793,7 @@ export function InspectionsPage() {
   const completingInspection = completingId
     ? inspections.find((i) => i.id === completingId) ?? null
     : null;
+  const ncrDraftInspection = ncrDraftId ? inspections.find((i) => i.id === ncrDraftId) ?? null : null;
 
   // Once the highlighted inspection is present in the loaded set, let the row
   // flash, then clear the ?highlight param so a refresh or back-navigation does
@@ -1912,10 +2139,25 @@ export function InspectionsPage() {
           onClose={() => {
             if (!completeMut.isPending) setCompletingId(null);
           }}
-          onConfirm={(result) =>
-            completeMut.mutate({ id: completingInspection.id, result })
+          onConfirm={(result, itemResults) =>
+            completeMut.mutate({ id: completingInspection.id, result, itemResults })
           }
           isPending={completeMut.isPending}
+        />
+      )}
+
+      {/* NCR form prefilled from the failed inspection, confirmed by the user */}
+      {ncrDraftInspection && (
+        <CreateNCRModal
+          onClose={() => {
+            if (!createNcrMut.isPending) setNcrDraftId(null);
+          }}
+          onSubmit={(form) => createNcrMut.mutate({ inspectionId: ncrDraftInspection.id, form })}
+          isPending={createNcrMut.isPending}
+          projectName={projectName}
+          heading={t('inspections.ncr_from_inspection_heading', { defaultValue: 'Raise NCR from inspection' })}
+          subheading={`${ncrDraftInspection.inspection_number} · ${ncrDraftInspection.title}`}
+          initialData={ncrDraftFromInspection(ncrDraftInspection, t)}
         />
       )}
 

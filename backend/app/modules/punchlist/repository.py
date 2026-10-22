@@ -18,7 +18,8 @@ from app.core.calendar_day import start_of_today_utc
 from app.modules.punchlist.models import PunchItem
 
 #: Statuses that count as still-to-action work in the summary aggregates.
-LIVE_STATUSES = ("open", "in_progress")
+#: An assigned item has an owner but is not fixed yet, so it is open work.
+LIVE_STATUSES = ("open", "assigned", "in_progress")
 
 
 class PunchListRepository:
@@ -141,9 +142,9 @@ class PunchListRepository:
             )
         ).all()
 
-        # "Live" is open or in progress, the same two states the summary's
-        # open count adds up. Assigned items are deliberately not counted,
-        # so this tile and the open tile beside it never disagree.
+        # "Live" is open, assigned or in progress, the same states the
+        # summary's open count adds up, so this tile and the open tile beside
+        # it never disagree.
         urgent_open = (
             await self.session.execute(
                 select(func.count(PunchItem.id)).where(
@@ -173,10 +174,12 @@ class PunchListRepository:
         }
 
     async def count_overdue(self, project_id: uuid.UUID) -> int:
-        """Count punch items that are past due and not closed/verified.
+        """Count punch items that are past due and still live work.
 
         A due date is a calendar day, so an item is overdue from the day after
-        it, the same rule the punch list screen applies.
+        it, the same rule the punch list screen applies. Only live statuses
+        count: a resolved item is fixed and waiting for verification, so its
+        due date has been met.
         """
         today = start_of_today_utc()
         stmt = select(func.count()).select_from(
@@ -185,7 +188,7 @@ class PunchListRepository:
                 PunchItem.project_id == project_id,
                 PunchItem.due_date.isnot(None),
                 PunchItem.due_date < today,
-                PunchItem.status.notin_(["verified", "closed"]),
+                PunchItem.status.in_(LIVE_STATUSES),
             )
             .subquery()
         )

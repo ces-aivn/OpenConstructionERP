@@ -374,6 +374,8 @@ class ActionRegisterItemResponse(BaseModel):
     closed_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # The task on the task board that carries this action; None until synced.
+    task_id: str | None = None
 
 
 class MeetingActionsResponse(BaseModel):

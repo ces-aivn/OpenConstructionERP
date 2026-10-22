@@ -25,6 +25,7 @@ from app.modules.transmittals.logic import (
     compute_response_due_date,
     issue_blockers,
     response_due_error,
+    response_due_missing,
 )
 from app.modules.transmittals.models import (
     Transmittal,
@@ -101,6 +102,28 @@ def _resolve_response_due_date(
     return resolved
 
 
+def _refuse_missing_response_due(purpose_code: str | None, response_due_date: str | None) -> None:
+    """Refuse a transmittal sent for approval that sets no response due date.
+
+    Coded so the client can say it in the reader's language and point at the
+    field: ``transmittal_response_due_required`` on ``response_due_date``.
+
+    Applied on the register's own routes (``require_response_due=True``).
+    Programmatic callers that build transmittals from another module's plan
+    keep their existing contract until they carry a deadline of their own.
+    """
+    if response_due_missing(purpose_code, response_due_date):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "transmittal_response_due_required",
+                "message": "A transmittal sent for approval needs a response due date.",
+                "field": "response_due_date",
+                "params": {"purpose": purpose_code},
+            },
+        )
+
+
 async def _safe_publish(name: str, data: dict, source_module: str = "oe_transmittals") -> None:
     try:
         event_bus.publish_detached(name, data, source_module=source_module)
@@ -121,6 +144,8 @@ class TransmittalService:
         self,
         data: TransmittalCreate,
         user_id: str | None = None,
+        *,
+        require_response_due: bool = False,
     ) -> Transmittal:
         """Create a new transmittal with auto-generated number.
 
@@ -140,6 +165,8 @@ class TransmittalService:
             data.response_due_date,
             metadata,
         )
+        if require_response_due:
+            _refuse_missing_response_due(data.purpose_code, response_due_date)
 
         last_exc: Exception | None = None
         transmittal: Transmittal | None = None
@@ -242,6 +269,8 @@ class TransmittalService:
         self,
         transmittal_id: uuid.UUID,
         data: TransmittalUpdate,
+        *,
+        require_response_due: bool = False,
     ) -> Transmittal:
         """Update transmittal fields. Fails if transmittal is locked."""
         transmittal = await self.get_transmittal(transmittal_id)
@@ -271,6 +300,10 @@ class TransmittalService:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=date_error,
             )
+        # Only when the purpose or the deadline is being changed, so an older
+        # record can still have its subject corrected without the new rule.
+        if require_response_due and ("purpose_code" in fields or "response_due_date" in fields):
+            _refuse_missing_response_due(fields.get("purpose_code", transmittal.purpose_code), effective_due)
 
         if fields:
             await self.repo.update_fields(transmittal_id, **fields)
@@ -377,7 +410,12 @@ class TransmittalService:
 
     # ── Issue (lock) ──────────────────────────────────────────────────────
 
-    async def issue_transmittal(self, transmittal_id: uuid.UUID) -> Transmittal:
+    async def issue_transmittal(
+        self,
+        transmittal_id: uuid.UUID,
+        *,
+        require_response_due: bool = False,
+    ) -> Transmittal:
         """Formally send the transmittal: lock it and set status to 'issued'.
 
         Issuing is the point of no return, so we first check the transmittal is
@@ -401,6 +439,8 @@ class TransmittalService:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Cannot issue this transmittal yet. " + " ".join(blockers),
             )
+        if require_response_due:
+            _refuse_missing_response_due(transmittal.purpose_code, transmittal.response_due_date)
 
         now = datetime.now(UTC).isoformat()
         project_id_s = str(transmittal.project_id)

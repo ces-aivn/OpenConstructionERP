@@ -20,6 +20,43 @@ from app.modules.ncr.schemas import NCRCreate, NCRUpdate
 logger = logging.getLogger(__name__)
 
 
+def require_responsible_party(
+    party_id: str | None,
+    party_name: str | None,
+    party_kind: str | None,
+) -> tuple[str | None, str, str]:
+    """Normalise the party answerable for an NCR, refusing an NCR without one.
+
+    A name is always required, picked or typed: it is the snapshot the register
+    prints. An id is kept only when it is an id; a typed value that arrived in
+    the id slot is the name. The kind says which register the id points into
+    and is ``text`` when there is no id.
+
+    Raises:
+        HTTPException 422 with code ``ncr_responsible_party_required``.
+    """
+    raw_id = (party_id or "").strip()
+    name = (party_name or "").strip()
+    clean_id: str | None = None
+    if raw_id:
+        try:
+            clean_id = str(uuid.UUID(raw_id))
+        except ValueError:
+            name = name or raw_id
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "ncr_responsible_party_required",
+                "message": "Name the party responsible for correcting this non-conformance.",
+                "field": "responsible_party",
+                "params": {},
+            },
+        )
+    kind = "text" if clean_id is None else (party_kind if party_kind and party_kind != "text" else "contact")
+    return clean_id, name[:255], kind
+
+
 # ── Allowed NCR status transitions ────────────────────────────────────────────
 
 _NCR_STATUS_TRANSITIONS: dict[str, set[str]] = {
@@ -116,6 +153,9 @@ class NCRService:
             linked_inspection_id=data.linked_inspection_id,
             package_ref=data.package_ref,
             change_order_id=change_order_id,
+            responsible_party_id=data.responsible_party_id,
+            responsible_party_name=data.responsible_party_name,
+            responsible_party_kind=data.responsible_party_kind,
             created_by=user_id,
             metadata_=data.metadata,
         )
@@ -257,6 +297,20 @@ class NCRService:
         # a free string, and echoing it back on an unrelated edit must not fail.
         if fields.get("change_order_id") and fields["change_order_id"] != ncr.change_order_id:
             fields["change_order_id"] = await self._check_change_order(ncr.project_id, fields["change_order_id"])
+        # Reassigning the responsible party may change who it is, never leave
+        # the NCR with nobody answerable for it.
+        party_keys = ("responsible_party_id", "responsible_party_name", "responsible_party_kind")
+        if any(key in fields for key in party_keys):
+            party_id, party_name, party_kind = require_responsible_party(
+                fields.get("responsible_party_id", ncr.responsible_party_id),
+                fields.get("responsible_party_name", ncr.responsible_party_name),
+                fields.get("responsible_party_kind", ncr.responsible_party_kind),
+            )
+            fields.update(
+                responsible_party_id=party_id,
+                responsible_party_name=party_name,
+                responsible_party_kind=party_kind,
+            )
         # Merge a partial metadata patch into the existing column instead of
         # replacing it wholesale - a PATCH touching one key must not wipe the
         # rest. NCRs are auto-created with source/report tracking keys in

@@ -9,21 +9,11 @@ import {
   AlertOctagon,
   Search,
   Plus,
-  X,
   ChevronDown,
   ChevronRight,
   DollarSign,
   CheckCircle2,
   ClipboardCheck,
-  Package,
-  Wrench,
-  PenTool,
-  FileText,
-  ShieldAlert,
-  AlertCircle,
-  AlertTriangle,
-  Info,
-  MapPin,
   ListChecks,
   Link2,
   Network,
@@ -62,14 +52,9 @@ import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/featur
 import { buildNCRInsights } from './ncrInsights';
 import { IssueHubLink } from '@/features/issues/IssueHubLink';
 import { RaiseBackCharge } from '@/features/cost-recovery/RaiseBackCharge';
+import { CreateNCRModal, NCR_SEVERITY_LABELS, ncrFormPayload, type NCRFormData } from './CreateNCRModal';
+import { EMPTY_PARTY, PartyPicker, usePartyOptions, type PartyValue } from './PartyPicker';
 
-// English fallbacks for the computed `ncr.severity_*` keys. The default used to be
-// the raw value, so until the key lands in a locale the screen shows the bare
-// enum token to every reader, English included. Unknown values still fall
-// through to the previous default.
-const NCR_SEVERITY_LABELS: Record<string, string> = {
-  critical: 'Critical', major: 'Major', minor: 'Minor', observation: 'Observation'
-};
 
 
 /* -- Constants ------------------------------------------------------------- */
@@ -127,25 +112,6 @@ const inputCls =
 const textareaCls =
   'w-full rounded-lg border border-border bg-surface-primary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue resize-none';
 
-const NCR_TYPES: NCRType[] = ['material', 'workmanship', 'design', 'documentation', 'safety'];
-
-const NCR_SEVERITIES: NCRSeverity[] = ['critical', 'major', 'minor', 'observation'];
-
-const NCR_TYPE_CARD_CONFIG: Record<NCRType, { icon: React.ElementType; color: string }> = {
-  material: { icon: Package, color: 'text-blue-600 bg-blue-50 border-blue-200 dark:text-blue-400 dark:bg-blue-950/30 dark:border-blue-800' },
-  workmanship: { icon: Wrench, color: 'text-amber-600 bg-amber-50 border-amber-200 dark:text-amber-400 dark:bg-amber-950/30 dark:border-amber-800' },
-  design: { icon: PenTool, color: 'text-purple-600 bg-purple-50 border-purple-200 dark:text-purple-400 dark:bg-purple-950/30 dark:border-purple-800' },
-  documentation: { icon: FileText, color: 'text-gray-600 bg-gray-50 border-gray-200 dark:text-gray-400 dark:bg-gray-800/50 dark:border-gray-700' },
-  safety: { icon: ShieldAlert, color: 'text-red-600 bg-red-50 border-red-200 dark:text-red-400 dark:bg-red-950/30 dark:border-red-800' },
-};
-
-const SEVERITY_CARD_CONFIG: Record<NCRSeverity, { icon: React.ElementType; color: string; ringColor: string }> = {
-  critical: { icon: AlertOctagon, color: 'text-red-700 bg-red-50 border-red-300 dark:text-red-400 dark:bg-red-950/30 dark:border-red-800', ringColor: 'ring-red-300' },
-  major: { icon: AlertCircle, color: 'text-orange-600 bg-orange-50 border-orange-200 dark:text-orange-400 dark:bg-orange-950/30 dark:border-orange-800', ringColor: 'ring-orange-300' },
-  minor: { icon: AlertTriangle, color: 'text-yellow-600 bg-yellow-50 border-yellow-200 dark:text-yellow-400 dark:bg-yellow-950/30 dark:border-yellow-800', ringColor: 'ring-yellow-300' },
-  observation: { icon: Info, color: 'text-gray-500 bg-gray-50 border-gray-200 dark:text-gray-400 dark:bg-gray-800/50 dark:border-gray-700', ringColor: 'ring-gray-300' },
-};
-
 const NCR_STATUSES: NCRStatus[] = [
   'identified',
   'under_review',
@@ -155,284 +121,28 @@ const NCR_STATUSES: NCRStatus[] = [
   'void',
 ];
 
-/* -- Create NCR Modal ------------------------------------------------------ */
-
-interface NCRFormData {
-  title: string;
-  ncr_type: NCRType;
-  severity: NCRSeverity;
-  description: string;
-  location: string;
-  root_cause: string;
-}
-
-const EMPTY_FORM: NCRFormData = {
-  title: '',
-  ncr_type: 'material',
-  severity: 'minor',
-  description: '',
-  location: '',
-  root_cause: '',
-};
-
-function CreateNCRModal({
-  onClose,
-  onSubmit,
-  isPending,
-  projectName,
-}: {
-  onClose: () => void;
-  onSubmit: (data: NCRFormData) => void;
-  isPending: boolean;
-  projectName?: string;
-}) {
+/** Reassign the responsible party; loads the suggestion lists only while editing. */
+function ResponsiblePartyField({ value, onChange }: { value: PartyValue; onChange: (v: PartyValue) => void }) {
   const { t } = useTranslation();
-  const [form, setForm] = useState<NCRFormData>(EMPTY_FORM);
-  const [touched, setTouched] = useState(false);
-
-  const set = <K extends keyof NCRFormData>(key: K, value: NCRFormData[K]) =>
-    setForm((prev) => ({ ...prev, [key]: value }));
-
-  const titleError = touched && form.title.trim().length === 0;
-  const descError = touched && form.description.trim().length === 0;
-  const canSubmit = form.title.trim().length > 0 && form.description.trim().length > 0;
-
-  const handleSubmit = () => {
-    setTouched(true);
-    if (canSubmit) onSubmit(form);
-  };
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [onClose]);
-
+  const options = usePartyOptions(['subcontractor', 'contact', 'user']);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-lg animate-fade-in">
-      <div className="w-full max-w-2xl bg-surface-elevated rounded-xl shadow-xl border border-border animate-card-in mx-4 max-h-[90vh] overflow-y-auto" role="dialog" aria-modal="true" aria-label={t('ncr.new_ncr', { defaultValue: 'New NCR' })}>
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border-light">
-          <div>
-            <h2 className="text-lg font-semibold text-content-primary">
-              {t('ncr.new_ncr', { defaultValue: 'New NCR' })}
-            </h2>
-            {projectName && (
-              <p className="text-xs text-content-tertiary mt-0.5">
-                {t('common.creating_in_project', {
-                  defaultValue: 'In {{project}}',
-                  project: projectName,
-                })}
-              </p>
-            )}
-          </div>
-          <button
-            onClick={onClose}
-            aria-label={t('common.close', { defaultValue: 'Close' })}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-content-tertiary hover:bg-surface-secondary hover:text-content-primary transition-colors"
-          >
-            <X size={18} />
-          </button>
-        </div>
-
-        {/* Form */}
-        <div className="px-6 py-4 space-y-5">
-          {/* ── NCR Type ── */}
-          <div>
-            <label className="block text-sm font-medium text-content-primary mb-2">
-              {t('ncr.field_type', { defaultValue: 'Non-Conformance Type' })}
-            </label>
-            <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
-              {NCR_TYPES.map((nt) => {
-                const cfg = NCR_TYPE_CARD_CONFIG[nt];
-                const TypeIcon = cfg.icon;
-                const selected = form.ncr_type === nt;
-                return (
-                  <button
-                    key={nt}
-                    type="button"
-                    onClick={() => set('ncr_type', nt)}
-                    className={clsx(
-                      'flex flex-col items-center gap-1.5 rounded-lg border-2 px-2 py-2.5 text-center transition-all',
-                      selected
-                        ? cfg.color + ' ring-2 ring-oe-blue/30'
-                        : 'border-border bg-surface-primary text-content-tertiary hover:border-border-light hover:bg-surface-secondary',
-                    )}
-                  >
-                    <TypeIcon size={18} />
-                    <span className="text-2xs font-medium leading-tight">
-                      {t(`ncr.type_${nt}`, {
-                        defaultValue: nt.charAt(0).toUpperCase() + nt.slice(1),
-                      })}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* ── Severity ── */}
-          <div>
-            <label className="block text-sm font-medium text-content-primary mb-2">
-              {t('ncr.field_severity', { defaultValue: 'Severity' })}
-            </label>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {NCR_SEVERITIES.map((sev) => {
-                const cfg = SEVERITY_CARD_CONFIG[sev];
-                const SevIcon = cfg.icon;
-                const selected = form.severity === sev;
-                return (
-                  <button
-                    key={sev}
-                    type="button"
-                    onClick={() => set('severity', sev)}
-                    className={clsx(
-                      'flex items-center gap-2 rounded-lg border-2 px-3 py-2.5 transition-all text-left',
-                      selected
-                        ? cfg.color + ' ring-2 ' + cfg.ringColor
-                        : 'border-border bg-surface-primary text-content-tertiary hover:border-border-light hover:bg-surface-secondary',
-                    )}
-                  >
-                    <SevIcon size={16} className="shrink-0" />
-                    <span className="text-xs font-semibold">
-                      {t(`ncr.severity_${sev}`, {
-                        defaultValue: NCR_SEVERITY_LABELS[sev] ?? sev.charAt(0).toUpperCase() + sev.slice(1),
-                      })}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* ── Details Section ── */}
-          <div className="flex items-center gap-2 pt-2 pb-1">
-            <AlertOctagon size={14} className="text-content-tertiary" />
-            <span className="text-xs font-semibold uppercase tracking-wider text-content-tertiary">
-              {t('ncr.section_details', { defaultValue: 'NCR Details' })}
-            </span>
-            <div className="flex-1 h-px bg-border-light" />
-          </div>
-
-          {/* Title */}
-          <div>
-            <label htmlFor="ncr-title" className="block text-sm font-medium text-content-primary mb-1.5">
-              {t('ncr.field_title', { defaultValue: 'Title' })}{' '}
-              <span className="text-semantic-error">*</span>
-            </label>
-            <input
-              id="ncr-title"
-              value={form.title}
-              onChange={(e) => {
-                set('title', e.target.value);
-                setTouched(true);
-              }}
-              placeholder={t('ncr.title_placeholder', {
-                defaultValue: 'e.g. Concrete strength below specification at Column C3',
-              })}
-              className={clsx(
-                inputCls,
-                titleError &&
-                  'border-semantic-error focus:ring-red-300 focus:border-semantic-error',
-              )}
-              autoFocus
-            />
-            {titleError && (
-              <p className="mt-1 text-xs text-semantic-error">
-                {t('ncr.title_required', { defaultValue: 'Title is required' })}
-              </p>
-            )}
-          </div>
-
-          {/* Description */}
-          <div>
-            <label htmlFor="ncr-description" className="block text-sm font-medium text-content-primary mb-1.5">
-              {t('ncr.field_description', { defaultValue: 'Description' })}{' '}
-              <span className="text-semantic-error">*</span>
-            </label>
-            <textarea
-              id="ncr-description"
-              value={form.description}
-              onChange={(e) => {
-                set('description', e.target.value);
-                setTouched(true);
-              }}
-              rows={5}
-              className={clsx(
-                textareaCls,
-                descError &&
-                  'border-semantic-error focus:ring-red-300 focus:border-semantic-error',
-              )}
-              placeholder={t('ncr.description_placeholder', {
-                defaultValue: 'Describe the non-conformance in detail: what was observed, where, and what specification was not met...',
-              })}
-            />
-            {descError && (
-              <p className="mt-1 text-xs text-semantic-error">
-                {t('ncr.description_required', { defaultValue: 'Description is required' })}
-              </p>
-            )}
-          </div>
-
-          {/* ── Location Section ── */}
-          <div className="flex items-center gap-2 pt-2 pb-1">
-            <MapPin size={14} className="text-content-tertiary" />
-            <span className="text-xs font-semibold uppercase tracking-wider text-content-tertiary">
-              {t('ncr.section_location', { defaultValue: 'Location' })}
-            </span>
-            <div className="flex-1 h-px bg-border-light" />
-          </div>
-
-          <div>
-            <label htmlFor="ncr-location" className="block text-sm font-medium text-content-primary mb-1.5">
-              {t('ncr.field_location', { defaultValue: 'Location' })}
-            </label>
-            <input
-              id="ncr-location"
-              value={form.location}
-              onChange={(e) => set('location', e.target.value)}
-              className={inputCls}
-              placeholder={t('ncr.location_placeholder', {
-                defaultValue: 'e.g. Building A, Level 2, Zone C',
-              })}
-            />
-          </div>
-
-          {/* Root Cause */}
-          <div>
-            <label htmlFor="ncr-root-cause" className="block text-sm font-medium text-content-primary mb-1.5">
-              {t('ncr.field_root_cause', { defaultValue: 'Root Cause (if known)' })}
-            </label>
-            <textarea
-              id="ncr-root-cause"
-              value={form.root_cause}
-              onChange={(e) => set('root_cause', e.target.value)}
-              rows={3}
-              className={textareaCls}
-              placeholder={t('ncr.root_cause_placeholder', {
-                defaultValue: 'Preliminary analysis of why the non-conformance occurred...',
-              })}
-            />
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-border-light">
-          <Button variant="ghost" onClick={onClose} disabled={isPending}>
-            {t('common.cancel', { defaultValue: 'Cancel' })}
-          </Button>
-          <Button variant="primary" onClick={handleSubmit} disabled={isPending || !canSubmit}>
-            {isPending ? (
-              <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent mr-2 shrink-0" />
-            ) : (
-              <Plus size={16} className="mr-1.5 shrink-0" />
-            )}
-            <span>{t('ncr.create_ncr', { defaultValue: 'Create NCR' })}</span>
-          </Button>
-        </div>
-      </div>
+    <div>
+      <label
+        htmlFor="ncr-edit-responsible"
+        className="block text-xs font-medium text-content-tertiary mb-1 uppercase tracking-wide"
+      >
+        {t('ncr.field_responsible_party', { defaultValue: 'Responsible party' })}
+      </label>
+      <PartyPicker
+        id="ncr-edit-responsible"
+        value={value}
+        onChange={onChange}
+        options={options}
+        invalid={value.name.trim().length === 0}
+        placeholder={t('ncr.responsible_party_placeholder', {
+          defaultValue: 'Subcontractor, contact or team member - or type a name',
+        })}
+      />
     </div>
   );
 }
@@ -475,6 +185,7 @@ const NCRRow = React.memo(function NCRRow({
   const [flash, setFlash] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<UpdateNCRPayload>({});
+  const [party, setParty] = useState<PartyValue>(EMPTY_PARTY);
 
   // Terminal NCRs are read-only; only draft/in-flight ones can be edited or
   // moved. Mirrors the backend guard (update_ncr rejects closed/void).
@@ -491,13 +202,33 @@ const NCRRow = React.memo(function NCRRow({
       preventive_action: ncr.preventive_action ?? '',
       cost_impact: ncr.cost_impact != null ? String(ncr.cost_impact) : '',
     });
+    setParty({
+      id: ncr.responsible_party_id ?? '',
+      name: ncr.responsible_party_name ?? '',
+      kind: ncr.responsible_party_kind ?? 'text',
+    });
     setEditing(true);
   }, [ncr]);
 
   const saveEdit = useCallback(() => {
-    onUpdate(ncr.id, draft);
+    // The party goes only when it changed: the server refuses to clear it, and
+    // resending an unchanged one would be noise in the audit trail.
+    const partyChanged =
+      party.name.trim().length > 0 &&
+      (party.name.trim() !== (ncr.responsible_party_name ?? '') || party.id !== (ncr.responsible_party_id ?? ''));
+    onUpdate(
+      ncr.id,
+      partyChanged
+        ? {
+            ...draft,
+            responsible_party_id: party.id || null,
+            responsible_party_name: party.name.trim(),
+            responsible_party_kind: party.id ? party.kind : 'text',
+          }
+        : draft,
+    );
     setEditing(false);
-  }, [draft, ncr.id, onUpdate]);
+  }, [draft, party, ncr, onUpdate]);
 
   useEffect(() => {
     if (!highlight) return;
@@ -708,6 +439,16 @@ const NCRRow = React.memo(function NCRRow({
 
           {/* Location + Dates */}
           <div className="flex items-center gap-4 text-xs text-content-tertiary flex-wrap">
+            {ncr.responsible_party_name ? (
+              <span>
+                {t('ncr.label_responsible_party', { defaultValue: 'Responsible' })}:{' '}
+                <span className="text-content-secondary font-medium">{ncr.responsible_party_name}</span>
+              </span>
+            ) : (
+              <span className="text-amber-600 dark:text-amber-400">
+                {t('ncr.no_responsible_party', { defaultValue: 'No responsible party yet' })}
+              </span>
+            )}
             {ncr.location && (
               <span>
                 {t('ncr.label_location', { defaultValue: 'Location' })}: {ncr.location}
@@ -775,6 +516,7 @@ const NCRRow = React.memo(function NCRRow({
               className="rounded-lg border border-border-light bg-surface-primary p-3 space-y-3"
               onClick={(e) => e.stopPropagation()}
             >
+              <ResponsiblePartyField value={party} onChange={setParty} />
               <div>
                 <label className="block text-xs font-medium text-content-tertiary mb-1 uppercase tracking-wide">
                   {t('ncr.label_severity', { defaultValue: 'Severity' })}
@@ -860,7 +602,7 @@ const NCRRow = React.memo(function NCRRow({
                 />
               </div>
               <div className="flex items-center gap-2">
-                <Button variant="primary" size="sm" onClick={saveEdit} disabled={busy}>
+                <Button variant="primary" size="sm" onClick={saveEdit} disabled={busy || (party.name.trim().length === 0 && !!ncr.responsible_party_name)}>
                   <Save size={14} className="mr-1.5" />
                   {t('ncr.save_details', { defaultValue: 'Save changes' })}
                 </Button>
@@ -1230,7 +972,9 @@ export function NCRPage() {
   // Stats
   const stats = useMemo(() => {
     const total = ncrs.length;
-    const open = ncrs.filter((n) => n.status === 'identified').length;
+    // Open means not finished: every status short of closed or void. A
+    // report under review or awaiting verification is still open.
+    const open = ncrs.filter((n) => n.status !== 'closed' && n.status !== 'void').length;
     const underReview = ncrs.filter((n) => n.status === 'under_review').length;
     const closed = ncrs.filter((n) => n.status === 'closed').length;
     return { total, open, underReview, closed };
@@ -1338,15 +1082,7 @@ export function NCRPage() {
         addToast({ type: 'error', title: t('common.error', { defaultValue: 'Error' }), message: t('common.select_project_first', { defaultValue: 'Please select a project first' }) });
         return;
       }
-      createMut.mutate({
-        project_id: projectId,
-        title: formData.title,
-        ncr_type: formData.ncr_type,
-        severity: formData.severity,
-        description: formData.description,
-        location_description: formData.location || undefined,
-        root_cause: formData.root_cause || undefined,
-      });
+      createMut.mutate({ project_id: projectId, ...ncrFormPayload(formData) });
     },
     [createMut, projectId, addToast, t],
   );

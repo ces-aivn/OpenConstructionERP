@@ -269,7 +269,46 @@ class PunchListService:
         Returns:
             ``{raw value: display name}`` for the ids that resolved.
         """
-        return await resolve_party_names(self.session, values)
+        wanted = [v for v in values if v]
+        names = await resolve_party_names(self.session, wanted)
+        # A snag can be handed to a subcontractor from the subcontractor
+        # register, which the shared resolver does not read. Ask it only about
+        # the ids contacts and users could not name, and fail soft when the
+        # module is not installed.
+        leftover: dict[str, uuid.UUID] = {}
+        for value in wanted:
+            if value in names:
+                continue
+            try:
+                leftover[value] = uuid.UUID(str(value).strip())
+            except ValueError:
+                continue
+        if leftover:
+            names.update(await self._subcontractor_names(leftover))
+        return names
+
+    async def _subcontractor_names(self, wanted: dict[str, uuid.UUID]) -> dict[str, str]:
+        """Names of the subcontractors among ``wanted``, keyed by the raw value."""
+        try:
+            from sqlalchemy import select  # noqa: PLC0415
+
+            from app.modules.subcontractors.models import Subcontractor  # noqa: PLC0415
+
+            # Inside a savepoint, so a failed read cannot abort the caller's
+            # transaction (the shared resolver reads contacts the same way).
+            async with self.session.begin_nested():
+                rows = (
+                    await self.session.execute(
+                        select(Subcontractor.id, Subcontractor.trade_name, Subcontractor.legal_name).where(
+                            Subcontractor.id.in_(list(wanted.values()))
+                        )
+                    )
+                ).all()
+        except Exception:  # noqa: BLE001 - optional module, names stay unresolved
+            logger.debug("Subcontractors unavailable, assignee ids stay unresolved", exc_info=True)
+            return {}
+        by_id = {str(row[0]): (row[1] or row[2] or "").strip() for row in rows}
+        return {raw: by_id[str(uid)] for raw, uid in wanted.items() if by_id.get(str(uid))}
 
     # ── Read ──────────────────────────────────────────────────────────────
 
@@ -483,15 +522,25 @@ class PunchListService:
             if refusal == "same_user":
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Verification must be done by a different user than the resolver",
+                    detail={
+                        "code": "punch_verify_same_user",
+                        "message": "Verification must be done by a different user than the resolver",
+                        "field": "status",
+                        "params": {},
+                    },
                 )
             if refusal == "resolve_first":
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        "Mark the item resolved first: verification is done by a different user "
-                        "than the one who resolved it"
-                    ),
+                    detail={
+                        "code": "punch_verify_resolve_first",
+                        "message": (
+                            "Mark the item resolved first: verification is done by a different user "
+                            "than the one who resolved it"
+                        ),
+                        "field": "status",
+                        "params": {},
+                    },
                 )
             update_fields["verified_at"] = now
             update_fields["verified_by"] = user_id

@@ -6,6 +6,7 @@ Endpoints:
     GET    /                         - List inspections for a project
     POST   /                         - Create inspection
     GET    /export                   - Export inspections as Excel
+    GET    /checklist-templates/     - Checklist templates for an inspection type
     GET    /{inspection_id}          - Get single inspection
     PATCH  /{inspection_id}          - Update inspection
     DELETE /{inspection_id}          - Delete inspection
@@ -20,27 +21,58 @@ from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.i18n import get_locale
 from app.core.party_names import resolve_party_names
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
+from app.modules.inspections.checklist_templates import template_payload, templates_for
 from app.modules.inspections.schemas import (
+    ChecklistItemResult,
+    ChecklistTemplateResponse,
     InspectionCreate,
     InspectionListResponse,
     InspectionResponse,
     InspectionUpdate,
 )
-from app.modules.inspections.service import InspectionService
+from app.modules.inspections.service import InspectionService, item_failed
 
 router = APIRouter(tags=["inspections"])
 logger = logging.getLogger(__name__)
 
 
 class CompleteInspectionRequest(BaseModel):
-    """Request body for completing an inspection."""
+    """Request body for completing an inspection.
+
+    ``item_results`` carries the verdict on each checklist item. Any failed
+    item makes the overall result ``fail`` (see ``complete_inspection``).
+    """
 
     result: str = Field(default="pass", pattern=r"^(pass|fail|partial)$")
+    item_results: list[ChecklistItemResult] = Field(default_factory=list, max_length=500)
+
+
+class CreateNCRFromInspectionRequest(BaseModel):
+    """What the person raising an NCR from an inspection confirmed in the form.
+
+    The form is prefilled from the inspection on the client, in the reader's
+    language; the server keeps its own English draft only for fields left out.
+    A responsible party is required: an NCR nobody is answerable for is the
+    silent one-click record this endpoint used to create.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str | None = Field(default=None, max_length=500)
+    description: str | None = Field(default=None, max_length=10000)
+    ncr_type: str | None = Field(default=None, pattern=r"^(material|workmanship|design|documentation|safety)$")
+    severity: str | None = Field(default=None, pattern=r"^(critical|major|minor|observation)$")
+    location_description: str | None = Field(default=None, max_length=500)
+    root_cause: str | None = Field(default=None, max_length=5000)
+    responsible_party_id: str | None = Field(default=None, max_length=36)
+    responsible_party_name: str | None = Field(default=None, max_length=255)
+    responsible_party_kind: str | None = Field(default=None, pattern=r"^(subcontractor|contact|user|text)$")
 
 
 def _get_service(session: SessionDep) -> InspectionService:
@@ -72,10 +104,10 @@ def _to_response(item: object, names: dict[str, str] | None = None) -> Inspectio
         location=item.location,  # type: ignore[attr-defined]
         wbs_id=item.wbs_id,  # type: ignore[attr-defined]
         inspector_id=inspector_id,
-        # Absent rather than empty when nothing resolved, so the client keeps
-        # its own fallback to the stored value - which on a hand-typed row is
-        # already the name.
-        inspector_name=(names or {}).get(inspector_id or ""),
+        # The referenced party's current name first, then the name stored with
+        # the inspection; absent only when neither exists, so the client keeps
+        # its own fallback to the stored value.
+        inspector_name=(names or {}).get(inspector_id or "") or getattr(item, "inspector_name", None),
         inspection_date=item.inspection_date,  # type: ignore[attr-defined]
         status=item.status,  # type: ignore[attr-defined]
         result=item.result,  # type: ignore[attr-defined]
@@ -214,13 +246,15 @@ async def export_inspections(
 
         checklist = item.checklist_data or []
         passed = sum(1 for ci in checklist if isinstance(ci, dict) and _is_passed(ci))
-        failed = len(checklist) - passed
+        # Counted, not inferred: an item marked n/a or not yet assessed is
+        # neither a pass nor a failure.
+        failed = sum(1 for ci in checklist if isinstance(ci, dict) and item_failed(ci))
         rows.append(
             [
                 item.inspection_number,
                 item.title,
                 item.inspection_type,
-                inspector_names.get(_insp, _insp),
+                inspector_names.get(_insp) or getattr(item, "inspector_name", None) or _insp,
                 item.inspection_date or "",
                 item.location or "",
                 item.status,
@@ -238,6 +272,24 @@ async def export_inspections(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="inspections.xlsx"'},
     )
+
+
+@router.get("/checklist-templates/", response_model=list[ChecklistTemplateResponse])
+async def list_checklist_templates(
+    _user_id: CurrentUserId,
+    inspection_type: str | None = Query(default=None, max_length=50),
+    _perm: None = Depends(RequirePermission("inspections.read")),
+) -> list[ChecklistTemplateResponse]:
+    """The checklist templates offered for an inspection type, its default first.
+
+    Worded in the request's language (``Accept-Language``). With no type, or
+    "general", every template is listed and none is the default.
+    """
+    locale = get_locale()
+    return [
+        ChecklistTemplateResponse.model_validate(template_payload(tpl, locale, inspection_type))
+        for tpl in templates_for(inspection_type)
+    ]
 
 
 @router.get("/{inspection_id}", response_model=InspectionResponse)
@@ -309,26 +361,19 @@ async def create_defect_from_inspection(
 
         raise HTTPException(
             status_code=400,
-            detail="Only failed or partial inspections can create defects.",
+            detail={
+                "code": "inspection_defect_needs_failed_result",
+                "message": "Only failed or partial inspections can create defects.",
+                "params": {},
+            },
         )
-
-    # Accept both ``passed`` (legacy) and ``response`` (schema) fields
-    # when deciding which checklist items failed. ``response`` of
-    # no/fail/false/0/failed counts as a failure.
-    def _is_failed(ci: dict) -> bool:
-        if "passed" in ci:
-            return ci.get("passed") is False
-        resp = str(ci.get("response", "")).strip().lower()
-        if not resp:
-            return False
-        return resp in {"no", "fail", "false", "0", "failed"}
 
     # Build description from failed checklist items
     checklist = inspection.checklist_data or []
     failed_items = [
         ci.get("question", ci.get("description", "Unknown item"))
         for ci in checklist
-        if isinstance(ci, dict) and _is_failed(ci)
+        if isinstance(ci, dict) and item_failed(ci)
     ]
     description_parts = [
         f"Defect from inspection {inspection.inspection_number}: {inspection.title}",
@@ -399,31 +444,41 @@ async def create_ncr_from_inspection(
     inspection_id: uuid.UUID,
     user_id: CurrentUserId,
     session: SessionDep,
+    body: CreateNCRFromInspectionRequest | None = None,
     _perm: None = Depends(RequirePermission("inspections.update")),
     service: InspectionService = Depends(_get_service),
 ) -> dict:
-    """Pre-fill a Non-Conformance Report from a failed inspection.
+    """Raise a Non-Conformance Report from a failed inspection.
 
     Punchlist (``create-defect``) covers minor defects; NCR is the
     formal channel for non-conformances that need root-cause analysis,
     corrective + preventive action, and engineer signoff. ``critical``
-    failed checklist items lift severity from ``major`` to ``critical``.
+    failed checklist items lift the suggested severity from ``major`` to
+    ``critical``.
+
+    The client opens the NCR form prefilled from the inspection and sends what
+    the user confirmed in ``body``; fields left out fall back to the server's
+    draft. A responsible party is required.
 
     Idempotent: an NCR linked to this inspection (``linked_inspection_id``)
     is returned as-is rather than duplicated. Re-firing on a re-failed
     re-inspection therefore needs the prior NCR closed first.
     """
+    from fastapi import HTTPException
+
     inspection = await service.get_inspection(inspection_id)
     # Cross-tenant guard - must precede any business-logic branch that
     # could mutate (or leak) the inspection's parent project.
     await verify_project_access(inspection.project_id, str(user_id), session)
 
     if inspection.result not in ("fail", "partial"):
-        from fastapi import HTTPException
-
         raise HTTPException(
             status_code=400,
-            detail="Only failed or partial inspections can create an NCR.",
+            detail={
+                "code": "inspection_ncr_needs_failed_result",
+                "message": "Only failed or partial inspections can create an NCR.",
+                "params": {},
+            },
         )
 
     # Idempotency check: existing NCR linked to this inspection?
@@ -431,7 +486,7 @@ async def create_ncr_from_inspection(
 
     from app.modules.ncr.models import NCR
     from app.modules.ncr.schemas import NCRCreate
-    from app.modules.ncr.service import NCRService
+    from app.modules.ncr.service import NCRService, require_responsible_party
 
     existing = (
         (await session.execute(select(NCR).where(NCR.linked_inspection_id == str(inspection_id)))).scalars().first()
@@ -445,19 +500,10 @@ async def create_ncr_from_inspection(
             "created": False,
         }
 
-    # Accept both conventions: ChecklistEntry schema uses ``response``
-    # (yes/no/pass/fail/...) but some clients embed a legacy ``passed``
-    # boolean. Treat absent / yes / pass / true as passed.
-    def _is_failed(ci: dict) -> bool:
-        if "passed" in ci:
-            return ci.get("passed") is False
-        resp = str(ci.get("response", "")).strip().lower()
-        if not resp:
-            return False
-        return resp in {"no", "fail", "false", "0", "failed"}
+    confirmed = body or CreateNCRFromInspectionRequest()
 
     checklist = inspection.checklist_data or []
-    failed_items = [ci for ci in checklist if isinstance(ci, dict) and _is_failed(ci)]
+    failed_items = [ci for ci in checklist if isinstance(ci, dict) and item_failed(ci)]
     has_critical_failure = any(bool(ci.get("critical")) for ci in failed_items)
 
     description_parts = [
@@ -482,20 +528,28 @@ async def create_ncr_from_inspection(
     itype = (inspection.inspection_type or "").lower()
     if itype in ("design", "documentation", "safety", "material"):
         ncr_type = itype
-    elif itype in ("structural", "electrical", "plumbing", "fire_safety", "general", "quality"):
-        ncr_type = "workmanship"
 
     severity = "critical" if has_critical_failure or inspection.result == "fail" else "major"
 
+    party_id, party_name, party_kind = require_responsible_party(
+        confirmed.responsible_party_id,
+        confirmed.responsible_party_name,
+        confirmed.responsible_party_kind,
+    )
+
     payload = NCRCreate(
         project_id=inspection.project_id,
-        title=f"NCR from inspection {inspection.inspection_number}: {inspection.title}"[:500],
-        description=description[:10000],
-        ncr_type=ncr_type,
-        severity=severity,
-        location_description=inspection.location,
+        title=(confirmed.title or f"NCR from inspection {inspection.inspection_number}: {inspection.title}")[:500],
+        description=(confirmed.description or description)[:10000],
+        ncr_type=confirmed.ncr_type or ncr_type,
+        severity=confirmed.severity or severity,
+        location_description=confirmed.location_description or inspection.location,
+        root_cause=confirmed.root_cause,
         linked_inspection_id=str(inspection_id),
         status="identified",
+        responsible_party_id=party_id,
+        responsible_party_name=party_name,
+        responsible_party_kind=party_kind,
         metadata={
             "source": "inspection",
             "inspection_id": str(inspection_id),
@@ -513,14 +567,14 @@ async def create_ncr_from_inspection(
         "Created NCR %s from inspection %s (severity=%s)",
         ncr.ncr_number,
         inspection_id,
-        severity,
+        payload.severity,
     )
     return {
         "ncr_id": str(ncr.id),
         "ncr_number": ncr.ncr_number,
         "inspection_id": str(inspection_id),
-        "severity": severity,
-        "ncr_type": ncr_type,
+        "severity": payload.severity,
+        "ncr_type": payload.ncr_type,
         "created": True,
     }
 
@@ -547,5 +601,9 @@ async def complete_inspection(
     await verify_project_access(existing.project_id, str(user_id), session)
 
     result = body.result if body else "pass"
-    inspection = await service.complete_inspection(inspection_id, result=result)
+    inspection = await service.complete_inspection(
+        inspection_id,
+        result=result,
+        item_results=body.item_results if body else None,
+    )
     return (await _to_response_many(session, [inspection]))[0]

@@ -125,6 +125,8 @@ async def _make_submittal(
             title="Shop drawing — rebar",
             submittal_type="shop_drawing",
             status="draft",
+            reviewer_id=str(user_id),
+            date_required="2999-12-31",
         ),
         user_id=str(user_id),
     )

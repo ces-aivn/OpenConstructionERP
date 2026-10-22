@@ -74,6 +74,41 @@ _MAX_LABOUR_COUNT = 10_000
 _MAX_EQUIPMENT_COUNT = 5_000
 
 
+# The metric weather snapshot the diary form writes, with the plausible range
+# of each reading. The PDF export and the insights panel read these keys; a
+# reading outside its range is a unit or typing mistake (°F typed as °C, inches
+# typed as mm) and is refused rather than printed on a signed record.
+_WEATHER_SUMMARY_RANGES: dict[str, tuple[float, float]] = {
+    "temp_c": (-60.0, 60.0),
+    "temperature_c": (-60.0, 60.0),
+    "precipitation_mm": (0.0, 1000.0),
+    "precip_mm": (0.0, 1000.0),
+    "wind_kmh": (0.0, 400.0),
+    "wind_speed_kmh": (0.0, 400.0),
+    "humidity_pct": (0.0, 100.0),
+}
+_WEATHER_CONDITION_MAX_LEN = 80
+
+
+def _validate_weather_summary(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Check the readings a weather snapshot carries; other keys pass through."""
+    if value is None:
+        return None
+    for key, (low, high) in _WEATHER_SUMMARY_RANGES.items():
+        reading = value.get(key)
+        if reading is None:
+            continue
+        if isinstance(reading, bool) or not isinstance(reading, (int, float, Decimal)):
+            raise ValueError(f"weather_summary.{key} must be a number")
+        if not (low <= float(reading) <= high):
+            raise ValueError(f"weather_summary.{key} must be between {low:g} and {high:g}")
+    for key in ("conditions", "condition"):
+        cond = value.get(key)
+        if cond is not None and (not isinstance(cond, str) or len(cond) > _WEATHER_CONDITION_MAX_LEN):
+            raise ValueError(f"weather_summary.{key} must be text of at most {_WEATHER_CONDITION_MAX_LEN} characters")
+    return value
+
+
 # ── DailyDiary ───────────────────────────────────────────────────────────
 
 
@@ -91,6 +126,11 @@ class DailyDiaryCreate(BaseModel):
     notes: str | None = Field(default=None, max_length=20000)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("weather_summary")
+    @classmethod
+    def _check_weather(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _validate_weather_summary(value)
+
 
 class DailyDiaryUpdate(BaseModel):
     """Partial update for a daily diary."""
@@ -107,6 +147,11 @@ class DailyDiaryUpdate(BaseModel):
     )
     notes: str | None = Field(default=None, max_length=20000)
     metadata: dict[str, Any] | None = None
+
+    @field_validator("weather_summary")
+    @classmethod
+    def _check_weather(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _validate_weather_summary(value)
 
 
 class DailyDiaryResponse(BaseModel):

@@ -82,6 +82,29 @@ const SAFETY_SEVERITY_LABELS: Record<string, string> = {
   minor: 'Minor', moderate: 'Moderate', major: 'Major', severe: 'Severe', critical: 'Critical'
 };
 
+/** The incident severities the server accepts, least to most severe. */
+const INCIDENT_SEVERITIES = ['minor', 'moderate', 'major', 'severe', 'critical'] as const;
+
+// English fallbacks for the computed `safety.treatment_*` keys, used in the
+// register's Treatment column, which used to print the raw token.
+const SAFETY_TREATMENT_LABELS: Record<string, string> = {
+  first_aid: 'First Aid',
+  medical: 'Medical',
+  lost_time: 'Lost time (LTI)',
+  hospital: 'Hospital',
+  fatality: 'Fatality',
+};
+
+/** Treatments after which the injured person can lose working days. */
+const TREATMENTS_WITH_DAYS_LOST = new Set(['medical', 'lost_time', 'hospital']);
+
+/**
+ * Statuses in which an incident is still open, mirroring the server's
+ * `OPEN_INCIDENT_STATUSES`. Only used when the stats response predates the
+ * `open_incidents` field.
+ */
+const OPEN_INCIDENT_STATUSES = ['reported', 'investigating', 'corrective_action'] as const;
+
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -264,7 +287,9 @@ function getTreatmentOptions(t: (key: string, opts?: Record<string, unknown>) =>
     { value: '', label: t('safety.treatment_none', { defaultValue: 'None' }) },
     { value: 'first_aid', label: t('safety.treatment_first_aid', { defaultValue: 'First Aid' }) },
     { value: 'medical', label: t('safety.treatment_medical', { defaultValue: 'Medical' }) },
+    { value: 'lost_time', label: t('safety.treatment_lost_time', { defaultValue: 'Lost time (LTI)' }) },
     { value: 'hospital', label: t('safety.treatment_hospital', { defaultValue: 'Hospital' }) },
+    { value: 'fatality', label: t('safety.treatment_fatality', { defaultValue: 'Fatality' }) },
   ] as const;
 }
 
@@ -372,6 +397,8 @@ async function downloadExcelExport(url: string, fallbackFilename: string): Promi
 
 interface SafetyStats {
   total_incidents: number;
+  /** Incidents in an open status, counted by the server. */
+  open_incidents?: number;
   incidents_by_status?: Record<string, number>;
   days_without_incident?: number | null;
   days_without_incident_status?: 'none' | 'ok' | 'unconfirmed' | string;
@@ -436,9 +463,11 @@ function QualityDashboardSummary({
     enabled: !!projectId,
   });
 
+  // The server counts open incidents by its own rule; the status sum is only
+  // the fallback for an older server, and it now includes corrective_action.
   const openIncidents = safetyStats
-    ? (safetyStats.incidents_by_status?.['reported'] ?? 0) +
-      (safetyStats.incidents_by_status?.['investigating'] ?? 0)
+    ? (safetyStats.open_incidents ??
+      OPEN_INCIDENT_STATUSES.reduce((n, st) => n + (safetyStats.incidents_by_status?.[st] ?? 0), 0))
     : 0;
 
   // A safety widget must never silently show a reassuring "0": flag a failed
@@ -984,10 +1013,13 @@ function IncidentsTab({
     incident_date: new Date().toISOString().slice(0, 10),
     incident_type: 'near_miss' as string,
     description: '',
-    severity: 'minor' as string,
+    // No default: the reporter must say how severe the incident was, so a
+    // crane collapse can never be filed as "minor" because nobody chose.
+    severity: '' as string,
     treatment_type: '' as string,
     location: '',
     days_lost: 0,
+    osha_recordable: false,
   });
   const [incidentErrors, setIncidentErrors] = useState<Record<string, string>>({});
   const incidentDateRef = useRef<HTMLInputElement>(null);
@@ -999,12 +1031,16 @@ function IncidentsTab({
     }
   }, [showCreate]);
 
-  const canSubmitIncident = !!incidentForm.incident_date && incidentForm.description.trim().length > 0;
+  const canSubmitIncident =
+    !!incidentForm.incident_date && incidentForm.description.trim().length > 0 && !!incidentForm.severity;
 
   const validateIncident = (): boolean => {
     const e: Record<string, string> = {};
     if (!incidentForm.incident_date) e.incident_date = t('validation.required', { defaultValue: 'This field is required' });
     if (!incidentForm.description.trim()) e.description = t('validation.required', { defaultValue: 'This field is required' });
+    if (!incidentForm.severity) {
+      e.severity = t('safety.severity_required', { defaultValue: 'Choose how severe the incident was' });
+    }
     setIncidentErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -1029,19 +1065,26 @@ function IncidentsTab({
         severity: data.severity,
         treatment_type: data.treatment_type || undefined,
         location: data.location || undefined,
-        days_lost: data.days_lost || 0,
+        days_lost: TREATMENTS_WITH_DAYS_LOST.has(data.treatment_type) ? data.days_lost || 0 : 0,
+        // Unticked leaves the decision to the server, which marks medical
+        // treatment, lost time, hospitalisation and fatality as recordable.
+        osha_recordable: data.osha_recordable ? true : undefined,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['safety-incidents', projectId] });
+      // The dashboard tiles ("Open incidents", days without incident) read the
+      // stats endpoint, which a new incident changes too.
+      queryClient.invalidateQueries({ queryKey: ['safety-stats', projectId] });
       setShowCreate(false);
       setIncidentForm({
         incident_date: new Date().toISOString().slice(0, 10),
         incident_type: 'near_miss',
         description: '',
-        severity: 'minor',
+        severity: '',
         treatment_type: '',
         location: '',
         days_lost: 0,
+        osha_recordable: false,
       });
       addToast({ type: 'success', title: t('safety.incident_created', { defaultValue: 'Incident reported successfully' }) });
     },
@@ -1263,7 +1306,11 @@ function IncidentsTab({
                   </Badge>
                 </td>
                 <td className="px-4 py-3 text-content-secondary text-xs">
-                  {inc.treatment || '\u2014'}
+                  {inc.treatment
+                    ? t(`safety.treatment_${inc.treatment}`, {
+                        defaultValue: SAFETY_TREATMENT_LABELS[inc.treatment] ?? inc.treatment,
+                      })
+                    : '\u2014'}
                 </td>
                 <td className="px-4 py-3 text-center tabular-nums">
                   {inc.days_lost > 0 ? (
@@ -1495,12 +1542,45 @@ function IncidentsTab({
               <div className="flex-1 h-px bg-border-light" />
             </div>
 
+            {/* Severity - required, chosen by the reporter */}
+            <div>
+              <label className="block text-sm font-medium text-content-primary mb-2">
+                {t('safety.severity', { defaultValue: 'Severity' })} <span className="text-semantic-error">*</span>
+              </label>
+              <div className="grid grid-cols-5 gap-2" role="radiogroup" aria-label={t('safety.severity', { defaultValue: 'Severity' })}>
+                {INCIDENT_SEVERITIES.map((sev) => {
+                  const selected = incidentForm.severity === sev;
+                  return (
+                    <button
+                      key={sev}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => {
+                        setIncidentForm((f) => ({ ...f, severity: sev }));
+                        if (incidentErrors.severity) setIncidentErrors((prev) => { const next = { ...prev }; delete next.severity; return next; });
+                      }}
+                      className={clsx(
+                        'rounded-lg border-2 px-2 py-2 text-xs font-semibold transition-all text-center',
+                        selected
+                          ? 'border-oe-blue bg-oe-blue/10 text-oe-blue ring-2 ring-oe-blue/30'
+                          : 'border-border bg-surface-primary text-content-tertiary hover:border-border-light hover:bg-surface-secondary',
+                      )}
+                    >
+                      {t(`safety.severity_${sev}`, { defaultValue: SAFETY_SEVERITY_LABELS[sev] ?? sev })}
+                    </button>
+                  );
+                })}
+              </div>
+              {incidentErrors.severity && <p className="mt-1 text-xs text-semantic-error">{incidentErrors.severity}</p>}
+            </div>
+
             {/* Treatment Type - Visual Toggle */}
             <div>
               <label className="block text-sm font-medium text-content-primary mb-2">
                 {t('safety.treatment', { defaultValue: 'Treatment Type' })}
               </label>
-              <div className="grid grid-cols-4 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 {getTreatmentOptions(t).map((opt) => {
                   const selected = incidentForm.treatment_type === opt.value;
                   return (
@@ -1511,7 +1591,7 @@ function IncidentsTab({
                       className={clsx(
                         'flex items-center justify-center gap-1.5 rounded-lg border-2 px-3 py-2.5 transition-all text-center',
                         selected
-                          ? opt.value === 'hospital'
+                          ? opt.value === 'hospital' || opt.value === 'fatality' || opt.value === 'lost_time'
                             ? 'text-red-600 bg-red-50 border-red-200 ring-2 ring-red-300 dark:text-red-400 dark:bg-red-950/30 dark:border-red-800'
                             : opt.value === 'medical'
                               ? 'text-orange-600 bg-orange-50 border-orange-200 ring-2 ring-orange-300 dark:text-orange-400 dark:bg-orange-950/30 dark:border-orange-800'
@@ -1530,8 +1610,27 @@ function IncidentsTab({
               </div>
             </div>
 
-            {/* Days Lost - only show if treatment is Medical or Hospital */}
-            {(incidentForm.treatment_type === 'medical' || incidentForm.treatment_type === 'hospital') && (
+            {/* OSHA 300 recordable - optional override of the server's rule */}
+            <label className="flex items-start gap-2 text-sm text-content-secondary">
+              <input
+                type="checkbox"
+                checked={incidentForm.osha_recordable}
+                onChange={(e) => setIncidentForm((f) => ({ ...f, osha_recordable: e.target.checked }))}
+                className="mt-0.5 h-4 w-4 rounded border-border text-oe-blue focus:ring-oe-blue/30"
+              />
+              <span>
+                {t('safety.osha_recordable', { defaultValue: 'OSHA recordable incident' })}
+                <span className="block text-xs text-content-quaternary">
+                  {t('safety.osha_recordable_hint', {
+                    defaultValue:
+                      'Medical treatment, lost time, hospitalisation and fatality are marked recordable automatically.',
+                  })}
+                </span>
+              </span>
+            </label>
+
+            {/* Days Lost - only for treatments after which working days can be lost */}
+            {TREATMENTS_WITH_DAYS_LOST.has(incidentForm.treatment_type) && (
               <div className="animate-fade-in">
                 <label htmlFor="incident-days-lost" className="block text-sm font-medium text-content-primary mb-1.5">
                   {t('safety.days_lost', { defaultValue: 'Days Lost' })}

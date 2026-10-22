@@ -151,6 +151,7 @@ async def test_submit_draft_moves_to_submitted_and_sets_revision() -> None:
             submittal_type="test_report",
             current_revision=1,
             reviewer_id="reviewer-1",
+            date_required="2999-01-31",
         )
     )
     # Force draft status (default)
@@ -172,6 +173,7 @@ async def test_submit_from_revise_and_resubmit_increments_revision() -> None:
             title="Mock Up",
             submittal_type="mock_up",
             reviewer_id="rev-1",
+            date_required="2999-01-31",
         )
     )
     submittal.status = "revise_and_resubmit"

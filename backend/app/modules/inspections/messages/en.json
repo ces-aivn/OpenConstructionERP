@@ -1,0 +1,73 @@
+{
+  "inspections": {
+    "checklist_tpl": {
+      "concrete_pour": {
+        "name": "Concrete pour",
+        "formwork_dimensions": "Formwork position, dimensions and levels match the drawings",
+        "formwork_tight": "Formwork tight, braced and cleaned; release agent applied",
+        "rebar_accepted": "Reinforcement inspected and accepted before the pour",
+        "cover_spacers": "Cover spacers in place for the specified concrete cover",
+        "embedded_items": "Embedded items, sleeves and conduits fixed in position",
+        "mix_ticket": "Delivery tickets match the specified mix (strength class, slump, maximum aggregate size)",
+        "slump_test": "Slump test on site within tolerance",
+        "test_samples": "Test cylinders or cubes taken and labelled",
+        "placing_compaction": "Concrete placed and vibrated without segregation or cold joints",
+        "curing": "Curing started right after finishing"
+      },
+      "rebar": {
+        "name": "Reinforcement",
+        "bar_size_spacing": "Bar sizes, number and spacing match the shop drawings",
+        "mill_certificates": "Mill certificates for the delivered steel are on file",
+        "laps_anchorage": "Lap lengths, anchorages and hooks as specified",
+        "cover": "Cover to reinforcement as specified (spacers and chairs)",
+        "ties_secure": "Bars tied and fixed so they cannot move during the pour",
+        "bars_clean": "Bars free of loose rust, oil, mud and release agent",
+        "starter_bars": "Starter bars and dowels for the next lift in position"
+      },
+      "structural_steel": {
+        "name": "Structural steel",
+        "member_sizes": "Member sizes and grades match the drawings and mill certificates",
+        "bolts_tightened": "High-strength bolts installed and tightened by the specified method",
+        "welds_visual": "Welds visually inspected: size and length correct, no cracks or undercut",
+        "welds_ndt": "Non-destructive testing of complete-penetration welds done and accepted",
+        "plumb_alignment": "Columns plumb and members aligned within tolerance",
+        "coating": "Primer and fire protection coating applied to the specified thickness"
+      },
+      "mep_rough_in": {
+        "name": "MEP rough-in",
+        "routing_coordinated": "Routing matches the coordinated MEP drawings; clearances kept",
+        "supports_hangers": "Supports and hangers at the specified spacing",
+        "penetrations_sealed": "Penetrations through walls and slabs sleeved and sealed, fire-stopped where rated",
+        "pressure_test": "Pipework pressure test held for the specified time without loss",
+        "insulation_resistance": "Cable insulation resistance and continuity tested",
+        "labelling": "Equipment, valves and circuits labelled",
+        "access_kept": "Access kept to valves, dampers and junction boxes"
+      },
+      "waterproofing": {
+        "name": "Waterproofing",
+        "substrate_ready": "Substrate clean, dry, sound and primed",
+        "membrane_laps": "Membrane laps, upstands and terminations as specified",
+        "details_sealed": "Drains, penetrations and corners detailed and sealed",
+        "flood_test": "Flood test held for 24 to 48 hours without leaks",
+        "protection_layer": "Protection layer placed before backfill or screed"
+      },
+      "fire_stopping": {
+        "name": "Fire stopping",
+        "system_listed": "Fire-stopping system is a tested system for this penetration and rating",
+        "annular_gap": "Annular gap and sealant depth as the system requires",
+        "penetration_labels": "Each penetration labelled with its system and installer",
+        "fire_doors": "Fire doors close and latch; seals and closers fitted",
+        "detection_alarm": "Detectors and alarm devices installed and tested"
+      },
+      "finishes": {
+        "name": "Finishes",
+        "surfaces_flat": "Walls and ceilings flat and plumb within tolerance, no visible defects",
+        "paint_uniform": "Paint even in colour and sheen; no runs, patches or stains",
+        "tiles_sound": "Tiles level with even joints; no hollow tiles on a tap test",
+        "doors_windows": "Doors and windows open, close and lock properly",
+        "sealants": "Sealant around wet areas and frames continuous",
+        "area_clean": "Area cleaned and protective films removed"
+      }
+    }
+  }
+}

@@ -25,6 +25,7 @@ from app.modules.safety.safety_indicators import (
     compute_safety_indicators,
 )
 from app.modules.safety.schemas import (
+    OPEN_INCIDENT_STATUSES,
     IncidentCreate,
     IncidentUpdate,
     LaggingIndicatorsResponse,
@@ -43,7 +44,12 @@ logger = logging.getLogger(__name__)
 
 # Recordable treatment heuristic, shared by the stats and trend paths so the
 # TRIR numerator is computed identically everywhere.
-_RECORDABLE_TREATMENTS = frozenset({"medical", "hospital", "fatality"})
+_RECORDABLE_TREATMENTS = frozenset({"medical", "lost_time", "hospital", "fatality"})
+
+# Incident types whose severity may be left out by the reporter. A near miss
+# harmed nobody and damaged nothing, so recording it as minor is a fair
+# default; every other type needs the reporter to say how bad it was.
+_SEVERITY_DEFAULTABLE_TYPES = frozenset({"near_miss"})
 
 
 def _incident_man_hours(inc: object) -> float:
@@ -179,7 +185,7 @@ def _incident_to_input(inc: object) -> IncidentInput:
     )
     return IncidentInput(
         recordable=_is_recordable(inc),
-        lost_time=bool(days_lost and days_lost > 0),
+        lost_time=bool(days_lost and days_lost > 0) or getattr(inc, "treatment_type", None) == "lost_time",
         days_lost=days_lost,
         man_hours=_incident_man_hours_decimal(inc),
         incident_type=getattr(inc, "incident_type", "") or "",
@@ -247,6 +253,24 @@ class SafetyService:
     ) -> SafetyIncident:
         """Create a new safety incident."""
         corrective_actions = [entry.model_dump() for entry in data.corrective_actions]
+        severity = data.severity
+        if severity is None:
+            if data.incident_type not in _SEVERITY_DEFAULTABLE_TYPES:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail={
+                        "code": "safety_incident_severity_required",
+                        "message": "Choose how severe the incident was.",
+                        "field": "severity",
+                        "params": {"incident_type": data.incident_type},
+                    },
+                )
+            severity = "minor"
+        osha_recordable = (
+            data.osha_recordable
+            if data.osha_recordable is not None
+            else data.treatment_type in _RECORDABLE_TREATMENTS
+        )
 
         incident = SafetyIncident(
             project_id=data.project_id,
@@ -256,11 +280,12 @@ class SafetyService:
             incident_date=canonicalize_incident_date(data.incident_date),
             location=data.location,
             incident_type=data.incident_type,
-            severity=data.severity,
+            severity=severity,
             description=data.description,
             injured_person_details=data.injured_person_details,
             treatment_type=data.treatment_type,
             days_lost=data.days_lost,
+            osha_recordable=osha_recordable,
             root_cause=data.root_cause,
             corrective_actions=corrective_actions,
             reported_to_regulator=data.reported_to_regulator,
@@ -302,7 +327,7 @@ class SafetyService:
                     body_key="notifications.safety.incident_created_body",
                     body_context={
                         "incident_number": incident_number,
-                        "severity": data.severity,
+                        "severity": severity,
                         "description": (data.description or "")[:200],
                     },
                     action_url=f"/projects/{data.project_id}/safety?incident={incident.id}",
@@ -360,6 +385,11 @@ class SafetyService:
         incident = await self.get_incident(incident_id)
 
         fields: dict[str, Any] = data.model_dump(exclude_unset=True)
+        # Severity and the OSHA flag are NOT NULL columns: an explicit null in
+        # a PATCH means "leave it", never a constraint violation.
+        for not_null in ("severity", "osha_recordable"):
+            if not_null in fields and fields[not_null] is None:
+                fields.pop(not_null)
         # Merge a partial metadata patch into the existing column instead of
         # replacing it wholesale - a PATCH touching one key must not wipe the
         # rest. The man-hours denominator for the LTIFR/TRIR safety rates lives
@@ -598,6 +628,7 @@ class SafetyService:
         total_hours_worked = 0.0
         incidents_by_type: dict[str, int] = defaultdict(int)
         incidents_by_status: dict[str, int] = defaultdict(int)
+        open_incidents = 0
         open_corrective_actions = 0
         # Compare incidents by *parsed* date, not by raw string max: a
         # malformed string like "9999-99-99" must never win the comparison
@@ -609,6 +640,8 @@ class SafetyService:
             total_days_lost += inc.days_lost or 0
             incidents_by_type[inc.incident_type] += 1
             incidents_by_status[inc.status] += 1
+            if inc.status in OPEN_INCIDENT_STATUSES:
+                open_incidents += 1
 
             # OSHA 300 recordability: the first-class ``osha_recordable``
             # flag is the documented gate. Fall back to the treatment-type
@@ -617,7 +650,7 @@ class SafetyService:
             # the KPI matches the OSHA log the schema is built for.
             if _is_recordable(inc):
                 recordable_incidents += 1
-            if inc.days_lost and inc.days_lost > 0:
+            if (inc.days_lost and inc.days_lost > 0) or inc.treatment_type == "lost_time":
                 lost_time_incidents += 1
 
             # Accumulate exposure hours for the frequency-rate denominator.
@@ -698,6 +731,7 @@ class SafetyService:
             days_without_incident_status=days_without_incident_status,
             unparseable_incident_dates=unparseable_incident_dates,
             total_days_lost=total_days_lost,
+            open_incidents=open_incidents,
             recordable_incidents=recordable_incidents,
             ltifr=ltifr,
             trir=trir,

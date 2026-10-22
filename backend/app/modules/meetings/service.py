@@ -7,6 +7,7 @@ Stateless service layer. Handles:
 - Auto-generated meeting numbers (MTG-001, MTG-002, ...)
 - Status transitions (draft -> scheduled -> in_progress -> completed)
 - Action item -> Task creation on meeting completion
+- Tracked action register rows -> linked Task, kept in step on every save
 """
 
 import base64
@@ -41,6 +42,23 @@ from app.modules.meetings.schemas import (
 
 logger = logging.getLogger(__name__)
 _logger_audit = logging.getLogger(__name__ + ".audit")
+
+#: Where a tracked action's status lands on its task. The task board has no
+#: "cancelled", so a cancelled action closes its task as completed and says why.
+_ACTION_TO_TASK_STATUS: dict[str, str] = {
+    "open": "open",
+    "in_progress": "in_progress",
+    "done": "completed",
+    "cancelled": "completed",
+}
+
+
+def _user_uuid(value: object) -> uuid.UUID | None:
+    """The owner as a user id when it is one; a typed name is not."""
+    try:
+        return uuid.UUID(str(value)) if value else None
+    except (ValueError, TypeError):
+        return None
 
 
 async def _safe_audit(
@@ -913,6 +931,7 @@ class MeetingService:
             "status": row.status,
             "closed_in_meeting_id": (str(row.closed_in_meeting_id) if row.closed_in_meeting_id else None),
             "closed_at": row.closed_at.isoformat() if row.closed_at else None,
+            "task_id": (row.metadata_ or {}).get("task_id") if isinstance(row.metadata_, dict) else None,
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
@@ -1019,6 +1038,7 @@ class MeetingService:
         )
         self.session.add(row)
         await self.session.flush()
+        await self._sync_action_task(row, meeting=meeting, user_id=user_id)
         await self.session.refresh(row)
         logger.info("Action item added to meeting %s (status=%s)", meeting.id, row.status)
         return await self.serialize_single_action(row, reference_date=reference_date)
@@ -1065,12 +1085,100 @@ class MeetingService:
             row.closed_in_meeting_id = None
 
         await self.session.flush()
+        await self._sync_action_task(row)
         await self.session.refresh(row)
         logger.info("Action item %s updated (status=%s)", row.id, row.status)
         return await self.serialize_single_action(row, reference_date=reference_date)
 
+    async def _sync_action_task(
+        self,
+        row: MeetingActionItem,
+        *,
+        meeting: Meeting | None = None,
+        user_id: str | None = None,
+    ) -> None:
+        """Create or update the Task that carries a tracked action on the task board.
+
+        An action recorded in a meeting is work somebody owes, and the task
+        board is where people look for what they owe. The link is kept both
+        ways: the action's ``metadata.task_id`` names its task, and the task's
+        ``meeting_id`` and ``metadata.meeting_action_id`` name the meeting and
+        the action. Saving an action again updates the same task, so editing
+        never produces a second one. A task deleted from the board is created
+        again on the next save of its action.
+        """
+        from app.modules.tasks.models import Task
+
+        meta = dict(row.metadata_ or {})
+        task: Task | None = None
+        raw_task_id = meta.get("task_id")
+        if raw_task_id:
+            try:
+                task = await self.session.get(Task, uuid.UUID(str(raw_task_id)))
+            except (ValueError, TypeError):
+                task = None
+        if meeting is None:
+            meeting = await self.session.get(Meeting, row.origin_meeting_id)
+        meeting_number = meeting.meeting_number if meeting is not None else ""
+        status_value = _ACTION_TO_TASK_STATUS.get(logic.normalize_action_status(row.status), "open")
+        task_meta_extra = {
+            "source": "meeting_action_item",
+            "source_id": str(row.origin_meeting_id),
+            "meeting_action_id": str(row.id),
+            "meeting_number": meeting_number,
+        }
+        if row.owner_name:
+            task_meta_extra["assignee_name"] = row.owner_name
+        title = (row.description or "").strip()[:500] or "Action item from meeting"
+
+        if task is None:
+            task = Task(
+                project_id=row.project_id,
+                task_type="task",
+                title=title,
+                description=(
+                    f"From meeting {meeting_number}: {meeting.title}" if meeting is not None else None
+                ),
+                responsible_id=_user_uuid(row.owner_id),
+                due_date=row.due_date,
+                meeting_id=str(row.origin_meeting_id),
+                status=status_value,
+                priority="normal",
+                is_private=False,
+                created_by=user_id or row.created_by,
+                metadata_=task_meta_extra,
+            )
+            self.session.add(task)
+            await self.session.flush()
+            meta["task_id"] = str(task.id)
+            row.metadata_ = meta
+            await self.session.flush()
+            return
+
+        task.title = title
+        task.responsible_id = _user_uuid(row.owner_id)
+        task.due_date = row.due_date
+        task.status = status_value
+        task.meeting_id = str(row.origin_meeting_id)
+        task.metadata_ = merge_metadata(task.metadata_, task_meta_extra)
+        await self.session.flush()
+
     async def delete_action(self, row: MeetingActionItem) -> None:
-        """Delete a tracked action item."""
+        """Delete a tracked action item, and the task that only carried it.
+
+        The task goes with the action when it still points back at it; a task
+        somebody has re-linked elsewhere is left alone.
+        """
+        from app.modules.tasks.models import Task
+
+        raw_task_id = (row.metadata_ or {}).get("task_id") if isinstance(row.metadata_, dict) else None
+        if raw_task_id:
+            try:
+                task = await self.session.get(Task, uuid.UUID(str(raw_task_id)))
+            except (ValueError, TypeError):
+                task = None
+            if task is not None and (task.metadata_ or {}).get("meeting_action_id") == str(row.id):
+                await self.session.delete(task)
         await self.session.delete(row)
         await self.session.flush()
         logger.info("Action item %s deleted", row.id)

@@ -21,6 +21,26 @@ class ChecklistEntry(BaseModel):
     critical: bool = False
 
 
+ITEM_VERDICTS: tuple[str, ...] = ("pass", "fail", "na")
+
+# Responses that count as a failed checklist item, whichever response type the
+# item uses. Shared by the result rule, the punch/NCR bridges and the export.
+FAILED_RESPONSES: frozenset[str] = frozenset({"no", "fail", "false", "0", "failed"})
+
+
+class ChecklistItemResult(BaseModel):
+    """The verdict on one checklist item, recorded with the inspection result.
+
+    The item is addressed by its ``id`` when it has one, else by its position
+    in the checklist.
+    """
+
+    id: str | None = Field(default=None, max_length=64)
+    index: int | None = Field(default=None, ge=0)
+    result: str = Field(..., pattern=r"^(pass|fail|na)$")
+    notes: str | None = Field(default=None, max_length=2000)
+
+
 class InspectionCreate(BaseModel):
     """Create a new quality inspection."""
 
@@ -31,14 +51,18 @@ class InspectionCreate(BaseModel):
         ...,
         pattern=(
             r"^(concrete_pour|waterproofing|mep|fire_stopping|handover|general"
-            r"|structural|electrical|plumbing|fire_safety|concrete)$"
+            r"|structural|electrical|plumbing|fire_safety|concrete|finishes)$"
         ),
     )
     title: str = Field(..., min_length=1, max_length=500)
     description: str | None = Field(default=None, max_length=5000)
     location: str | None = Field(default=None, max_length=500)
     wbs_id: str | None = Field(default=None, max_length=36)
-    inspector_id: str | None = Field(default=None, max_length=36)
+    # A user or contact id. A typed name sent here by an older client is moved
+    # to ``inspector_name`` by the service instead of being refused, so the
+    # length limit is the name's, not the id's.
+    inspector_id: str | None = Field(default=None, max_length=255)
+    inspector_name: str | None = Field(default=None, max_length=255)
     inspection_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     status: str = Field(
         default="scheduled",
@@ -46,6 +70,10 @@ class InspectionCreate(BaseModel):
     )
     result: str | None = Field(default=None, pattern=r"^(pass|fail|partial)$")
     checklist_data: list[ChecklistEntry] = Field(default_factory=list)
+    # A checklist template code (``checklist_templates.TEMPLATES``). With no
+    # checklist sent, the inspection starts with the template's items in the
+    # request's language; either way the code is recorded in the metadata.
+    checklist_template: str | None = Field(default=None, max_length=64)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -58,14 +86,18 @@ class InspectionUpdate(BaseModel):
         default=None,
         pattern=(
             r"^(concrete_pour|waterproofing|mep|fire_stopping|handover|general"
-            r"|structural|electrical|plumbing|fire_safety|concrete)$"
+            r"|structural|electrical|plumbing|fire_safety|concrete|finishes)$"
         ),
     )
     title: str | None = Field(default=None, min_length=1, max_length=500)
     description: str | None = Field(default=None, max_length=5000)
     location: str | None = Field(default=None, max_length=500)
     wbs_id: str | None = Field(default=None, max_length=36)
-    inspector_id: str | None = Field(default=None, max_length=36)
+    # A user or contact id. A typed name sent here by an older client is moved
+    # to ``inspector_name`` by the service instead of being refused, so the
+    # length limit is the name's, not the id's.
+    inspector_id: str | None = Field(default=None, max_length=255)
+    inspector_name: str | None = Field(default=None, max_length=255)
     inspection_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     status: str | None = Field(
         default=None,
@@ -90,11 +122,10 @@ class InspectionResponse(BaseModel):
     location: str | None = None
     wbs_id: str | None = None
     inspector_id: str | None = None
-    # Who the inspector is, in words. ``inspector_id`` holds a contact id on
-    # seeded rows, a user id when a picker wrote it and a typed name otherwise,
-    # so the id alone cannot be shown to anybody - a register that printed it
-    # raw put a bare UUID in the inspector column. Absent when the id resolves
-    # to nothing, which tells the client to fall back to the stored value.
+    # Who the inspector is, in words: the referenced user or contact's current
+    # name when the id resolves, else the name stored with the inspection. A
+    # bare id is never the answer - a register that printed it raw put a UUID
+    # in the inspector column. Absent only when there is nothing to show.
     inspector_name: str | None = None
     inspection_date: str | None = None
     status: str = "scheduled"
@@ -118,3 +149,25 @@ class InspectionListResponse(BaseModel):
     total: int = 0
     offset: int = 0
     limit: int = 50
+
+
+class ChecklistTemplateItemResponse(BaseModel):
+    """One item of a checklist template, worded in the request's language."""
+
+    key: str
+    # The message key the text is read from, so a client can word it itself.
+    text_key: str
+    text: str
+    critical: bool = False
+
+
+class ChecklistTemplateResponse(BaseModel):
+    """A checklist template as offered for an inspection type."""
+
+    code: str
+    name_key: str
+    name: str
+    inspection_types: list[str] = Field(default_factory=list)
+    # True for the template loaded when the requested type is picked.
+    is_default: bool = False
+    items: list[ChecklistTemplateItemResponse] = Field(default_factory=list)

@@ -9,8 +9,8 @@ wrapper the seven submission-gate rules use in ``app.core.validation.rules``.
 They are registered into the same ``submittal`` set, from this module's
 startup hook, so one call to the engine reports both groups.
 
-Messages are in :mod:`app.modules.submittals.messages` (English and Turkish;
-any other language reads the English).
+Messages are in :mod:`app.modules.submittals.messages` (English, Turkish and
+Vietnamese; any other language reads the English).
 """
 
 from __future__ import annotations
@@ -42,11 +42,47 @@ def _locale(context: ValidationContext) -> str:
     return str(meta.get("locale") or "en")
 
 
+#: Status and outcome words for Vietnamese findings. The printed register's
+#: catalogue carries English and Turkish only, and a Vietnamese sentence with
+#: an English status word in the middle is the half-translated message these
+#: findings exist to avoid.
+_VI_STATUS_WORDS: dict[str, str] = {
+    "draft": "Nháp",
+    "submitted": "Đã trình",
+    "under_review": "Đang xem xét",
+    "approved": "Đã phê duyệt",
+    "approved_as_noted": "Phê duyệt có ghi chú",
+    "revise_and_resubmit": "Sửa và trình lại",
+    "rejected": "Từ chối",
+    "closed": "Đã đóng",
+}
+
+
 def _status_word(code: str, locale: str) -> str:
     """A status or outcome code as the word the register prints for it."""
+    if str(locale or "").lower().startswith("vi") and code in _VI_STATUS_WORDS:
+        return _VI_STATUS_WORDS[code]
     from app.modules.submittals.pdf_translations import CATALOGUE
 
     return CATALOGUE.label("status", code, locale)
+
+
+#: Message parameters that hold an ISO date.
+_DATE_PARAMS = frozenset({"on_site", "submitted", "needed_by"})
+
+
+def _date_word(value: str, locale: str) -> str:
+    """An ISO date as the reader writes dates: day first in Vietnamese.
+
+    Other languages keep the ISO form the messages have always carried.
+    """
+    if not str(locale or "").lower().startswith("vi"):
+        return value
+    parts = str(value)[:10].split("-")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        return value
+    year, month, day = parts
+    return f"{day}/{month}/{year}"
 
 
 class _RegisterRule(ValidationRule):
@@ -63,9 +99,15 @@ class _RegisterRule(ValidationRule):
         return f"{self.rule_id}.{suffix}"
 
     def _params(self, params: dict[str, str], locale: str) -> dict[str, Any]:
-        return {
-            name: _status_word(value, locale) if name in self.status_params else value for name, value in params.items()
-        }
+        out: dict[str, Any] = {}
+        for name, value in params.items():
+            if name in self.status_params:
+                out[name] = _status_word(value, locale)
+            elif name in _DATE_PARAMS:
+                out[name] = _date_word(value, locale)
+            else:
+                out[name] = value
+        return out
 
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _locale(context)

@@ -22,11 +22,23 @@ import type { PunchItem } from '../punchlist/api';
 import type { NCR } from '../ncr/api';
 import type { ClashIssue } from '../clash/api';
 import type { NeighbourIssue } from '../site-logistics/api';
+import type { RFI } from '../rfi/api';
+import { isRfiOverdue } from '../rfi/rfiStatusRules';
 
 /* --- Public types --------------------------------------------------------- */
 
-/** The issue-owning modules the hub unions. */
-export type IssueSource = 'markup' | 'punch' | 'ncr' | 'bcf' | 'clash' | 'neighbour';
+/**
+ * The issue-owning modules the hub unions.
+ *
+ * `validation` is not a module of its own: it is an NCR the platform raised
+ * automatically from a BOQ validation run (`metadata.source === 'validation'`).
+ * Such a record is a data/documentation finding, not a quality
+ * non-conformance on site, so the hub files it under its own source instead
+ * of counting it among the NCRs. `rfi` carries only RFIs that are open and
+ * past their response date: an answered or not-yet-due question is not an
+ * issue, an overdue one blocks work.
+ */
+export type IssueSource = 'markup' | 'punch' | 'ncr' | 'validation' | 'rfi' | 'bcf' | 'clash' | 'neighbour';
 
 /** Every source status collapses into one of these four lifecycle buckets. */
 export type IssueStatusBucket = 'open' | 'in_progress' | 'resolved' | 'closed';
@@ -44,6 +56,12 @@ export interface UnifiedIssue {
   source: IssueSource;
   /** Best-effort human title. Never empty (falls back to a derived label). */
   title: string;
+  /**
+   * When the title is derived here rather than written by a person, the i18n
+   * key (and its params) the page renders instead of the English `title`.
+   */
+  titleKey?: string;
+  titleParams?: Record<string, string | number>;
   /** Normalized lifecycle bucket. */
   status: IssueStatusBucket;
   /** The source's own status label, kept for display and tooltips. */
@@ -114,11 +132,22 @@ function todayDayNumber(now: Date): number {
 }
 
 /**
- * True when the issue has a due date strictly before today. A missing or
- * unparseable due date is never overdue (safe default). "Due today" is not
- * overdue. Terminal issues never reach the hub, so no status guard is needed.
+ * The one status rule the hub's list, chips and KPIs share: an issue is still
+ * open work while it is `open` or `in_progress`. A `resolved` item (fixed and
+ * waiting for verification) stays reachable through the status filter but is
+ * neither counted as open nor as overdue.
+ */
+export function isActiveIssue(issue: Pick<UnifiedIssue, 'status'>): boolean {
+  return issue.status === 'open' || issue.status === 'in_progress';
+}
+
+/**
+ * True when an active issue has a due date strictly before today. A missing
+ * or unparseable due date is never overdue (safe default). "Due today" is not
+ * overdue. A resolved or closed issue is never overdue.
  */
 export function isOverdue(issue: UnifiedIssue, now: Date = new Date()): boolean {
+  if (!isActiveIssue(issue)) return false;
   if (!issue.dueDate) return false;
   const due = new Date(issue.dueDate);
   if (Number.isNaN(due.getTime())) return false;
@@ -211,13 +240,13 @@ export function mapMarkup(m: Markup): UnifiedIssue | null {
   // Open/active only. Resolved and archived mark-ups are done.
   if (m.status !== 'active') return null;
   if (!isMarkupIssue(m)) return null;
-  const title =
-    strOrNull(m.label) ?? strOrNull(m.text) ?? `${titleCaseType(m.type)} call-out`;
+  const own = strOrNull(m.label) ?? strOrNull(m.text);
   return {
     id: `markup:${m.id}`,
     rawId: m.id,
     source: 'markup',
-    title,
+    title: own ?? `${titleCaseType(m.type)} call-out`,
+    ...(own ? {} : { titleKey: 'issues.title_markup_callout', titleParams: { type: str(m.type) } }),
     status: 'open',
     rawStatus: m.status,
     priority: 'none',
@@ -236,6 +265,7 @@ export function mapPunch(p: PunchItem): UnifiedIssue | null {
     rawId: p.id,
     source: 'punch',
     title: strOrNull(p.title) ?? 'Punch item',
+    ...(strOrNull(p.title) ? {} : { titleKey: 'issues.title_punch_item' }),
     status: bucket,
     rawStatus: p.status,
     priority: normalizePriority(p.priority),
@@ -252,18 +282,32 @@ export function mapNcr(n: NCR): UnifiedIssue | null {
   const bucket = NCR_BUCKET[n.status];
   if (!bucket) return null;
   const num = typeof n.ncr_number === 'number' && Number.isFinite(n.ncr_number) ? n.ncr_number : 0;
-  const title = strOrNull(n.title) ?? `NCR-${String(num).padStart(3, '0')}`;
-  // NCRs carry no due date and no owner field, so those stay null. Severity
-  // drives priority.
+  const code = `NCR-${String(num).padStart(3, '0')}`;
+  const title = strOrNull(n.title) ?? code;
+  const meta = n.metadata && typeof n.metadata === 'object' ? n.metadata : {};
+  // An NCR the platform raised from a BOQ validation run is a data finding,
+  // filed under its own source with a localized title. The stored title is an
+  // English sentence written by the server ("Validation errors in BOQ (13)").
+  const fromValidation = str(meta.source) === 'validation';
+  const errorCount = Number(meta.error_count);
+  // NCRs carry no due date, so that stays null. The owner is the party named
+  // as responsible for putting it right (a subcontractor, contact or user).
+  // Severity drives priority.
   return {
     id: `ncr:${n.id}`,
     rawId: n.id,
-    source: 'ncr',
+    source: fromValidation ? 'validation' : 'ncr',
     title,
+    ...(fromValidation
+      ? {
+          titleKey: 'issues.title_validation_errors',
+          titleParams: { code, count: Number.isFinite(errorCount) && errorCount > 0 ? errorCount : 0 },
+        }
+      : {}),
     status: bucket,
     rawStatus: n.status,
     priority: NCR_PRIORITY[n.severity] ?? 'medium',
-    assignee: null,
+    assignee: strOrNull(n.responsible_party_name),
     dueDate: null,
     createdAt: strOrNull(n.created_at),
     deepLink: `/ncr?highlight=${encodeURIComponent(n.id)}`,
@@ -278,12 +322,16 @@ export function mapClashIssue(c: ClashIssue): UnifiedIssue | null {
     strOrNull(c.server_assigned_id) ??
     firstTag ??
     `Clash ${str(c.signature_hash).slice(0, 8)}`;
+  const derivedTitle = !strOrNull(c.server_assigned_id) && !firstTag;
   const runId = strOrNull(c.last_seen_run_id);
   return {
     id: `clash:${c.id}`,
     rawId: c.id,
     source: 'clash',
     title,
+    ...(derivedTitle
+      ? { titleKey: 'issues.title_clash', titleParams: { ref: str(c.signature_hash).slice(0, 8) } }
+      : {}),
     status: bucket,
     rawStatus: c.status,
     priority: normalizePriority(c.priority),
@@ -311,6 +359,9 @@ export function mapNeighbourIssue(n: NeighbourIssue): UnifiedIssue | null {
     rawId: n.id,
     source: 'neighbour',
     title: firstLine ?? `Neighbour complaint: ${str(n.kind) || 'other'}`,
+    ...(firstLine
+      ? {}
+      : { titleKey: 'issues.title_neighbour_complaint', titleParams: { kind: str(n.kind) || 'other' } }),
     status: bucket,
     rawStatus: n.state,
     priority: n.overdue ? 'high' : 'medium',
@@ -318,6 +369,36 @@ export function mapNeighbourIssue(n: NeighbourIssue): UnifiedIssue | null {
     dueDate: n.state === 'received' ? strOrNull(n.response_due) : null,
     createdAt: strOrNull(n.created_at) ?? strOrNull(n.reported_on),
     deepLink: `/site-logistics?neighbourIssue=${encodeURIComponent(n.id)}`,
+  };
+}
+
+const RFI_PRIORITY: Record<string, IssuePriority> = {
+  critical: 'critical',
+  high: 'high',
+  normal: 'medium',
+  low: 'low',
+};
+
+/**
+ * An RFI reaches the hub only while it is open and past its response date,
+ * using the same rule as the RFI register's own "Overdue" tile.
+ */
+export function mapRfi(r: RFI, now: Date = new Date()): UnifiedIssue | null {
+  if (!isRfiOverdue(r, now)) return null;
+  const number = strOrNull(r.rfi_number) ?? 'RFI';
+  const subject = strOrNull(r.subject);
+  return {
+    id: `rfi:${r.id}`,
+    rawId: r.id,
+    source: 'rfi',
+    title: subject ? `${number}: ${subject}` : number,
+    status: 'open',
+    rawStatus: r.status,
+    priority: RFI_PRIORITY[str(r.priority)] ?? 'high',
+    assignee: strOrNull(r.assigned_to),
+    dueDate: strOrNull(r.response_due_date),
+    createdAt: strOrNull(r.created_at),
+    deepLink: `/rfi/${encodeURIComponent(r.id)}`,
   };
 }
 
@@ -335,13 +416,13 @@ export function mapBcfTopic(raw: unknown): UnifiedIssue | null {
   const rawStatus = str(t.status ?? t.topic_status ?? t.topicStatus ?? t.TopicStatus);
   const bucket = bcfBucket(rawStatus);
   if (!bucket) return null;
-  const title =
-    strOrNull(t.title ?? t.topic_title ?? t.Title ?? t.name) ?? `Topic ${id.slice(0, 8)}`;
+  const ownTitle = strOrNull(t.title ?? t.topic_title ?? t.Title ?? t.name);
   return {
     id: `bcf:${id}`,
     rawId: id,
     source: 'bcf',
-    title,
+    title: ownTitle ?? `Topic ${id.slice(0, 8)}`,
+    ...(ownTitle ? {} : { titleKey: 'issues.title_bcf_topic', titleParams: { ref: id.slice(0, 8) } }),
     status: bucket,
     rawStatus: rawStatus || 'open',
     priority: normalizePriority(t.priority ?? t.Priority),

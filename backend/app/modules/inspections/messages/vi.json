@@ -1,0 +1,73 @@
+{
+  "inspections": {
+    "checklist_tpl": {
+      "concrete_pour": {
+        "name": "Đổ bê tông",
+        "formwork_dimensions": "Vị trí, kích thước và cao độ cốp pha đúng bản vẽ",
+        "formwork_tight": "Cốp pha kín khít, chống đỡ chắc chắn, đã vệ sinh và quét chất chống dính",
+        "rebar_accepted": "Cốt thép đã được nghiệm thu trước khi đổ bê tông",
+        "cover_spacers": "Con kê đảm bảo chiều dày lớp bê tông bảo vệ theo thiết kế",
+        "embedded_items": "Chi tiết đặt sẵn, ống chờ, ống luồn dây được cố định đúng vị trí",
+        "mix_ticket": "Phiếu giao bê tông đúng cấp phối thiết kế (cấp độ bền, độ sụt, cỡ hạt cốt liệu lớn nhất)",
+        "slump_test": "Thử độ sụt tại hiện trường trong phạm vi cho phép",
+        "test_samples": "Đã lấy và đánh dấu tổ mẫu thử bê tông",
+        "placing_compaction": "Đổ và đầm bê tông không bị phân tầng, không có mạch ngừng lạnh",
+        "curing": "Bảo dưỡng bê tông ngay sau khi hoàn thiện bề mặt"
+      },
+      "rebar": {
+        "name": "Cốt thép",
+        "bar_size_spacing": "Đường kính, số lượng và khoảng cách thanh thép đúng bản vẽ thi công",
+        "mill_certificates": "Có chứng chỉ xuất xưởng của lô thép đã nhập",
+        "laps_anchorage": "Chiều dài nối chồng, neo và móc uốn đúng thiết kế",
+        "cover": "Lớp bê tông bảo vệ cốt thép đúng thiết kế (con kê, chân chống)",
+        "ties_secure": "Cốt thép được buộc, cố định chắc, không xê dịch khi đổ bê tông",
+        "bars_clean": "Cốt thép sạch gỉ bong, dầu mỡ, bùn đất và chất chống dính",
+        "starter_bars": "Thép chờ cho đợt đổ tiếp theo đặt đúng vị trí"
+      },
+      "structural_steel": {
+        "name": "Kết cấu thép",
+        "member_sizes": "Tiết diện và mác thép cấu kiện đúng bản vẽ và chứng chỉ xuất xưởng",
+        "bolts_tightened": "Bu lông cường độ cao lắp đặt và siết đúng phương pháp quy định",
+        "welds_visual": "Đường hàn kiểm tra ngoại quan: đúng kích thước, chiều dài, không nứt, không cháy cạnh",
+        "welds_ndt": "Mối hàn ngấu hoàn toàn đã kiểm tra không phá hủy và đạt yêu cầu",
+        "plumb_alignment": "Cột thẳng đứng, cấu kiện đúng tim trục trong dung sai cho phép",
+        "coating": "Sơn lót và sơn chống cháy đạt chiều dày quy định"
+      },
+      "mep_rough_in": {
+        "name": "Lắp đặt cơ điện (phần ngầm)",
+        "routing_coordinated": "Tuyến lắp đặt đúng bản vẽ phối hợp cơ điện, đảm bảo khoảng cách an toàn",
+        "supports_hangers": "Giá đỡ, ty treo lắp đúng khoảng cách quy định",
+        "penetrations_sealed": "Lỗ xuyên tường, sàn có ống lồng và được bịt kín, chèn chống cháy tại vị trí có yêu cầu",
+        "pressure_test": "Thử áp lực đường ống giữ đủ thời gian quy định, không sụt áp",
+        "insulation_resistance": "Đã đo điện trở cách điện và kiểm tra thông mạch cáp",
+        "labelling": "Thiết bị, van và mạch điện được dán nhãn",
+        "access_kept": "Đảm bảo lối tiếp cận van, van gió và hộp đấu dây"
+      },
+      "waterproofing": {
+        "name": "Chống thấm",
+        "substrate_ready": "Bề mặt nền sạch, khô, chắc đặc và đã quét lớp lót",
+        "membrane_laps": "Mối chồng, phần vén lên và điểm kết thúc của màng đúng quy định",
+        "details_sealed": "Phễu thu, lỗ xuyên và góc cạnh được xử lý chi tiết và bịt kín",
+        "flood_test": "Ngâm nước thử 24 đến 48 giờ không rò rỉ",
+        "protection_layer": "Đã thi công lớp bảo vệ trước khi lấp đất hoặc cán vữa"
+      },
+      "fire_stopping": {
+        "name": "Ngăn cháy lan",
+        "system_listed": "Hệ chèn chống cháy là hệ đã được thử nghiệm cho loại lỗ xuyên và giới hạn chịu lửa này",
+        "annular_gap": "Khe hở và chiều sâu vật liệu chèn đúng yêu cầu của hệ",
+        "penetration_labels": "Mỗi vị trí chèn có nhãn ghi hệ sử dụng và đơn vị thi công",
+        "fire_doors": "Cửa chống cháy tự đóng và chốt được; có gioăng và tay co thủy lực",
+        "detection_alarm": "Đầu báo và thiết bị báo cháy đã lắp đặt và thử hoạt động"
+      },
+      "finishes": {
+        "name": "Hoàn thiện",
+        "surfaces_flat": "Tường, trần phẳng và thẳng đứng trong dung sai, không có khuyết tật nhìn thấy",
+        "paint_uniform": "Sơn đều màu, đều độ bóng; không chảy, không loang, không vết bẩn",
+        "tiles_sound": "Gạch ốp lát phẳng, mạch đều; gõ kiểm tra không bộp",
+        "doors_windows": "Cửa đi, cửa sổ đóng mở và khóa nhẹ nhàng",
+        "sealants": "Keo trám quanh khu vực ẩm ướt và khung cửa liên tục",
+        "area_clean": "Khu vực đã vệ sinh, bóc bỏ lớp màng bảo vệ"
+      }
+    }
+  }
+}

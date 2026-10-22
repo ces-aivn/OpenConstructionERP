@@ -4,10 +4,9 @@
  * The cuts of the submittal register: the type tabs above the table and the
  * filters beside the search box.
  *
- * The tabs are the registers a site keeps by name (shop drawings, material
- * approvals, method statements). They are one register filtered by type, not
- * three pages, which is also how the export route names the document it
- * prints for each.
+ * The tabs are one register filtered by type, one tab per submittal type,
+ * labelled exactly as the type picker labels it. They are not separate pages,
+ * which is also how the export route names the document it prints for each.
  *
  * The lists are the vocabulary route's. The discipline list adds the codes
  * the project itself has filed under, taken from the summary, because the
@@ -24,45 +23,56 @@ import { outcomeLabel } from './registerCells';
 import { NO_FILTERS, disciplineLabel, disciplineMark, hasActiveFilter, type RegisterFilters } from './registerView';
 
 const ALL_TAB = 'all';
-/** The types that have a register of their own name, in the order the tabs show them. */
-const REGISTER_TABS = ['shop_drawing', 'product_data', 'method_statement'] as const;
 
 function countFor(summary: SubmittalRegisterSummary | null, type: string): number | undefined {
   if (!summary) return undefined;
   return summary.by_type.find((row) => row.code === type)?.count ?? 0;
 }
 
+/**
+ * The type codes the register offers, in picker order: the vocabulary route's
+ * list when it has answered, otherwise the module's own list. The tabs, the
+ * type filter and the type picker on the form all read this one list, so a
+ * type can never be pickable in one place and missing (or named differently)
+ * in another.
+ */
+export function registerTypeCodes(vocabulary: SubmittalVocabulary | null): string[] {
+  const served = vocabulary?.types.map((entry) => entry.code) ?? [];
+  return served.length > 0 ? served : [...SUBMITTAL_TYPES];
+}
+
 export function SubmittalTypeTabs({
   filters,
   onFilters,
   summary,
+  vocabulary,
   typeLabel,
 }: {
   filters: RegisterFilters;
   onFilters: (next: RegisterFilters) => void;
   summary: SubmittalRegisterSummary | null;
-  /** The label of a type the tabs have no name of their own for. */
+  vocabulary: SubmittalVocabulary | null;
+  /** The label of a type, the same one the type picker and the filter print. */
   typeLabel: (type: string) => string;
 }) {
   const { t } = useTranslation();
 
   const tabs = useMemo<TabBarTab[]>(() => {
-    const named: Record<(typeof REGISTER_TABS)[number], string> = {
-      shop_drawing: t('submittals.tab_shop_drawings', { defaultValue: 'Shop drawings' }),
-      product_data: t('submittals.tab_materials', { defaultValue: 'Material approvals' }),
-      method_statement: t('submittals.tab_method_statements', { defaultValue: 'Method statements' }),
-    };
     const out: TabBarTab[] = [
       { id: ALL_TAB, label: t('submittals.tab_all', { defaultValue: 'All' }), badge: summary?.total },
-      ...REGISTER_TABS.map((type) => ({ id: type, label: named[type], badge: countFor(summary, type) })),
+      ...registerTypeCodes(vocabulary).map((type) => ({
+        id: type,
+        label: typeLabel(type),
+        badge: countFor(summary, type),
+      })),
     ];
-    // A type picked in the filter that has no tab of its own gets one while it
-    // is active, so the strip always shows which register is on screen.
+    // A type outside the vocabulary (imported data) that the filter points at
+    // gets a tab while it is active, so the strip always shows what is on screen.
     if (filters.type && !out.some((tab) => tab.id === filters.type)) {
       out.push({ id: filters.type, label: typeLabel(filters.type), badge: countFor(summary, filters.type) });
     }
     return out;
-  }, [t, summary, filters.type, typeLabel]);
+  }, [t, summary, vocabulary, filters.type, typeLabel]);
 
   return (
     <TabBar
@@ -153,10 +163,7 @@ export function SubmittalRegisterFilters({
 }) {
   const { t } = useTranslation();
 
-  const typeCodes = useMemo<string[]>(() => {
-    const served = vocabulary?.types.map((entry) => entry.code) ?? [];
-    return served.length > 0 ? served : [...SUBMITTAL_TYPES];
-  }, [vocabulary]);
+  const typeCodes = useMemo<string[]>(() => registerTypeCodes(vocabulary), [vocabulary]);
 
   // Offered disciplines first, then whatever else the project files under.
   const disciplineCodes = useMemo<string[]>(() => {

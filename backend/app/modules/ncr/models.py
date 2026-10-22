@@ -66,6 +66,14 @@ class NCR(Base):
     # auto-creation is idempotent on the same clash. Nullable + no
     # server_default: absent means "not clash-sourced".
     clash_result_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # Who has to put the non-conformance right: a subcontractor, a directory
+    # contact or a platform user (``responsible_party_kind``), or just a name
+    # typed by the person raising it (kind ``text``, no id). The name is a
+    # snapshot taken when the party was picked, so the register still reads
+    # correctly after the referenced record is renamed or removed.
+    responsible_party_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    responsible_party_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    responsible_party_kind: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     metadata_: Mapped[dict] = mapped_column(  # type: ignore[assignment]
         "metadata",

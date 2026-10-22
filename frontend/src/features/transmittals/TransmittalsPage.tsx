@@ -99,6 +99,9 @@ const STATUS_LABELS: Record<TransmittalStatus, string> = {
   responded: 'Responded',
 };
 
+/** Purposes whose transmittal must carry a response due date (the server enforces it too). */
+const RESPONSE_DUE_REQUIRED: readonly TransmittalPurpose[] = ['for_approval'];
+
 const PURPOSE_LABELS: Record<TransmittalPurpose, string> = {
   for_approval: 'For Approval',
   for_information: 'For Information',
@@ -225,7 +228,11 @@ function CreateTransmittalModal({
     setForm((prev) => ({ ...prev, [key]: value }));
 
   const subjectError = touched && form.subject.trim().length === 0;
-  const canSubmit = form.subject.trim().length > 0;
+  // A transmittal sent for approval has to say by when; the server refuses it
+  // otherwise (transmittal_response_due_required).
+  const dueRequired = RESPONSE_DUE_REQUIRED.includes(form.purpose);
+  const dueError = touched && dueRequired && !form.response_due;
+  const canSubmit = form.subject.trim().length > 0 && !(dueRequired && !form.response_due);
 
   const handleSubmit = () => {
     setTouched(true);
@@ -316,6 +323,14 @@ function CreateTransmittalModal({
         <WideModalField
           label={t('transmittals.field_response_due', { defaultValue: 'Response Due' })}
           htmlFor="tr-response-due"
+          required={dueRequired}
+          error={
+            dueError
+              ? t('transmittals.response_due_required', {
+                  defaultValue: 'A transmittal sent for approval needs a response due date.',
+                })
+              : undefined
+          }
         >
           <input
             id="tr-response-due"
@@ -498,7 +513,7 @@ const TransmittalRow = React.memo(function TransmittalRow({
       {/* Main row */}
       <div
         className={clsx(
-          'flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-surface-secondary/50 transition-colors',
+          'flex items-center gap-3 px-4 py-3 min-w-[640px] cursor-pointer hover:bg-surface-secondary/50 transition-colors',
           expanded && 'bg-surface-secondary/30',
         )}
         role="button"
@@ -526,19 +541,23 @@ const TransmittalRow = React.memo(function TransmittalRow({
           {transmittal.subject}
         </span>
 
-        {/* Purpose badge */}
-        <Badge variant="neutral" size="sm" className={clsx(purposeCls, 'hidden md:inline-flex')}>
-          {t(`transmittals.purpose_${transmittal.purpose}`, {
-            defaultValue: PURPOSE_LABELS[transmittal.purpose],
-          })}
-        </Badge>
+        {/* Purpose and status badges, each inside a cell as wide as its
+            header so every later column stays under its own heading. */}
+        <span className="w-28 shrink-0 hidden md:block min-w-0">
+          <Badge variant="neutral" size="sm" className={clsx(purposeCls, 'max-w-full truncate')}>
+            {t(`transmittals.purpose_${transmittal.purpose}`, {
+              defaultValue: PURPOSE_LABELS[transmittal.purpose],
+            })}
+          </Badge>
+        </span>
 
-        {/* Status badge */}
-        <Badge variant={statusCfg.variant} size="sm" className={statusCfg.cls}>
-          {t(`transmittals.status_${transmittal.status}`, {
-            defaultValue: STATUS_LABELS[transmittal.status],
-          })}
-        </Badge>
+        <span className="w-24 shrink-0 flex justify-center min-w-0">
+          <Badge variant={statusCfg.variant} size="sm" className={clsx(statusCfg.cls, 'max-w-full truncate')}>
+            {t(`transmittals.status_${transmittal.status}`, {
+              defaultValue: STATUS_LABELS[transmittal.status],
+            })}
+          </Badge>
+        </span>
 
         {/* Issued Date */}
         <span className="text-xs w-20 shrink-0 hidden sm:block">
@@ -570,10 +589,11 @@ const TransmittalRow = React.memo(function TransmittalRow({
           {transmittal.recipients.length}
         </span>
 
-        {/* Locked indicator */}
-        {transmittal.locked && (
-          <Lock size={13} className="text-content-tertiary shrink-0" />
-        )}
+        {/* Locked indicator, in a cell that is always there so the row keeps
+            the header's last column whether or not the record is locked. */}
+        <span className="w-5 shrink-0 flex justify-center">
+          {transmittal.locked && <Lock size={13} className="text-content-tertiary" />}
+        </span>
       </div>
 
       {/* Expanded detail */}
@@ -823,7 +843,8 @@ function EditTransmittalModal({
   const [coverNote, setCoverNote] = useState(transmittal.cover_note ?? '');
   const [responseDue, setResponseDue] = useState(transmittal.response_due ?? '');
 
-  const canSave = subject.trim().length > 0 && !isPending;
+  const dueMissing = RESPONSE_DUE_REQUIRED.includes(purpose) && !responseDue;
+  const canSave = subject.trim().length > 0 && !dueMissing && !isPending;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -910,13 +931,22 @@ function EditTransmittalModal({
             <div>
               <label className="block text-xs font-medium text-content-secondary mb-1">
                 {t('transmittals.field_response_due', { defaultValue: 'Response due' })}
+                {RESPONSE_DUE_REQUIRED.includes(purpose) && <span className="text-semantic-error"> *</span>}
               </label>
               <input
                 type="date"
                 value={responseDue}
                 onChange={(e) => setResponseDue(e.target.value)}
+                data-testid="edit-transmittal-response-due"
                 className="w-full px-3 py-2 text-sm bg-surface-secondary border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-oe-blue"
               />
+              {dueMissing && (
+                <p className="mt-1 text-xs text-semantic-error">
+                  {t('transmittals.response_due_required', {
+                    defaultValue: 'A transmittal sent for approval needs a response due date.',
+                  })}
+                </p>
+              )}
             </div>
 
             <div>
@@ -1643,10 +1673,10 @@ export function TransmittalsPage() {
                 <span className="flex-1">
                   {t('transmittals.col_subject', { defaultValue: 'Subject' })}
                 </span>
-                <span className="w-24 hidden md:block">
+                <span className="w-28 shrink-0 hidden md:block">
                   {t('transmittals.col_purpose', { defaultValue: 'Purpose' })}
                 </span>
-                <span className="w-24 text-center">
+                <span className="w-24 shrink-0 text-center">
                   {t('transmittals.col_status', { defaultValue: 'Status' })}
                 </span>
                 <span className="w-20 hidden sm:block">

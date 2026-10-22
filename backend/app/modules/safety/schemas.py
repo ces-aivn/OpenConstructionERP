@@ -11,6 +11,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 # ── Incident schemas ─────────────────────────────────────────────────────
 
+# How an injured person was treated. ``lost_time`` is a lost-time injury (LTI):
+# the person could not work at least one full shift after the day of the
+# incident. ``fatality`` and ``lost_time`` are both OSHA-recordable outcomes.
+INCIDENT_TREATMENT_PATTERN = r"^(first_aid|medical|lost_time|hospital|fatality)$"
+
+# Statuses in which an incident is still open work. The dashboard's "open
+# incidents" figure and anything else that says "open" read this one tuple.
+OPEN_INCIDENT_STATUSES: tuple[str, ...] = ("reported", "investigating", "corrective_action")
+
 
 class CorrectiveActionEntry(BaseModel):
     """A corrective action within an incident."""
@@ -34,17 +43,21 @@ class IncidentCreate(BaseModel):
         ...,
         pattern=r"^(injury|near_miss|property_damage|environmental|fire)$",
     )
-    severity: str = Field(
-        default="minor",
+    # Chosen by the reporter. Omitting it is accepted only for a near miss
+    # (stored as ``minor``); for any incident that caused harm or damage the
+    # service refuses the request with ``safety_incident_severity_required``
+    # rather than quietly recording a crane collapse as minor.
+    severity: str | None = Field(
+        default=None,
         pattern=r"^(minor|moderate|major|severe|critical)$",
     )
     description: str = Field(..., min_length=1, max_length=10000)
     injured_person_details: dict[str, Any] | None = None
-    treatment_type: str | None = Field(
-        default=None,
-        pattern=r"^(first_aid|medical|hospital|fatality)$",
-    )
+    treatment_type: str | None = Field(default=None, pattern=INCIDENT_TREATMENT_PATTERN)
     days_lost: int = Field(default=0, ge=0)
+    # OSHA 300 recordable. ``None`` derives it from the treatment (medical
+    # treatment, lost time, hospitalisation or fatality are recordable).
+    osha_recordable: bool | None = None
     root_cause: str | None = Field(default=None, max_length=5000)
     corrective_actions: list[CorrectiveActionEntry] = Field(default_factory=list)
     reported_to_regulator: bool = False
@@ -77,11 +90,9 @@ class IncidentUpdate(BaseModel):
     )
     description: str | None = Field(default=None, min_length=1, max_length=10000)
     injured_person_details: dict[str, Any] | None = None
-    treatment_type: str | None = Field(
-        default=None,
-        pattern=r"^(first_aid|medical|hospital|fatality)$",
-    )
+    treatment_type: str | None = Field(default=None, pattern=INCIDENT_TREATMENT_PATTERN)
     days_lost: int | None = Field(default=None, ge=0)
+    osha_recordable: bool | None = None
     root_cause: str | None = Field(default=None, max_length=5000)
     corrective_actions: list[CorrectiveActionEntry] | None = None
     reported_to_regulator: bool | None = None
@@ -247,9 +258,16 @@ class SafetyStatsResponse(BaseModel):
         description="Count of incidents whose stored date could not be parsed",
     )
     total_days_lost: int = 0
+    open_incidents: int = Field(
+        default=0,
+        description="Incidents whose status is reported, investigating or corrective_action",
+    )
     recordable_incidents: int = Field(
         default=0,
-        description="Incidents with treatment_type in (medical, hospital, fatality)",
+        description=(
+            "Incidents flagged OSHA-recordable, or with treatment_type in "
+            "(medical, lost_time, hospital, fatality)"
+        ),
     )
     ltifr: float | None = Field(
         default=None,

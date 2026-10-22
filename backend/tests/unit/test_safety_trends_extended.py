@@ -413,6 +413,7 @@ async def test_create_incident_unaffected() -> None:
         project_id=PROJECT_ID,
         incident_date="2026-04-10",
         incident_type="injury",
+        severity="moderate",
         description="test",
     )
     with patch("app.modules.safety.service.event_bus.publish_detached", new_callable=AsyncMock):

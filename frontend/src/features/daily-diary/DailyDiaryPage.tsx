@@ -128,6 +128,16 @@ import {
 import { PublishRecordModal } from '@/features/record-publishing/PublishRecordModal';
 import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/features/insights';
 import { buildDailyDiaryInsights } from './dailyDiaryInsights';
+import {
+  DIARY_WEATHER_CONDITIONS,
+  DIARY_WEATHER_LABELS,
+  EMPTY_DIARY_WEATHER,
+  diaryWeatherUnits,
+  weatherFormFromSummary,
+  weatherSummaryFromForm,
+  type DiaryWeatherError,
+  type DiaryWeatherForm,
+} from './diaryWeather';
 import { fmtList } from '@/shared/lib/formatters';
 import { matchesSearch } from '@/shared/lib/highlightMatch';
 
@@ -351,9 +361,20 @@ export function DailyDiaryPage() {
   // via useModuleInsights. Declared among the top-level hooks (this component
   // has no early return) so the hook order stays stable.
   const insights = useModuleInsights('daily-diary', { defaultOpen: true });
+  // The charts read the project's whole register, not the calendar month on
+  // screen and not only while the calendar tab is open. They used to read the
+  // month query, so a back-filled diary (15 Jan 2020 seen from October 2026)
+  // never reached them, and creating a diary from the Today tab left the
+  // panel with no data at all. Under the `daily-diary` key prefix, so every
+  // create, edit and sign refreshes it.
+  const insightsDiariesQ = useQuery({
+    queryKey: ['daily-diary', 'insights', projectId],
+    queryFn: () => listDiaries({ project_id: projectId, limit: 500 }),
+    enabled: !!projectId && insights.open,
+  });
   const { datasets: insightDatasets, builtins: insightBuiltins } = useMemo(
-    () => buildDailyDiaryInsights(diariesQ.data?.items ?? [], '', t),
-    [diariesQ.data, t],
+    () => buildDailyDiaryInsights(insightsDiariesQ.data?.items ?? [], '', t),
+    [insightsDiariesQ.data, t],
   );
 
   return (
@@ -1587,6 +1608,97 @@ function TodayTab({
  * signed/archived diaries (409), so this is only surfaced for open/closed
  * records - matching the immutability rule in service.update_diary.
  */
+/**
+ * The day's weather on the diary form: conditions plus temperature,
+ * precipitation and wind in the user's units (stored metric, see
+ * `diaryWeather.ts`).
+ */
+function DiaryWeatherFields({
+  value,
+  onChange,
+  error,
+}: {
+  value: DiaryWeatherForm;
+  onChange: (next: DiaryWeatherForm) => void;
+  error: DiaryWeatherError | null;
+}) {
+  const { t } = useTranslation();
+  const units = diaryWeatherUnits(usePreferencesStore((s) => s.measurementSystem));
+  const set = (patch: Partial<DiaryWeatherForm>) => onChange({ ...value, ...patch });
+  const outOfRange = t('daily_diary.weather_value_out_of_range', {
+    defaultValue: 'Enter a realistic value or leave it empty.',
+  });
+  return (
+    <WideModalSection title={t('daily_diary.weather', { defaultValue: 'Weather' })} columns={2}>
+      <WideModalField label={t('daily_diary.weather_conditions', { defaultValue: 'Conditions' })} span={2}>
+        <select
+          value={value.conditions}
+          onChange={(e) => set({ conditions: e.target.value })}
+          className={inputCls}
+        >
+          <option value="">{t('daily_diary.insights.weather_none', { defaultValue: 'Not recorded' })}</option>
+          {DIARY_WEATHER_CONDITIONS.map((code) => (
+            <option key={code} value={code}>
+              {t(`daily_diary.insights.weather_${code}`, { defaultValue: DIARY_WEATHER_LABELS[code] ?? code })}
+            </option>
+          ))}
+          {/* A stored free-text or uncommon code stays selectable. */}
+          {value.conditions && !(DIARY_WEATHER_CONDITIONS as readonly string[]).includes(value.conditions) && (
+            <option value={value.conditions}>{value.conditions}</option>
+          )}
+        </select>
+      </WideModalField>
+      <WideModalField
+        label={t('daily_diary.weather_temperature', {
+          defaultValue: 'Temperature ({{unit}})',
+          unit: units.temperature,
+        })}
+        error={error === 'temperature' ? outOfRange : undefined}
+      >
+        <input
+          type="number"
+          inputMode="decimal"
+          step="0.1"
+          value={value.temperature}
+          onChange={(e) => set({ temperature: e.target.value })}
+          className={inputCls}
+        />
+      </WideModalField>
+      <WideModalField
+        label={t('daily_diary.weather_precipitation', {
+          defaultValue: 'Precipitation ({{unit}})',
+          unit: units.precipitation,
+        })}
+        error={error === 'precipitation' ? outOfRange : undefined}
+      >
+        <input
+          type="number"
+          inputMode="decimal"
+          min={0}
+          step="0.1"
+          value={value.precipitation}
+          onChange={(e) => set({ precipitation: e.target.value })}
+          className={inputCls}
+        />
+      </WideModalField>
+      <WideModalField
+        label={t('daily_diary.weather_wind', { defaultValue: 'Wind ({{unit}})', unit: units.wind })}
+        error={error === 'wind' ? outOfRange : undefined}
+      >
+        <input
+          type="number"
+          inputMode="decimal"
+          min={0}
+          step="0.1"
+          value={value.wind}
+          onChange={(e) => set({ wind: e.target.value })}
+          className={inputCls}
+        />
+      </WideModalField>
+    </WideModalSection>
+  );
+}
+
 function EditDiaryModal({
   diary,
   onClose,
@@ -1600,15 +1712,29 @@ function EditDiaryModal({
   const [labour, setLabour] = useState(diary.labour_count);
   const [equipment, setEquipment] = useState(diary.equipment_count);
   const [notes, setNotes] = useState(diary.notes ?? '');
+  const measurementSystem = usePreferencesStore((s) => s.measurementSystem);
+  const [weather, setWeather] = useState<DiaryWeatherForm>(() =>
+    weatherFormFromSummary(diary.weather_summary, measurementSystem),
+  );
+  const [weatherError, setWeatherError] = useState<DiaryWeatherError | null>(null);
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
+    // Merged over the stored snapshot, so keys this form does not edit (a
+    // sensor's humidity, say) survive the save.
+    const weatherResult = weatherSummaryFromForm(weather, measurementSystem, diary.weather_summary);
+    if ('error' in weatherResult) {
+      setWeatherError(weatherResult.error);
+      return;
+    }
+    setWeatherError(null);
     setBusy(true);
     try {
       await updateDiary(diary.id, {
         labour_count: labour,
         equipment_count: equipment,
         notes,
+        weather_summary: weatherResult.summary,
       });
       // Refresh the diary record, its by-id view and the calendar signals.
       qc.invalidateQueries({ queryKey: ['daily-diary'] });
@@ -1677,6 +1803,14 @@ function EditDiaryModal({
           />
         </WideModalField>
       </WideModalSection>
+      <DiaryWeatherFields
+        value={weather}
+        onChange={(next) => {
+          setWeather(next);
+          setWeatherError(null);
+        }}
+        error={weatherError}
+      />
     </WideModal>
   );
 }
@@ -2573,8 +2707,11 @@ function CreateDiaryModal({
   const [labour, setLabour] = useState(0);
   const [equipment, setEquipment] = useState(0);
   const [notes, setNotes] = useState('');
+  const [weather, setWeather] = useState<DiaryWeatherForm>(EMPTY_DIARY_WEATHER);
+  const [weatherError, setWeatherError] = useState<DiaryWeatherError | null>(null);
   const [busy, setBusy] = useState(false);
   const maxIso = maxDiaryIso();
+  const measurementSystem = usePreferencesStore((s) => s.measurementSystem);
 
   const submit = async () => {
     if (!diaryDate) {
@@ -2595,6 +2732,12 @@ function CreateDiaryModal({
       });
       return;
     }
+    const weatherResult = weatherSummaryFromForm(weather, measurementSystem);
+    if ('error' in weatherResult) {
+      setWeatherError(weatherResult.error);
+      return;
+    }
+    setWeatherError(null);
     setBusy(true);
     try {
       const created = await createDiary({
@@ -2603,6 +2746,7 @@ function CreateDiaryModal({
         labour_count: labour,
         equipment_count: equipment,
         notes,
+        weather_summary: weatherResult.summary,
       });
       qc.invalidateQueries({ queryKey: ['daily-diary'] });
       addToast({ type: 'success', title: t('daily_diary.created', { defaultValue: 'Diary created' }) });
@@ -2678,6 +2822,14 @@ function CreateDiaryModal({
           />
         </WideModalField>
       </WideModalSection>
+      <DiaryWeatherFields
+        value={weather}
+        onChange={(next) => {
+          setWeather(next);
+          setWeatherError(null);
+        }}
+        error={weatherError}
+      />
     </WideModal>
   );
 }

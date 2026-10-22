@@ -4,6 +4,7 @@
 
 import logging
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -88,6 +89,58 @@ def _log_state_change(
     logger.info("submittal.state_change %s", payload)
 
 
+def _refuse(http_status: int, code: str, message: str, *, field: str | None = None, **params: Any) -> HTTPException:
+    """A refusal the client can translate: a stable ``code``, the ``field`` it
+    concerns, the values to fill in, and the English sentence as the fallback."""
+    detail: dict[str, Any] = {"code": code, "message": message, "params": params}
+    if field is not None:
+        detail["field"] = field
+    return HTTPException(status_code=http_status, detail=detail)
+
+
+def _today_iso() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).date().isoformat()
+
+
+#: The farthest time zone ahead of UTC is UTC+14 (Line Islands), so no clock
+#: anywhere has reached a calendar day later than UTC-now plus 14 hours.
+_FARTHEST_UTC_OFFSET = timedelta(hours=14)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _latest_today_iso() -> str:
+    """The latest calendar day that is "today" somewhere on earth right now.
+
+    The server clock is UTC, so a Vietnamese user (UTC+7) at 06:30 is already
+    on a day UTC has not reached. Refusing only days after this one lets every
+    user record their own today and still refuses tomorrow.
+    """
+    return (_utcnow() + _FARTHEST_UTC_OFFSET).date().isoformat()
+
+
+def _refuse_future_submission_date(value: str | None) -> None:
+    """A submission date records when the package actually went in.
+
+    A past date is how a register is backfilled from paper; a future one is a
+    submission that has not happened, and it would start the review clock on
+    a day nobody has reached yet. "Future" is measured against the latest
+    day that is today in some time zone, so a user's own today is accepted.
+    """
+    if value and str(value)[:10] > _latest_today_iso():
+        raise _refuse(
+            422,
+            "submittal_date_submitted_in_future",
+            f"The submission date {value} is in the future; record the day the submittal actually went in.",
+            field="date_submitted",
+            date=value,
+        )
+
+
 # ── Allowed submittal status transitions ──────────────────────────────────────
 
 _SUBMITTAL_STATUS_TRANSITIONS: dict[str, set[str]] = {
@@ -128,6 +181,8 @@ class SubmittalService:
         ``IntegrityError`` and we simply re-roll the number. After
         ``_MAX_NUMBER_RETRIES`` collisions we surface 409 rather than spin.
         """
+        _refuse_future_submission_date(data.date_submitted)
+
         # Auto-set ball_in_court based on initial status
         ball_in_court = data.ball_in_court
         if ball_in_court is None:
@@ -304,6 +359,7 @@ class SubmittalService:
             )
 
         fields: dict[str, Any] = data.model_dump(exclude_unset=True)
+        _refuse_future_submission_date(fields.get("date_submitted"))
         # Merge a partial metadata patch into the existing column instead of
         # replacing it wholesale (the description block below then operates on
         # the merged dict). Without this a metadata PATCH without description
@@ -412,8 +468,24 @@ class SubmittalService:
             },
         )
 
-    async def submit_submittal(self, submittal_id: uuid.UUID) -> Submittal:
+    async def submit_submittal(
+        self,
+        submittal_id: uuid.UUID,
+        *,
+        date_submitted: str | None = None,
+    ) -> Submittal:
         """Move submittal from draft (or revise_and_resubmit) to submitted.
+
+        The submission date is, in order: ``date_submitted`` when the caller
+        passes one (a register backfilled from paper records the day the
+        package really went in), else the date already recorded on a draft,
+        else today. A future date is refused. A resubmission never reuses the
+        stored date, which belongs to the revision being replaced.
+
+        A submittal that fails a check of ERROR severity is refused with
+        ``submittal_validation_blocked`` and the failing rule ids; warnings
+        do not block. The checks run on the submittal as it would stand once
+        submitted, so a date problem the submission itself creates is caught.
 
         Revision numbering:
         - First submission (``draft`` → ``submitted``): sets ``current_revision`` to 1.
@@ -428,11 +500,14 @@ class SubmittalService:
                 detail=(f"Can only submit from draft or revise_and_resubmit status, current: {submittal.status}"),
             )
 
-        from datetime import UTC, datetime
-
+        _refuse_future_submission_date(date_submitted)
+        effective_date = date_submitted
+        if effective_date is None and submittal.status == "draft" and submittal.date_submitted:
+            stored = str(submittal.date_submitted)[:10]
+            effective_date = stored if stored <= _latest_today_iso() else None
         fields: dict[str, Any] = {
             "status": "submitted",
-            "date_submitted": datetime.now(UTC).strftime("%Y-%m-%d"),
+            "date_submitted": effective_date or _today_iso(),
             "date_returned": None,
         }
 
@@ -450,6 +525,8 @@ class SubmittalService:
         # Ball-in-court moves to reviewer
         if submittal.reviewer_id:
             fields["ball_in_court"] = str(submittal.reviewer_id)
+
+        await self._refuse_blocked_submission(submittal, fields)
 
         # Snapshot attributes BEFORE update_fields (expire detaches lazy
         # columns). Re-fetch after so returned object has fresh values.
@@ -622,6 +699,49 @@ class SubmittalService:
             "validation_warnings": [r.rule_id for r in report.warnings],
         }
 
+    async def _refuse_blocked_submission(self, submittal: Submittal, fields: dict[str, Any]) -> None:
+        """Refuse a submission that fails a check of ERROR severity.
+
+        ``fields`` is what the submission is about to write; the checks read
+        the submittal with it applied. A failure of the validation engine
+        itself does not block: the gate exists to stop bad data, not to make
+        submission depend on the rule machinery being healthy.
+        """
+        payload = self._validation_payload(submittal)
+        payload.update({key: value for key, value in fields.items() if key in payload})
+        try:
+            report = await validation_engine.validate(
+                data=payload,
+                rule_sets=[SUBMITTAL_RULE_SET],
+                target_type="submittal",
+                target_id=str(submittal.id),
+                project_id=str(submittal.project_id),
+                metadata={"locale": get_locale(), "operation": "submit"},
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Submittal submit gate skipped for %s: %s", submittal.id, exc)
+            return
+        errors = report.errors
+        if not errors:
+            return
+        rule_ids = sorted({r.rule_id for r in errors})
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "submittal_validation_blocked",
+                "message": (
+                    f"This submittal cannot be submitted while {len(rule_ids)} check(s) "
+                    "at error level fail. Correct them and submit again."
+                ),
+                "field": "validation",
+                "params": {"count": len(rule_ids)},
+                "rules": rule_ids,
+                "results": [
+                    {"rule_id": r.rule_id, "message": r.message, "suggestion": r.suggestion} for r in errors
+                ],
+            },
+        )
+
     @staticmethod
     def _report_to_dict(report: ValidationReport) -> dict[str, Any]:
         """Flatten a ValidationReport into the API response shape."""
@@ -640,6 +760,7 @@ class SubmittalService:
                     "message": r.message,
                     "element_ref": r.element_ref,
                     "suggestion": r.suggestion,
+                    "details": dict(r.details or {}),
                 }
                 for r in report.results
             ],

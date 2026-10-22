@@ -96,7 +96,7 @@ async def create_transmittal(
 ) -> TransmittalResponse:
     """Create a new transmittal with auto-generated number."""
     await verify_project_access(data.project_id, user_id, session)
-    transmittal = await service.create_transmittal(data, user_id=user_id)
+    transmittal = await service.create_transmittal(data, user_id=user_id, require_response_due=True)
     return TransmittalResponse.model_validate(transmittal)
 
 
@@ -138,7 +138,7 @@ async def update_transmittal(
     """Update a transmittal (fails if locked after issue)."""
     existing = await service.get_transmittal(transmittal_id)
     await verify_project_access(existing.project_id, str(user_id), session)
-    transmittal = await service.update_transmittal(transmittal_id, data)
+    transmittal = await service.update_transmittal(transmittal_id, data, require_response_due=True)
     return TransmittalResponse.model_validate(transmittal)
 
 
@@ -182,7 +182,7 @@ async def issue_transmittal(
     """
     existing = await service.get_transmittal(transmittal_id)
     await verify_project_access(existing.project_id, str(user_id), session)
-    transmittal = await service.issue_transmittal(transmittal_id)
+    transmittal = await service.issue_transmittal(transmittal_id, require_response_due=True)
     return TransmittalResponse.model_validate(transmittal)
 
 

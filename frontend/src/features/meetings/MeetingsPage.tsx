@@ -311,9 +311,9 @@ function MeetingPeopleFields({
       <WideModalField
         label={t('meetings.field_attendees', { defaultValue: 'Attendees' })}
         span={2}
-        hint={t('meetings.attendees_hint', {
+        hint={t('meetings.attendees_hint_separators', {
           defaultValue:
-            'Enter each attendee on a separate line. They will be added to the meeting.',
+            'Enter attendees one per line, or separated by commas or semicolons. They will be added to the meeting.',
         })}
       >
         <div className="space-y-2">
@@ -363,6 +363,18 @@ function MeetingPeopleFields({
   );
 }
 
+/**
+ * The names in the free-text attendee box. A list pasted from an email reads
+ * "a; b; c" or "a, b, c" as often as one name per line, and each of those is a
+ * separate person, not one attendee with a long name.
+ */
+export function splitAttendeeNames(text: string): string[] {
+  return text
+    .split(/[\n;,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 /** Merge linked (contact-backed) attendees with free-text lines into the wire
  * attendee payload. Linked attendees carry their contact id as ``user_id`` so
  * the saved meeting can link each attendee back to the directory; free-text
@@ -373,9 +385,7 @@ function buildAttendeePayload(
 ): { name: string; user_id?: string }[] {
   const linked = formData.linkedAttendees.map((a) => ({ name: a.name, user_id: a.id }));
   const linkedNames = new Set(linked.map((a) => a.name.toLowerCase()));
-  const freeText = formData.attendees
-    .split('\n')
-    .map((s) => s.trim())
+  const freeText = splitAttendeeNames(formData.attendees)
     .filter(Boolean)
     .filter((name) => !linkedNames.has(name.toLowerCase()))
     .map((name) => ({ name }));
@@ -384,6 +394,23 @@ function buildAttendeePayload(
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A meeting whose date is behind us but whose record still says it is to come
+ * (draft, scheduled or in progress). Compared on the calendar day in the
+ * user's own time zone, so a meeting today is not flagged.
+ */
+export function meetingNeedsStatusUpdate(
+  meeting: { status: string; date: string },
+  now: Date = new Date(),
+): boolean {
+  if (!['draft', 'scheduled', 'in_progress'].includes(meeting.status)) return false;
+  const day = (meeting.date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return day < today;
+}
 
 /** A contact-backed id that we can deep-link to /contacts?contactId=. */
 function isContactId(value: string | null | undefined): value is string {
@@ -1703,7 +1730,7 @@ const MeetingRow = React.memo(function MeetingRow({
       {/* Main row */}
       <div
         className={clsx(
-          'flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-surface-secondary/50 transition-colors',
+          'flex items-center gap-3 px-4 py-3 min-w-[640px] cursor-pointer hover:bg-surface-secondary/50 transition-colors',
           expanded && 'bg-surface-secondary/30',
         )}
         onClick={() => setExpanded((prev) => !prev)}
@@ -1726,13 +1753,16 @@ const MeetingRow = React.memo(function MeetingRow({
           {meeting.title}
         </span>
 
-        {/* Type badge */}
-        <Badge variant={typeCfg} size="sm">
-          {t(`meetings.type_${meeting.meeting_type}`, {
-            defaultValue:
-              meeting.meeting_type.charAt(0).toUpperCase() + meeting.meeting_type.slice(1),
-          })}
-        </Badge>
+        {/* Type badge, inside a cell as wide as its header so the columns
+            after it stay under their own headings. */}
+        <span className="w-24 shrink-0 flex justify-center min-w-0">
+          <Badge variant={typeCfg} size="sm" className="max-w-full truncate">
+            {t(`meetings.type_${meeting.meeting_type}`, {
+              defaultValue:
+                meeting.meeting_type.charAt(0).toUpperCase() + meeting.meeting_type.slice(1),
+            })}
+          </Badge>
+        </span>
 
         {/* Date */}
         <span className="text-xs text-content-tertiary w-24 shrink-0 hidden md:block">
@@ -1747,12 +1777,28 @@ const MeetingRow = React.memo(function MeetingRow({
             : '\u2014'}
         </span>
 
-        {/* Status badge */}
-        <Badge variant={statusCfg.variant} size="sm" className={statusCfg.cls}>
-          {t(`meetings.status_${meeting.status}`, {
-            defaultValue: meeting.status.replace(/_/g, ' '),
-          })}
-        </Badge>
+        {/* Status badge, plus a prompt when the meeting date has passed but
+            the record still says it is yet to happen. The status is not
+            changed for the user: whether it was held or cancelled is theirs
+            to record. */}
+        <span className="w-24 shrink-0 flex flex-col items-center gap-0.5 min-w-0">
+          <Badge variant={statusCfg.variant} size="sm" className={clsx(statusCfg.cls, 'max-w-full truncate')}>
+            {t(`meetings.status_${meeting.status}`, {
+              defaultValue: meeting.status.replace(/_/g, ' '),
+            })}
+          </Badge>
+          {meetingNeedsStatusUpdate(meeting) && (
+            <span
+              className="text-[10px] leading-tight text-amber-600 dark:text-amber-400 text-center"
+              data-testid={`meeting-status-stale-${meeting.id}`}
+              title={t('meetings.status_update_needed_hint', {
+                defaultValue: 'The meeting date has passed. Mark it completed or cancelled.',
+              })}
+            >
+              {t('meetings.status_update_needed', { defaultValue: 'Date passed, update status' })}
+            </span>
+          )}
+        </span>
 
         {/* Attendee count */}
         <span className="text-xs text-content-tertiary w-12 text-right shrink-0 flex items-center justify-end gap-1">
@@ -2625,7 +2671,7 @@ export function MeetingsPage() {
                 <span className="flex-1">
                   {t('meetings.col_title', { defaultValue: 'Title' })}
                 </span>
-                <span className="w-24 text-center">
+                <span className="w-24 shrink-0 text-center">
                   {t('meetings.col_type', { defaultValue: 'Type' })}
                 </span>
                 <span className="w-24 hidden md:block">
@@ -2634,7 +2680,7 @@ export function MeetingsPage() {
                 <span className="w-28 hidden lg:block">
                   {t('meetings.col_chair', { defaultValue: 'Chairperson' })}
                 </span>
-                <span className="w-24 text-center">
+                <span className="w-24 shrink-0 text-center">
                   {t('meetings.col_status', { defaultValue: 'Status' })}
                 </span>
                 <span className="w-12 text-right">

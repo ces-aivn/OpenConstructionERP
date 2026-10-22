@@ -15,6 +15,7 @@
  */
 import { useTranslation } from 'react-i18next';
 import type { InsightDataset, InsightDef } from '@/features/insights';
+import { isRfiOpen, isRfiOverdue } from './rfiStatusRules';
 
 // English fallbacks for the computed `rfi.status_*` keys. The default used to be
 // the raw value, so until the key lands in a locale the screen shows the bare
@@ -108,8 +109,11 @@ function toRow(r: RFILite, t: Translate): Row {
     court: courtLabel(r.status, t),
     month: monthKey(r.created_at),
     age: typeof r.days_open === 'number' ? r.days_open : daysSince(r.created_at),
-    open: r.status === 'open' ? 1 : 0,
-    overdue: r.is_overdue ? 1 : 0,
+    // One rule with the register tiles and the server: open is draft or open,
+    // overdue is a subset of open. A past-due draft used to read "Open 0,
+    // Overdue 1" here because only `open` counted as open.
+    open: isRfiOpen(r.status) ? 1 : 0,
+    overdue: isRfiOverdue(r) ? 1 : 0,
   };
 }
 

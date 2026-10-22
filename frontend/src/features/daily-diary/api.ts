@@ -240,6 +240,8 @@ export function createDiary(data: {
   notes?: string;
   labour_count?: number;
   equipment_count?: number;
+  /** Metric snapshot: `conditions`, `temp_c`, `precipitation_mm`, `wind_kmh`. */
+  weather_summary?: Record<string, unknown>;
 }): Promise<DailyDiary> {
   return apiPost<DailyDiary>('/v1/daily-diary/diaries/', data);
 }
@@ -258,7 +260,12 @@ export function deleteDiary(id: string): Promise<void> {
 
 export function updateDiary(
   id: string,
-  data: { notes?: string; labour_count?: number; equipment_count?: number },
+  data: {
+    notes?: string;
+    labour_count?: number;
+    equipment_count?: number;
+    weather_summary?: Record<string, unknown>;
+  },
 ): Promise<DailyDiary> {
   return apiPatch<DailyDiary>(`/v1/daily-diary/diaries/${id}`, data);
 }

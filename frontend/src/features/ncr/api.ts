@@ -16,6 +16,16 @@ export type NCRSeverity = 'critical' | 'major' | 'minor' | 'observation';
 
 export type NCRStatus = 'identified' | 'under_review' | 'corrective_action' | 'verification' | 'closed' | 'void';
 
+/** Which register the responsible party's id points into; `text` has no id. */
+export type NCRPartyKind = 'subcontractor' | 'contact' | 'user' | 'text';
+
+/** Who has to put the non-conformance right. The server requires a name. */
+export interface NCRResponsibleParty {
+  responsible_party_id?: string | null;
+  responsible_party_name: string;
+  responsible_party_kind?: NCRPartyKind | null;
+}
+
 export interface NCR {
   id: string;
   project_id: string;
@@ -34,6 +44,9 @@ export interface NCR {
   linked_inspection_id: string | null;
   linked_inspection_number: number | null;
   change_order_id: string | null;
+  responsible_party_id?: string | null;
+  responsible_party_name?: string | null;
+  responsible_party_kind?: NCRPartyKind | null;
   reported_by: string | null;
   created_at: string;
   updated_at: string;
@@ -53,7 +66,7 @@ export interface NCRFilters {
   limit?: number;
 }
 
-export interface CreateNCRPayload {
+export interface CreateNCRPayload extends NCRResponsibleParty {
   project_id: string;
   title: string;
   ncr_type: NCRType;
@@ -80,6 +93,9 @@ export interface UpdateNCRPayload {
   preventive_action?: string;
   cost_impact?: string | null;
   location_description?: string;
+  responsible_party_id?: string | null;
+  responsible_party_name?: string;
+  responsible_party_kind?: NCRPartyKind | null;
 }
 
 /* -- Wire <-> UI normaliser ----------------------------------------------- */

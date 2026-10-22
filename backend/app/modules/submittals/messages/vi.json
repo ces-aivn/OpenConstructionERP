@@ -1,0 +1,28 @@
+{
+  "submittal": {
+    "resubmission_linked": {
+      "fail": "Hồ sơ trình duyệt đang ở lần sửa đổi {revision} nhưng không có kết quả xem xét nào của lần {previous}, nên không ai biết vì sao hồ sơ được trình lại",
+      "suggestion": "Tạo lần sửa đổi mới thông qua kết quả xem xét \"Sửa và trình lại\", hoặc sửa lại số lần sửa đổi"
+    },
+    "outcome_matches_status": {
+      "fail": "Dấu xem xét ghi {outcome}, nhưng trạng thái của hồ sơ trình duyệt là {status}",
+      "suggestion": "Ghi quyết định qua thao tác Xem xét để dấu xem xét và trạng thái thay đổi cùng nhau"
+    },
+    "required_on_site_after_submitted": {
+      "fail": "Vật tư cần có tại công trường ngày {on_site}, trước cả ngày nộp hồ sơ trình duyệt {submitted}",
+      "suggestion": "Sửa ngày cần tại công trường, hoặc ghi nhận rằng ngày giao hàng đã bị lỡ"
+    },
+    "long_lead_has_lead_time": {
+      "fail": "Hồ sơ trình duyệt được đánh dấu là hàng đặt lâu nhưng chưa có thời gian đặt hàng, nên không tính được hạn cần phê duyệt",
+      "suggestion": "Nhập thời gian đặt hàng (số tuần từ khi đặt đến khi giao tại công trường)"
+    },
+    "approval_needed_by_not_passed": {
+      "fail": "Cần phê duyệt trước ngày {needed_by} để vật tư về kịp; đến nay đã chậm {days} ngày mà vẫn chưa được phê duyệt",
+      "suggestion": "Đôn đốc việc xem xét, hoặc thống nhất với bộ phận tiến độ một ngày cần tại công trường muộn hơn"
+    },
+    "material_has_manufacturer": {
+      "fail": "Hồ sơ trình duyệt vật liệu này không ghi nhà sản xuất, nên người xem xét không có sản phẩm để phê duyệt",
+      "suggestion": "Nhập nhà sản xuất hoặc thương hiệu được đề xuất"
+    }
+  }
+}

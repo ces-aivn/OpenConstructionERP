@@ -47,6 +47,11 @@ class NCRCreate(BaseModel):
     # Soft link to a contract package (id or code); scopes this report for package acceptance.
     package_ref: str | None = Field(default=None, max_length=64)
     change_order_id: str | None = Field(default=None, max_length=36)
+    # Responsible party: required when a person raises an NCR (enforced on the
+    # user-facing routes); automatic raisers may leave it for triage.
+    responsible_party_id: str | None = Field(default=None, max_length=36)
+    responsible_party_name: str | None = Field(default=None, max_length=255)
+    responsible_party_kind: str | None = Field(default=None, pattern=r"^(subcontractor|contact|user|text)$")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -103,6 +108,11 @@ class NCRUpdate(BaseModel):
     # Soft link to a contract package (id or code); scopes this report for package acceptance.
     package_ref: str | None = Field(default=None, max_length=64)
     change_order_id: str | None = Field(default=None, max_length=36)
+    # Responsible party: required when a person raises an NCR (enforced on the
+    # user-facing routes); automatic raisers may leave it for triage.
+    responsible_party_id: str | None = Field(default=None, max_length=36)
+    responsible_party_name: str | None = Field(default=None, max_length=255)
+    responsible_party_kind: str | None = Field(default=None, pattern=r"^(subcontractor|contact|user|text)$")
     metadata: dict[str, Any] | None = None
 
 
@@ -132,6 +142,9 @@ class NCRResponse(BaseModel):
     linked_inspection_id: str | None = None
     package_ref: str | None = None
     change_order_id: str | None = None
+    responsible_party_id: str | None = None
+    responsible_party_name: str | None = None
+    responsible_party_kind: str | None = None
     created_by: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_")
     created_at: datetime

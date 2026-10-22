@@ -49,7 +49,7 @@ import {
   ModuleGuideButton,
   CollapsibleSection,
 } from '@/shared/ui';
-import { ContactSearchInput } from '@/shared/ui/ContactSearchInput';
+import { PartyInput, PARTY_MAX_LENGTH } from './PartyInput';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { RegisterExportButton, RecordPdfButton } from '@/shared/ui/RegisterExport';
 import { TruncationNotice } from '@/shared/ui/TruncationNotice';
@@ -214,9 +214,12 @@ function contactDisplayName(c: ContactNameShape, fallback: string): string {
 function ContactRef({
   value,
   className,
+  name,
 }: {
   value: string;
   className?: string;
+  /** The name the entry was saved with, shown while (or if) the id does not resolve. */
+  name?: string | null;
 }) {
   const { t } = useTranslation();
   const trimmed = value.trim();
@@ -234,7 +237,7 @@ function ContactRef({
     return <span className={className}>{value}</span>;
   }
 
-  const label = data ? contactDisplayName(data, trimmed) : trimmed.slice(0, 8);
+  const label = data ? contactDisplayName(data, name || trimmed) : name || trimmed.slice(0, 8);
 
   return (
     <Link
@@ -252,6 +255,18 @@ function ContactRef({
       <ExternalLink size={10} aria-hidden="true" className="shrink-0" />
     </Link>
   );
+}
+
+/**
+ * The sender of an entry: a linked contact when the id is a directory id,
+ * otherwise the saved name (`from_name`, or a short name kept in the id column).
+ */
+function SenderRef({ item, className }: { item: Correspondence; className?: string }) {
+  const ref = item.from_contact_id?.trim() || '';
+  if (ref && isContactId(ref)) return <ContactRef value={ref} name={item.from_name} className={className} />;
+  const name = item.from_name?.trim() || ref;
+  if (!name) return <NoValue />;
+  return <span className={className}>{name}</span>;
 }
 
 /**
@@ -320,6 +335,7 @@ interface CorrespondenceFormData {
   linked_document_ids: string[];
   linked_transmittal_id: string;
   linked_rfi_id: string;
+  linked_change_order_id: string;
 }
 
 const todayDate = () => new Date().toISOString().slice(0, 10);
@@ -341,6 +357,7 @@ const EMPTY_FORM: CorrespondenceFormData = {
   linked_document_ids: [],
   linked_transmittal_id: '',
   linked_rfi_id: '',
+  linked_change_order_id: '',
 };
 
 /**
@@ -357,8 +374,8 @@ export function correspondenceFormData(c: Correspondence): CorrespondenceFormDat
     subject: c.subject,
     direction: c.direction,
     type: c.correspondence_type,
-    from_contact: c.from_contact_id || '',
-    from_display: c.from_contact_id || '',
+    from_contact: c.from_contact_id || c.from_name || '',
+    from_display: c.from_name || c.from_contact_id || '',
     to_contacts: (c.to_contact_ids ?? []).join(', '),
     to_display: (c.to_contact_ids ?? []).join(', '),
     date_sent: c.date_sent || '',
@@ -370,6 +387,7 @@ export function correspondenceFormData(c: Correspondence): CorrespondenceFormDat
     linked_document_ids: c.linked_document_ids ?? [],
     linked_transmittal_id: c.linked_transmittal_id || '',
     linked_rfi_id: c.linked_rfi_id || '',
+    linked_change_order_id: c.linked_change_order_id || '',
   };
 }
 
@@ -405,7 +423,11 @@ export function buildCorrespondencePatch(
   if (form.subject !== base.subject) data.subject = form.subject;
   if (form.direction !== base.direction) data.direction = form.direction;
   if (form.type !== base.type) data.correspondence_type = form.type;
-  if (form.from_contact !== base.from_contact) data.from_contact_id = form.from_contact || null;
+  // Sender id and name travel together, so a new pick never keeps the old name.
+  if (form.from_contact !== base.from_contact || form.from_display !== base.from_display) {
+    data.from_contact_id = form.from_contact || null;
+    data.from_name = form.from_display || null;
+  }
   // Both fields feed one list, so either one moving has to resend it.
   if (form.to_display !== base.to_display || form.to_contacts !== base.to_contacts) {
     data.to_contact_ids = recipientIds(form);
@@ -434,6 +456,9 @@ export function buildCorrespondencePatch(
   if (form.linked_rfi_id !== base.linked_rfi_id) {
     data.linked_rfi_id = form.linked_rfi_id || null;
   }
+  if (form.linked_change_order_id !== base.linked_change_order_id) {
+    data.linked_change_order_id = form.linked_change_order_id || null;
+  }
   return data;
 }
 
@@ -451,6 +476,11 @@ interface PickerRFI {
   id: string;
   rfi_number: string;
   subject: string;
+}
+interface PickerChangeOrder {
+  id: string;
+  code: string;
+  title: string;
 }
 
 function CreateCorrespondenceModal({
@@ -507,6 +537,15 @@ function CreateCorrespondenceModal({
     enabled: !!projectId,
     staleTime: 60_000,
   });
+  // A delay or claim notice is usually served against a change order, so the
+  // letter can point at one. The change-order list answers a bare array.
+  const changeOrdersQuery = useQuery({
+    queryKey: ['correspondence-link-change-orders', projectId],
+    queryFn: () =>
+      apiGet<PickerChangeOrder[]>(`/v1/changeorders/?project_id=${projectId}&limit=100`),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
 
   const documentPage = docsQuery.data;
   const documents = documentPage?.items ?? [];
@@ -514,6 +553,7 @@ function CreateCorrespondenceModal({
   const transmittals = transmittalPage?.items ?? [];
   const rfiPage = rfisQuery.data;
   const rfis = rfiPage?.items ?? [];
+  const changeOrders = changeOrdersQuery.data ?? [];
 
   const toggleDocument = (id: string) =>
     setForm((prev) => ({
@@ -541,7 +581,11 @@ function CreateCorrespondenceModal({
 
   const subjectError = touched && form.subject.trim().length === 0;
   const fromError = touched && (form.from_contact.trim().length === 0 && form.from_display.trim().length === 0);
-  const canSubmit = form.subject.trim().length > 0 && (form.from_contact.trim().length > 0 || form.from_display.trim().length > 0);
+  const toTooLong = recipientIds(form).some((name) => name.length > PARTY_MAX_LENGTH);
+  const canSubmit =
+    form.subject.trim().length > 0 &&
+    (form.from_contact.trim().length > 0 || form.from_display.trim().length > 0) &&
+    !toTooLong;
 
   const handleSubmit = () => {
     setTouched(true);
@@ -670,6 +714,7 @@ function CreateCorrespondenceModal({
         >
           <input
             id="corr-subject"
+            maxLength={500}
             value={form.subject}
             onChange={(e) => {
               set('subject', e.target.value);
@@ -701,15 +746,15 @@ function CreateCorrespondenceModal({
               : undefined
           }
         >
-          <ContactSearchInput
+          {/* A picked contact is stored by id (so the register links to
+              it); a typed name is stored as typed. */}
+          <PartyInput
+            id="corr-from"
             value={form.from_contact}
-            displayValue={form.from_display}
-            onChange={(contactId, displayName) => {
-              setForm((prev) => ({
-                ...prev,
-                from_contact: displayName || contactId,
-                from_display: displayName,
-              }));
+            display={form.from_display}
+            invalid={fromError}
+            onChange={(value, display) => {
+              setForm((prev) => ({ ...prev, from_contact: value, from_display: display }));
               setTouched(true);
             }}
             placeholder={t('correspondence.from_placeholder', {
@@ -721,16 +766,26 @@ function CreateCorrespondenceModal({
         <WideModalField
           label={t('correspondence.field_to', { defaultValue: 'To' })}
           htmlFor="corr-to"
+          hint={t('correspondence.to_hint', {
+            defaultValue: 'Separate several recipients with commas.',
+          })}
+          error={
+            toTooLong
+              ? t('correspondence.party_too_long', {
+                  defaultValue: 'Each name can be at most {{max}} characters.',
+                  max: PARTY_MAX_LENGTH,
+                })
+              : undefined
+          }
         >
-          <ContactSearchInput
+          <PartyInput
+            id="corr-to"
+            multiple
             value={form.to_contacts}
-            displayValue={form.to_display}
-            onChange={(contactId, displayName) => {
-              setForm((prev) => ({
-                ...prev,
-                to_contacts: displayName || contactId,
-                to_display: displayName,
-              }));
+            display={form.to_display}
+            invalid={toTooLong}
+            onChange={(value, display) => {
+              setForm((prev) => ({ ...prev, to_contacts: value, to_display: display }));
             }}
             placeholder={t('correspondence.to_placeholder', {
               defaultValue: 'Search contacts or type name...',
@@ -795,6 +850,7 @@ function CreateCorrespondenceModal({
         >
           <textarea
             id="corr-notes"
+            maxLength={5000}
             value={form.notes}
             onChange={(e) => set('notes', e.target.value)}
             rows={3}
@@ -938,6 +994,30 @@ function CreateCorrespondenceModal({
         </WideModalField>
 
         <WideModalField
+          label={t('correspondence.field_link_change_order', { defaultValue: 'Change order' })}
+          htmlFor="corr-link-change-order"
+          hint={t('correspondence.link_optional_hint', {
+            defaultValue: 'Optional - ties this entry to a related record.',
+          })}
+        >
+          <select
+            id="corr-link-change-order"
+            value={form.linked_change_order_id}
+            onChange={(e) => set('linked_change_order_id', e.target.value)}
+            className={inputCls}
+          >
+            <option value="">
+              {t('correspondence.link_none', { defaultValue: 'None' })}
+            </option>
+            {changeOrders.map((co) => (
+              <option key={co.id} value={co.id}>
+                {co.code} - {co.title}
+              </option>
+            ))}
+          </select>
+        </WideModalField>
+
+        <WideModalField
           label={t('correspondence.field_link_documents', { defaultValue: 'Documents' })}
           span={2}
           hint={t('correspondence.link_documents_hint', {
@@ -1009,7 +1089,7 @@ const CorrespondenceRow = React.memo(function CorrespondenceRow({
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   // Undefined rather than a dash: these feed `title`, and a tooltip that
   // contains only punctuation tells the reader less than no tooltip at all.
-  const fromLabel = item.from_contact_id || undefined;
+  const fromLabel = item.from_name || item.from_contact_id || undefined;
   const toLabel =
     (item.to_contact_ids ?? []).length > 0
       ? fmtList((item.to_contact_ids ?? []))
@@ -1120,11 +1200,7 @@ const CorrespondenceRow = React.memo(function CorrespondenceRow({
           className="text-xs text-content-tertiary w-24 truncate shrink-0 hidden lg:block"
           title={fromLabel}
         >
-          {item.from_contact_id ? (
-            <ContactRef value={item.from_contact_id} className="text-xs" />
-          ) : (
-            <NoValue />
-          )}
+          <SenderRef item={item} className="text-xs" />
         </span>
 
         {/* To — each party deep-links when it is a contact id */}
@@ -1167,11 +1243,7 @@ const CorrespondenceRow = React.memo(function CorrespondenceRow({
           <div className="flex items-center gap-4 text-xs text-content-tertiary flex-wrap">
             <span className="inline-flex items-center gap-1">
               {t('correspondence.label_from', { defaultValue: 'From' })}:{' '}
-              {item.from_contact_id ? (
-                <ContactRef value={item.from_contact_id} className="text-xs" />
-              ) : (
-                <NoValue />
-              )}
+              <SenderRef item={item} className="text-xs" />
             </span>
             <span className="inline-flex items-center gap-1">
               {t('correspondence.label_to', { defaultValue: 'To' })}:{' '}
@@ -1224,7 +1296,8 @@ const CorrespondenceRow = React.memo(function CorrespondenceRow({
           {/* Linked references — connections to Documents / Transmittals / RFI */}
           {((item.linked_document_ids ?? []).length > 0 ||
             item.linked_transmittal_id ||
-            item.linked_rfi_id) && (
+            item.linked_rfi_id ||
+            item.linked_change_order_id) && (
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="inline-flex items-center gap-1 text-2xs uppercase tracking-wide text-content-tertiary">
                 <Link2 size={11} />
@@ -1259,6 +1332,16 @@ const CorrespondenceRow = React.memo(function CorrespondenceRow({
                 >
                   <HelpCircle size={11} />
                   {t('correspondence.linked_rfi', { defaultValue: 'View RFI' })}
+                </Link>
+              )}
+              {item.linked_change_order_id && (
+                <Link
+                  to="/changeorders"
+                  onClick={(e) => e.stopPropagation()}
+                  className="inline-flex items-center gap-1 rounded-full bg-oe-blue/10 px-2 py-0.5 text-xs font-medium text-oe-blue hover:bg-oe-blue/20 transition-colors"
+                >
+                  <FileText size={11} />
+                  {t('correspondence.linked_change_order', { defaultValue: 'View change order' })}
                 </Link>
               )}
             </div>
@@ -1629,6 +1712,7 @@ export function CorrespondencePage() {
         c.subject,
         c.reference_number,
         c.from_contact_id,
+        c.from_name,
         ...(c.to_contact_ids ?? []),
       ),
     );
@@ -1709,6 +1793,7 @@ export function CorrespondencePage() {
       direction: formData.direction,
       correspondence_type: formData.type,
       from_contact_id: formData.from_contact || undefined,
+      from_name: formData.from_display || undefined,
       to_contact_ids: recipientIds(formData),
       date_sent: formData.date_sent || undefined,
       date_received: formData.date_received || undefined,
@@ -1722,6 +1807,7 @@ export function CorrespondencePage() {
       linked_document_ids: formData.linked_document_ids,
       linked_transmittal_id: formData.linked_transmittal_id || null,
       linked_rfi_id: formData.linked_rfi_id || null,
+      linked_change_order_id: formData.linked_change_order_id || null,
       notes: formData.notes || undefined,
     }),
     [],

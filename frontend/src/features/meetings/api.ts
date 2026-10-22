@@ -521,6 +521,8 @@ export interface ActionRegisterItem {
   closed_at: string | null;
   created_at: string | null;
   updated_at: string | null;
+  /** The task on the task board that carries this action, once created. */
+  task_id?: string | null;
 }
 
 export interface MeetingActions {

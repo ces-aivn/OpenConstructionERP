@@ -45,6 +45,33 @@ class CorrespondenceService:
         self.session = session
         self.repo = CorrespondenceRepository(session)
 
+    async def _refuse_foreign_change_order(self, project_id: object, change_order_id: str | None) -> None:
+        """A notice may only point at a change order of its own project.
+
+        Anything else would let a letter of one project name, and through the
+        letter's link reveal, another project's change order. A change order
+        that does not exist is refused with the same answer.
+        """
+        if not change_order_id:
+            return
+        from app.modules.changeorders.models import ChangeOrder  # noqa: PLC0415 - optional module
+
+        try:
+            order = await self.session.get(ChangeOrder, uuid.UUID(str(change_order_id)))
+        except ValueError:
+            order = None
+        if order is None or str(order.project_id) != str(project_id):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "code": "correspondence_change_order_not_in_project",
+                    "error": "correspondence_change_order_not_in_project",
+                    "message": "The linked change order is not a change order of this project.",
+                    "field": "linked_change_order_id",
+                    "params": {"change_order_id": str(change_order_id)},
+                },
+            )
+
     async def create_correspondence(
         self,
         data: CorrespondenceCreate,
@@ -59,6 +86,7 @@ class CorrespondenceService:
         insert into ``IntegrityError`` and we simply re-roll the number. After
         ``_MAX_NUMBER_RETRIES`` collisions we surface 409 rather than spin.
         """
+        await self._refuse_foreign_change_order(data.project_id, data.linked_change_order_id)
         last_exc: Exception | None = None
         for attempt in range(_MAX_NUMBER_RETRIES):
             reference_number = await self.repo.next_reference_number(data.project_id)
@@ -69,6 +97,7 @@ class CorrespondenceService:
                 direction=data.direction,
                 subject=data.subject,
                 from_contact_id=data.from_contact_id,
+                from_name=data.from_name,
                 to_contact_ids=data.to_contact_ids,
                 date_sent=data.date_sent,
                 date_received=data.date_received,
@@ -76,6 +105,7 @@ class CorrespondenceService:
                 linked_document_ids=data.linked_document_ids,
                 linked_transmittal_id=data.linked_transmittal_id,
                 linked_rfi_id=data.linked_rfi_id,
+                linked_change_order_id=data.linked_change_order_id,
                 status=data.status,
                 response_required_by=data.response_required_by,
                 contract_clause_ref=data.contract_clause_ref,
@@ -178,6 +208,9 @@ class CorrespondenceService:
 
         if not fields:
             return correspondence
+
+        if fields.get("linked_change_order_id"):
+            await self._refuse_foreign_change_order(correspondence.project_id, fields["linked_change_order_id"])
 
         await self.repo.update_fields(correspondence_id, **fields)
         await self.session.refresh(correspondence)

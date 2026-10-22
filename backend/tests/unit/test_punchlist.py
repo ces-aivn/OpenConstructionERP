@@ -308,7 +308,8 @@ async def test_verification_same_user_blocked() -> None:
             user_id="user-A",
         )
     assert exc_info.value.status_code == 400
-    assert "different user" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "punch_verify_same_user"
+    assert "different user" in exc_info.value.detail["message"]
 
 
 @pytest.mark.asyncio

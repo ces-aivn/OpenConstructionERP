@@ -305,8 +305,8 @@ function FindingIcon({ severity }: { severity: ValidationSeverity }) {
 }
 
 /**
- * What the `submittal` rule set finds on this submittal. Advisory: the rules
- * report and never refuse, so the list sits above the actions, not in their way.
+ * What the `submittal` rule set finds on this submittal. Warnings are advice;
+ * an Error blocks submission, and the Submit button below says so.
  */
 function Findings({ submittal }: { submittal: Submittal }) {
   const { t } = useTranslation();

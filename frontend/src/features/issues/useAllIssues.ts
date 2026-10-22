@@ -16,6 +16,8 @@ import { fetchPunchItems } from '../punchlist/api';
 import { fetchNCRs } from '../ncr/api';
 import { clashApi } from '../clash/api';
 import { fetchNeighbourIssues } from '../site-logistics/api';
+import { fetchRFIs, type RFI } from '../rfi/api';
+import { RFI_OPEN_STATUSES } from '../rfi/rfiStatusRules';
 
 import { bcfSourceAvailable, fetchBcfTopicsSafe } from './bcfSource';
 import {
@@ -25,7 +27,9 @@ import {
   mapClashIssue,
   mapBcfTopic,
   mapNeighbourIssue,
+  mapRfi,
   mapEach,
+  isActiveIssue,
   sortIssues,
   type IssueSource,
   type IssueSortKey,
@@ -38,7 +42,7 @@ export type SourceStatus = 'ok' | 'error' | 'disabled';
 
 export interface SourceState {
   source: IssueSource;
-  /** Count of open issues this source contributed. */
+  /** Count of open (active) issues this source contributed. */
   count: number;
   status: SourceStatus;
   /** Error message when `status === 'error'`. */
@@ -51,9 +55,12 @@ export interface SourceWarning {
 }
 
 export interface UseAllIssuesResult {
-  /** Normalized, merged, sorted list of open issues. */
+  /**
+   * Normalized, merged, sorted list of every live item, including resolved
+   * ones awaiting verification. Filter with `isActiveIssue` for open work.
+   */
   issues: UnifiedIssue[];
-  /** Open-issue count per source (0 for a failed or disabled source). */
+  /** Active-issue count per source, by `isActiveIssue` (0 for a failed or disabled source). */
   bySource: Record<IssueSource, number>;
   /** Per-source status. */
   sources: SourceState[];
@@ -68,7 +75,16 @@ export interface UseAllIssuesResult {
 }
 
 /** Display order for the per-source chips + state list. */
-export const SOURCE_ORDER: IssueSource[] = ['punch', 'ncr', 'clash', 'neighbour', 'markup', 'bcf'];
+export const SOURCE_ORDER: IssueSource[] = [
+  'punch',
+  'ncr',
+  'rfi',
+  'validation',
+  'clash',
+  'neighbour',
+  'markup',
+  'bcf',
+];
 
 /* --- Constants ------------------------------------------------------------ */
 
@@ -83,6 +99,16 @@ const PUNCH_LIMIT = 100;
 // sending no limit at all: the hub's "ncr" chip counted the server default
 // of 50 and called it the backlog.
 const NCR_LIMIT = 100;
+// Same 100 ceiling on the RFI route. One page per open status, so a busy
+// register's answered questions cannot crowd the open ones out of the page.
+const RFI_LIMIT = 100;
+
+async function fetchOpenRfis(projectId: string): Promise<RFI[]> {
+  const pages = await Promise.all(
+    RFI_OPEN_STATUSES.map((status) => fetchRFIs({ project_id: projectId, status, limit: RFI_LIMIT })),
+  );
+  return pages.flatMap((p) => p.items ?? []);
+}
 
 /** Minimal read view of a react-query result, enough to build source state. */
 interface ResultLike {
@@ -155,6 +181,12 @@ export function useAllIssues(
         staleTime: 30_000,
       },
       {
+        queryKey: ['issues-hub', 'rfi', projectId],
+        queryFn: () => fetchOpenRfis(projectId),
+        enabled,
+        staleTime: 30_000,
+      },
+      {
         queryKey: ['issues-hub', 'bcf', projectId],
         queryFn: () => fetchBcfTopicsSafe(projectId),
         // Only run when a BCF api module is actually present in the build.
@@ -169,31 +201,46 @@ export function useAllIssues(
   const ncrRes = results[2];
   const clashRes = results[3];
   const neighbourRes = results[4];
-  const bcfRes = results[5];
+  const rfiRes = results[5];
+  const bcfRes = results[6];
 
   const derived = useMemo(() => {
     // Each mapEach isolates per-item failures; a bad row is dropped alone.
     const markups = mapEach(markupRes?.data, mapMarkup);
     const punch = mapEach(punchRes?.data?.items, mapPunch);
-    const ncr = mapEach(ncrRes?.data?.items, mapNcr);
+    const ncrAll = mapEach(ncrRes?.data?.items, mapNcr);
+    const ncr = ncrAll.filter((i) => i.source === 'ncr');
+    const validation = ncrAll.filter((i) => i.source === 'validation');
+    const now = new Date();
+    const rfi = mapEach(rfiRes?.data, (r: RFI) => mapRfi(r, now));
     const clash = mapEach(clashRes?.data?.items, mapClashIssue);
     const neighbour = mapEach(neighbourRes?.data?.items, mapNeighbourIssue);
     const bcf = bcfSourceAvailable ? mapEach(bcfRes?.data, mapBcfTopic) : [];
 
+    // Chip counts use the same rule as the KPI strip and the default list, so
+    // a resolved punch item awaiting verification is never "open".
+    const active = (list: UnifiedIssue[]) => list.filter(isActiveIssue).length;
     const bySource: Record<IssueSource, number> = {
-      markup: markups.length,
-      punch: punch.length,
-      ncr: ncr.length,
-      clash: clash.length,
-      neighbour: neighbour.length,
-      bcf: bcf.length,
+      markup: active(markups),
+      punch: active(punch),
+      ncr: active(ncr),
+      validation: active(validation),
+      rfi: active(rfi),
+      clash: active(clash),
+      neighbour: active(neighbour),
+      bcf: active(bcf),
     };
 
-    const merged = sortIssues([...punch, ...ncr, ...clash, ...neighbour, ...markups, ...bcf], sortKey);
+    const merged = sortIssues(
+      [...punch, ...ncr, ...rfi, ...validation, ...clash, ...neighbour, ...markups, ...bcf],
+      sortKey,
+    );
 
     const sources: SourceState[] = [
       buildSourceState('punch', bySource.punch, punchRes),
       buildSourceState('ncr', bySource.ncr, ncrRes),
+      buildSourceState('rfi', bySource.rfi, rfiRes),
+      buildSourceState('validation', bySource.validation, ncrRes),
       buildSourceState('clash', bySource.clash, clashRes),
       buildSourceState('neighbour', bySource.neighbour, neighbourRes),
       buildSourceState('markup', bySource.markup, markupRes),
@@ -212,12 +259,14 @@ export function useAllIssues(
     ncrRes?.data,
     clashRes?.data,
     neighbourRes?.data,
+    rfiRes?.data,
     bcfRes?.data,
     markupRes?.isError,
     punchRes?.isError,
     ncrRes?.isError,
     clashRes?.isError,
     neighbourRes?.isError,
+    rfiRes?.isError,
     bcfRes?.isError,
     sortKey,
   ]);
