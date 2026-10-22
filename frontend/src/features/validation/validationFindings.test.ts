@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   countFindings,
+  findingMessage,
   groupFindings,
   matchesFilter,
   resolveScope,
@@ -165,5 +166,41 @@ describe('rule titles', () => {
     const short = shortDescription(long, 30);
     expect(short.length).toBeLessThanOrEqual(30);
     expect(short).not.toMatch(/\s{2,}|\n/);
+  });
+});
+
+describe('findingMessage', () => {
+  const t = (key: string, opts?: Record<string, unknown>) =>
+    String(opts?.defaultValue ?? key).replace(/\{\{(\w+)\}\}/g, (_, k: string) => String(opts?.[k] ?? ''));
+  const finding = (details: Record<string, unknown>, passed = false) => ({
+    rule_id: 'boq_quality.unrealistic_rate',
+    rule_name: 'Unrealistic Rate Detection',
+    severity: 'warning' as const,
+    passed,
+    message: 'Position 02: total 240,000,000.00 USD > 10,800,000.00 USD',
+    element_ref: 'p1',
+    suggestion: null,
+    details,
+  });
+
+  it('rebuilds the money in the reader number format', () => {
+    const msg = findingMessage(
+      finding({ unit_rate: 150, total: 240000000, currency: 'USD', rate_threshold: 108000, total_threshold: 10800000 }),
+      t,
+      'vi-VN',
+    );
+    expect(msg).toContain('line total');
+    expect(msg).toContain('240.000.000');
+    expect(msg).not.toContain('240,000,000');
+    expect(msg).not.toContain('unit rate');
+  });
+
+  it('keeps the engine message when the details are incomplete or the row passed', () => {
+    expect(findingMessage(finding({ currency: 'USD' }), t, 'vi-VN')).toBe(
+      'Position 02: total 240,000,000.00 USD > 10,800,000.00 USD',
+    );
+    expect(findingMessage(finding({}, true), t, 'vi-VN')).toBe(
+      'Position 02: total 240,000,000.00 USD > 10,800,000.00 USD',
+    );
   });
 });

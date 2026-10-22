@@ -286,6 +286,7 @@ async def _safe_audit(
 # move. The table itself lives in a module the methodology catalogue can import.
 from app.modules.boq.activity_text import activity_description
 from app.modules.boq.base_date import ACCEPTED_SHAPES, price_base_day, tax_point
+from app.modules.boq.locked_bill import boq_locked_error
 from app.modules.boq.markup_templates import (
     CONSTRUCTION_TIER_COUNTRIES,
     CONSTRUCTION_TIER_TAX_CODE,
@@ -502,6 +503,103 @@ def _compute_total(
     q = _to_decimal(quantity)
     r = _to_decimal(unit_rate)
     return str(_quantize_money(q * r))
+
+
+def next_position_ordinals(
+    used: Iterable[str | None],
+    parent_ordinal: str | None,
+    count: int,
+) -> list[str]:
+    """The next ``count`` position numbers in the bill's one numbering scheme.
+
+    The scheme follows the numbers already used beside the new lines. A bill or
+    section numbered one by one (``01, 02 ... 12`` or ``01.1, 01.2``) continues
+    one by one at the same width (``13``, ``01.3``). Otherwise it is the
+    gap-of-10 scheme the editor's Add Position writes: ``01.10``, ``01.20``
+    under section ``01``, and ``0010``, ``0020`` at the top level, continuing
+    from the highest number already used under the same prefix, rounded up to
+    the next ten. A bill counts as numbered one by one when at least two of its
+    numbers, and most of them, are not multiples of ten, so one line slotted in
+    between (``01.15``) does not change the scheme. Every number in ``used`` is
+    skipped. The editor's ``nextPositionOrdinals`` is the same rule, so a line
+    numbered here and one numbered there never disagree.
+    """
+    taken = {u for u in used if u}
+    prefix = f"{parent_ordinal}." if parent_ordinal else None
+    highest = 0
+    width = 0
+    siblings = 0
+    off_ten = 0
+    for ordinal in taken:
+        own: str | None = None
+        if prefix is not None:
+            if not ordinal.startswith(prefix):
+                continue
+            rest = ordinal[len(prefix) :]
+            head = re.match(r"\d+", rest)
+            if rest.isdigit():
+                own = rest
+        else:
+            head = re.match(r"\s*[-+]?\d+", ordinal)
+            if ordinal.strip().isdigit():
+                own = ordinal.strip()
+        if head:
+            highest = max(highest, abs(int(head.group())))
+        if own is not None:
+            siblings += 1
+            width = max(width, len(own))
+            if int(own) % 10:
+                off_ten += 1
+    one_by_one = off_ten >= 2 and off_ten * 2 > siblings
+    pad = width if one_by_one else max(width, 2 if prefix is not None else 4)
+    step = 1 if one_by_one else 10
+    out: list[str] = []
+    candidate = highest + 1 if one_by_one else (highest // 10 + 1) * 10
+    while len(out) < count:
+        text = f"{prefix or ''}{candidate:0{pad}d}"
+        candidate += step
+        if text in taken:
+            continue
+        taken.add(text)
+        out.append(text)
+    return out
+
+
+def ordinals_for_unnumbered(
+    items: Sequence[Any],
+    existing: Iterable[tuple[Any, str | None]],
+) -> dict[int, str]:
+    """Position numbers for the rows of a batch that were sent without one.
+
+    ``items`` are the raw rows of a bulk insert; ``existing`` the ``(id,
+    ordinal)`` pairs already in the bill. Each unnumbered row is numbered under
+    its ``parent_id`` (``01.10`` under section ``01``) or at the top level
+    (``0010``) by :func:`next_position_ordinals`, past every number the bill
+    and the batch already use, so typed, pasted and imported lines share one
+    scheme. Returns ``{row index: ordinal}``.
+    """
+    ordinal_of: dict[str, str] = {}
+    used: set[str] = set()
+    for pos_id, ordinal in existing:
+        if ordinal:
+            ordinal_of[str(pos_id)] = ordinal
+            used.add(ordinal)
+    pending: dict[str | None, list[int]] = {}
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        own = str(item.get("ordinal") or "").strip()
+        if own:
+            used.add(own)
+            continue
+        parent = str(item["parent_id"]) if item.get("parent_id") else None
+        pending.setdefault(parent, []).append(idx)
+    out: dict[int, str] = {}
+    for parent, indices in pending.items():
+        numbers = next_position_ordinals(used, ordinal_of.get(parent) if parent else None, len(indices))
+        used.update(numbers)
+        out.update(zip(indices, numbers, strict=True))
+    return out
 
 
 def _str_to_float(value: str | None) -> float:
@@ -2272,10 +2370,7 @@ class BOQService:
         """
         boq = await self.get_boq(boq_id)
         if boq.is_locked:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=translate("errors.boq_locked", locale=get_locale()),
-            )
+            raise boq_locked_error()
         return boq
 
     async def _ensure_boq_writable(self, boq_id: uuid.UUID) -> None:
@@ -2298,10 +2393,7 @@ class BOQService:
                 detail="BOQ not found",
             )
         if row[0]:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=translate("errors.boq_locked", locale=get_locale()),
-            )
+            raise boq_locked_error()
 
     async def _locked_bills_among(self, boq_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str]:
         """The locked bills among ``boq_ids``, as ``{id: name}``, in one query.
@@ -2742,11 +2834,16 @@ class BOQService:
 
         return root
 
-    async def _recompute_position_total(self, position: Position) -> None:
-        """Recompute one position's ``total`` from its stored qty × rate."""
+    async def _recompute_position_total(self, position: Position) -> bool:
+        """Recompute one position's ``total`` from its stored qty × rate.
+
+        Returns whether the stored total changed.
+        """
         new_total = _compute_total(position.quantity, position.unit_rate)
         if new_total != position.total:
             await self.position_repo.update_fields(position.id, total=new_total)
+            return True
+        return False
 
     # ── BOQ operations ────────────────────────────────────────────────────
 
@@ -4857,6 +4954,18 @@ class BOQService:
                 # Flush to DB, then refresh ORM state from DB (avoids MissingGreenlet on lazy load)
                 await self.session.flush()
                 await self.session.refresh(position)
+                if "total" in fields:
+                    # The total above was multiplied from the row as it was
+                    # read at the start of this request. Two cell edits of
+                    # the same line in flight together (quantity, then the
+                    # rate a Tab later) each read the other's old value, so
+                    # the line kept a stale total while the grid showed
+                    # quantity x rate and the bill's sums left it out. The
+                    # UPDATE above holds the row lock now, so the refreshed
+                    # row carries every committed edit: settle the total on
+                    # it.
+                    if await self._recompute_position_total(position):
+                        await self.session.refresh(position)
             except HTTPException:
                 raise
             except Exception as exc:  # noqa: BLE001 - surface any DB failure as 422
@@ -7018,10 +7127,48 @@ class BOQService:
 
     # ── Duplicate operations ─────────────────────────────────────────────
 
-    async def duplicate_boq(self, boq_id: uuid.UUID) -> BOQ:
+    async def next_revision(self, boq_id: uuid.UUID) -> tuple[str, int, str]:
+        """The default name, version number and lineage root of a new revision.
+
+        The original of a line of revisions is version 1, its first revision
+        ``<original name> v2``, the next ``v3``, counted over every revision of
+        the same original whichever revision it was made from. Returns
+        ``(name, number, root_id)``.
+        """
+        header = await self.boq_repo.get_header(boq_id)
+        if header is None:
+            await self.get_boq(boq_id)  # raises the 404 every BOQ read raises
+            raise AssertionError("unreachable: get_boq raises for a missing bill")
+        meta = header["metadata_"] if isinstance(header["metadata_"], dict) else {}
+        root_id = str(meta.get("revision_root_id") or header["id"])
+        root_name = str(header["name"])
+        rows = (
+            await self.session.execute(
+                select(BOQ.id, BOQ.name, BOQ.metadata_).where(BOQ.project_id == header["project_id"])
+            )
+        ).all()
+        count = 0
+        for row_id, row_name, row_meta in rows:
+            if str(row_id) == root_id:
+                root_name = str(row_name)
+            elif isinstance(row_meta, dict) and str(row_meta.get("revision_root_id") or "") == root_id:
+                count += 1
+        number = count + 2
+        return f"{root_name} v{number}", number, root_id
+
+    async def duplicate_boq(
+        self,
+        boq_id: uuid.UUID,
+        *,
+        name: str | None = None,
+        extra_metadata: dict[str, Any] | None = None,
+    ) -> BOQ:
         """Deep-copy a BOQ with all positions and markups.
 
-        Creates a new BOQ named ``<original> (Copy)`` under the same project.
+        Creates a new BOQ named ``name``, by default ``<original> (Copy)``,
+        under the same project. ``extra_metadata`` is merged over the copied
+        metadata; the revision lineage keys are not copied, so a plain copy of
+        a revision is not counted as one.
         All positions and markups receive fresh UUIDs; parent_id references
         within positions are re-mapped to the corresponding new IDs.
 
@@ -7042,6 +7189,9 @@ class BOQService:
         source_base_date = source_boq.base_date
         source_tax_date = source_boq.tax_date
         source_metadata = dict(source_boq.metadata_) if source_boq.metadata_ else {}
+        for _lineage_key in ("revision_root_id", "revision_number", "revision_reason"):
+            source_metadata.pop(_lineage_key, None)
+        source_metadata.update(extra_metadata or {})
         # Issue #435: a revision or scenario of a variation request's bill is
         # still that request's bill. Dropping the link here would quietly turn
         # the copy into a bill of the project at large - it would appear in the
@@ -7056,7 +7206,7 @@ class BOQService:
         # Create the new BOQ shell
         new_boq = BOQ(
             project_id=source_project_id,
-            name=f"{source_name} (Copy)",
+            name=name or f"{source_name} (Copy)",
             description=source_description,
             base_date=source_base_date,
             tax_date=source_tax_date,

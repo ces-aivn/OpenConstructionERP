@@ -46,6 +46,7 @@ from app.modules.boq.importers._encoding import (
     fold_width,
     parse_numeric_cell,
     safe_float,
+    strip_currency,
     wide_bom_codec,
 )
 from app.modules.boq.importers._workbook import open_workbook
@@ -2335,25 +2336,45 @@ def _naming_the_sheet(
                 issue.setdefault("sheet", sheet)
 
 
+# Cells that can only be written one way. Beside the decimal shapes above, a
+# number grouped more than once settles it too: "7,000,000" can only group with
+# commas, "8.500.000" only with dots.
+_POINT_FORMAT_SHAPES = (_POINT_DECIMAL_SHAPE, re.compile(r"^[+-]?\d{1,3}(?:,\d{3}){2,}(?![\d.,])"))
+_COMMA_FORMAT_SHAPES = (_COMMA_DECIMAL_SHAPE, re.compile(r"^[+-]?\d{1,3}(?:\.\d{3}){2,}(?![\d.,])"))
+
+
 def _grouping_conventions(rows: list[dict[str, Any]], header_language: str | None) -> tuple[bool, bool]:
     """``(dot_thousands, comma_thousands)`` for one file.
 
-    The header's language proposes the convention, and the file's own
-    numbers can veto it: one cell that can only be written with a decimal
-    point switches dot grouping off, and one that can only be written with
-    a decimal comma switches comma grouping off.
+    A file is written in one number format, so it is decided once for the
+    whole file. The cells that can only be read one way decide it: a decimal
+    point ("12.00", "1,400.00") or several comma groups ("7,000,000") make it
+    a decimal-point file, where "450,000" is four hundred and fifty thousand;
+    a decimal comma ("1,45", "1.250,50") or several dot groups ("8.500.000")
+    make it a decimal-comma file, where "15.000" is fifteen thousand. Only when
+    no cell decides does the header's language propose the format. A file
+    whose cells point both ways keeps the plain per-cell reading.
+
+    This is what read a US bill headed in Vietnamese ("Khối lượng", "Đơn giá")
+    with "450,000" as 450: the Vietnamese header proposed dot grouping, the
+    file's "12.00" vetoed it, and nothing then read the commas as grouping.
     """
-    dot = header_language in DECIMAL_COMMA_LANGUAGES
-    comma = header_language in DECIMAL_POINT_LANGUAGES
-    if not (dot or comma):
-        return False, False
-    veto = _POINT_DECIMAL_SHAPE if dot else _COMMA_DECIMAL_SHAPE
+    point = comma = False
     for row in rows:
-        for column in _NUMERIC_COLUMNS:
+        for column in (*_NUMERIC_COLUMNS, "total"):
             text = row.get(column)
-            if isinstance(text, str) and veto.search(fold_width(text)):
-                return False, False
-    return dot, comma
+            if not isinstance(text, str):
+                continue
+            folded = strip_currency(fold_width(text).strip()).replace("\u00a0", "").replace(" ", "")
+            point = point or any(shape.search(folded) for shape in _POINT_FORMAT_SHAPES)
+            comma = comma or any(shape.search(folded) for shape in _COMMA_FORMAT_SHAPES)
+        if point and comma:
+            return False, False
+    if point:
+        return False, True
+    if comma:
+        return True, False
+    return header_language in DECIMAL_COMMA_LANGUAGES, header_language in DECIMAL_POINT_LANGUAGES
 
 
 def _comma_thousands_warnings(row: dict[str, Any], row_idx: int, ordinal: str) -> list[dict[str, Any]]:
@@ -2440,7 +2461,10 @@ def sheet_note_warning(note: dict[str, Any]) -> dict[str, Any]:
 
 
 _IMPORT_MAX_QUANTITY = 1e9
-_IMPORT_MAX_UNIT_RATE = 1e8
+# A rate is bounded by the line-total cap, not by a euro-sized guess: a lump
+# sum in dong ("gói", 2.500.000.000.000 VND) is a real price, and a 1e8 cap
+# dropped it from the bill without the user noticing the missing trillions.
+_IMPORT_MAX_UNIT_RATE = 1e15  # the line-total cap, ``schemas.POSITION_TOTAL_CAP``
 
 
 def _rows_to_positions(
@@ -2620,7 +2644,7 @@ def _rows_to_positions(
                     }
                 )
                 continue
-            if not (0 <= unit_rate <= _IMPORT_MAX_UNIT_RATE):
+            if not (0 <= unit_rate <= _IMPORT_MAX_UNIT_RATE) or quantity * unit_rate > _IMPORT_MAX_UNIT_RATE:
                 result.errors.append(
                     {
                         "row": row_idx,

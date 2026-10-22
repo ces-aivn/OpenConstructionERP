@@ -155,3 +155,33 @@ describe('Tab direction in the two numeric editors', () => {
     expect(api.tabToNextCell).not.toHaveBeenCalled();
   });
 });
+
+describe('Enter on the rate cell', () => {
+  beforeEach(() => cleanup());
+
+  function renderRate(typed: string) {
+    const onRateEntered = vi.fn();
+    const params = {
+      value: 50,
+      data: { id: 'p1', unit: 'm' },
+      context: { displayQuantity: metricApi(), onRateEntered },
+      node: { data: { id: 'p1', unit: 'm', unit_rate: 50 }, setDataValue: vi.fn() },
+      api: { ...mockApi(), setFocusedCell: vi.fn() },
+      column: { getColId: () => 'unit_rate' },
+    } as unknown as FormulaCellEditorParams;
+    render(<RateCellEditor {...params} />);
+    const input = screen.getByRole('textbox') as HTMLInputElement;
+    input.value = typed;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    return onRateEntered;
+  }
+
+  it('goes on to the next line once a rate is entered', () => {
+    expect(renderRate('85')).toHaveBeenCalledWith('p1');
+  });
+
+  it('does not go on to the next line after refusing what was typed', () => {
+    expect(renderRate('12,5,0')).not.toHaveBeenCalled();
+  });
+});

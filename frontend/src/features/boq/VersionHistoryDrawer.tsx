@@ -10,6 +10,7 @@ import { useToastStore } from '@/stores/useToastStore';
 import { getIntlLocale } from '@/shared/lib/formatters';
 import { getNumberLocale } from '@/stores/usePreferencesStore';
 import { snapshotDisplayName } from './snapshotNames';
+import { activityText } from './activityText';
 
 /* ── Snapshot diff helpers ─────────────────────────────────────────────── */
 
@@ -630,8 +631,8 @@ export function VersionHistoryDrawer({ boqId, isOpen, onClose }: VersionHistoryD
                             {formatAuditValue(row.newValue)}
                           </span>
                         </p>
-                        <p className="text-2xs text-content-tertiary mt-0.5 truncate" title={row.summary}>
-                          {formatDate(row.when)} · {row.summary}
+                        <p className="text-2xs text-content-tertiary mt-0.5 truncate" title={activityText(row.summary, t)}>
+                          {formatDate(row.when)} · {activityText(row.summary, t)}
                         </p>
                       </div>
                       <button

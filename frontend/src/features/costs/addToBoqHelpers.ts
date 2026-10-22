@@ -15,13 +15,18 @@
 // ``frontend/src/features/boq/BOQModals.tsx``):
 //
 //   * every cost-item component becomes a ``metadata.resources[]`` entry;
-//   * variant-bearing components auto-default to the MEAN rate and carry
-//     their ``available_variants`` / ``available_variant_stats`` so the BOQ
-//     row's per-resource re-pick pill works without a second fetch;
+//   * variant-bearing components keep the catalogue's own price for them and
+//     carry their ``available_variants`` / ``available_variant_stats`` so the
+//     BOQ row's per-resource re-pick pill works without a second fetch; only
+//     a component the catalogue left unpriced falls back to the variant MEAN
+//     (marked ``variant_default = 'mean'``). Re-pricing every variant slot at
+//     the mean made the line land a few percent off the rate the cost
+//     database had just shown;
 //   * a top-level abstract-resource variant set (when not already mirrored
-//     on a component) is appended as one synthetic resource line at the mean
-//     rate, with ``variant_default = 'mean'`` and the variant catalog cached
-//     on ``metadata`` so the inline picker can re-open;
+//     on a component) is appended as one synthetic resource line priced at
+//     what the catalogue rate leaves after the other resources (the mean when
+//     the catalogue rate leaves nothing), with the variant catalog cached on
+//     ``metadata`` so the inline picker can re-open;
 //   * the position ``unit_rate`` equals the sum of resource totals when
 //     resources exist, otherwise the catalog rate.
 //
@@ -31,6 +36,8 @@
 // cannot be silently rewritten by a later cost-database re-import.
 
 import type { CostItemMetadata, CostVariant, VariantStats } from './api';
+import { ApiError } from '@/shared/lib/api';
+import { nextPositionOrdinals } from '@/features/boq/boqHelpers';
 
 /* ── Full cost item shape (as returned by GET /v1/costs/{id}) ──────────── */
 
@@ -238,10 +245,21 @@ export function buildBoqPositionDraft(
     }
     const isPrimary = primaryIdx === i;
 
-    // Auto-default to the mean rate — the costs-page add flow has no
-    // interactive picker. The user refines later via the BOQ row's
+    // The catalogue prices the slot itself (its estimated resource price);
+    // that is the figure its rate was built from, so the line keeps it. Only
+    // an unpriced slot takes the mean. The costs-page add flow has no
+    // interactive picker; the user refines later via the BOQ row's
     // per-resource re-pick pill (powered by available_variants below).
-    const rate = meanRateOf(compStats!, compVariants!);
+    const catalogRate = c.unit_rate ?? 0;
+    const catalogCost = c.cost ?? 0;
+    const priced = catalogRate > 0 || catalogCost > 0;
+    const rate = !priced
+      ? meanRateOf(compStats!, compVariants!)
+      : catalogRate > 0
+        ? catalogRate
+        : qty > 0
+          ? catalogCost / qty
+          : catalogCost;
     return {
       name: c.name,
       code: c.code || '',
@@ -249,9 +267,9 @@ export function buildBoqPositionDraft(
       unit: c.unit || 'pcs',
       quantity: qty,
       unit_rate: rate,
-      total: qty * rate,
+      total: priced && catalogCost > 0 ? catalogCost : qty * rate,
       currency,
-      variant_default: 'mean' as const,
+      ...(priced ? {} : { variant_default: 'mean' as const }),
       ...(isPrimary
         ? { available_variants: compVariants, available_variant_stats: compStats }
         : {}),
@@ -279,7 +297,12 @@ export function buildBoqPositionDraft(
   }
 
   if (topVariants && topVariants.length >= 2 && topStats && !topMirroredOnComponent) {
-    const rate = meanRateOf(topStats, topVariants);
+    // The catalogue rate is the figure the cost database shows for the item:
+    // the abstract resource takes whatever of it the other resources leave.
+    const othersTotal = resources.reduce((s, r) => s + (Number(r.total) || 0), 0);
+    const remainder = (Number(item.rate) || 0) - othersTotal;
+    const fromCatalog = remainder > 0;
+    const rate = fromCatalog ? remainder : meanRateOf(topStats, topVariants);
     resources.push({
       name: defaultResourceName(topStats, item.description || item.code),
       code: item.code,
@@ -289,11 +312,11 @@ export function buildBoqPositionDraft(
       unit_rate: rate,
       total: rate,
       currency,
-      variant_default: 'mean',
+      ...(fromCatalog ? {} : { variant_default: 'mean' as const }),
       available_variants: topVariants,
       available_variant_stats: topStats,
     });
-    topMeta.variant_default = 'mean';
+    if (!fromCatalog) topMeta.variant_default = 'mean';
     // Cache the variant catalog on the position so the inline picker on the
     // BOQ row can re-open without a refetch (BOQModals does the same).
     topMeta.cost_item_variants = topVariants;
@@ -385,4 +408,51 @@ export function buildBoqPositionDraft(
   }
 
   return { unitRate, metadata };
+}
+
+/* ── Target bill, numbering and refusal of the add dialog ─────────────── */
+
+/** A bill the "Add to BOQ" dialog can offer as the target. */
+export interface AddTargetBoq {
+  id: string;
+  is_locked?: boolean;
+}
+
+/** The bill the dialog preselects: the first one that accepts new lines. A
+ *  locked bill refuses every write, so it is never the default target. */
+export function firstWritableBoq<T extends AddTargetBoq>(boqs: readonly T[]): T | undefined {
+  return boqs.find((b) => !b.is_locked);
+}
+
+/**
+ * The numbers the added lines take, in the bill's own numbering scheme: under
+ * the chosen section when there is one, else at the top level. The same rule
+ * Add Position and paste from Excel use, so a bill numbered 01-09 continues at
+ * 10 instead of receiving "01.031".
+ */
+export function ordinalsForAddedItems(
+  positions: ReadonlyArray<{ id: string; ordinal: string }>,
+  sectionId: string,
+  count: number,
+): string[] {
+  const parent = sectionId ? (positions.find((p) => p.id === sectionId)?.ordinal ?? null) : null;
+  return nextPositionOrdinals(
+    positions.map((p) => p.ordinal),
+    parent,
+    count,
+  );
+}
+
+type AddTranslate = (key: string, options?: Record<string, string | number>) => string;
+
+/** What the dialog says when the add failed, in the reader's language. A
+ *  locked bill is named as such; any other refusal shows the server's reason. */
+export function addToBoqFailureMessage(err: unknown, t: AddTranslate): string {
+  if (err instanceof ApiError && err.code === 'boq_locked') {
+    return t('costs.add_to_boq_locked', {
+      defaultValue: 'This bill of quantities is locked, so nothing was added. Unlock it or create a revision, then add the items there.',
+    });
+  }
+  if (err instanceof Error && err.message) return err.message;
+  return t('common.unknown_error', { defaultValue: 'Unknown error' });
 }

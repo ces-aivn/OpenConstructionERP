@@ -42,6 +42,8 @@ import { fmtList, fmtPercent, getIntlLocale, fmtFixed } from '@/shared/lib/forma
 import { useToastStore } from '@/stores/useToastStore';
 import { usePreferencesStore } from '@/stores/usePreferencesStore';
 import { REGION_MAP } from '@/stores/useCostDatabaseStore';
+import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { chooseInitialRegion } from '@/features/costs/marketRegion';
 import {
   assembliesApi,
   type CreateAssemblyData,
@@ -263,6 +265,22 @@ const fmt = (n: number, currency?: string) => {
 };
 
 /* ── Mini Flag ─────────────────────────────────────────────────────────── */
+
+/**
+ * The resource sets the catalogue ships for its markets, tagged by a short
+ * region code rather than a cost-base id, so they are not in REGION_MAP.
+ */
+const MARKET_REGIONS: Record<string, { label: string; name: string; flag: string; currency: string }> = {
+  EU: { label: 'Europe (EUR)', name: 'Europe', flag: 'eu', currency: 'EUR' },
+  VN: { label: 'Vietnam (VND)', name: 'Vietnam', flag: 'vn', currency: 'VND' },
+  US: { label: 'United States (USD)', name: 'United States', flag: 'us', currency: 'USD' },
+};
+
+/** Display info for a catalogue region: a cost base or a market set. */
+function catalogRegionInfo(region: string | null | undefined) {
+  if (!region) return null;
+  return REGION_MAP[region] ?? MARKET_REGIONS[region] ?? null;
+}
 
 function MiniFlag({ code, size = 14 }: { code: string; size?: number }) {
   if (!code || code === 'custom') {
@@ -523,7 +541,7 @@ function RegionTabBar({
 
         {/* Region tabs */}
         {regionStats.filter((rs) => rs.region !== 'CUSTOM').map((rs) => {
-          const info = REGION_MAP[rs.region];
+          const info = catalogRegionInfo(rs.region);
           if (!info) return null;
           const isActive = activeRegion === rs.region;
           const count = statsMap.get(rs.region) ?? 0;
@@ -543,7 +561,9 @@ function RegionTabBar({
               `}
             >
               <MiniFlag code={info.flag} size={13} />
-              <span className="text-sm font-medium whitespace-nowrap">{info.name}</span>
+              <span className="text-sm font-medium whitespace-nowrap">
+                {t(`catalog.region_name_${rs.region}`, { defaultValue: info.name })}
+              </span>
               <span
                 className={`text-2xs tabular-nums ${isActive ? 'text-oe-blue' : 'text-content-quaternary'}`}
               >
@@ -698,7 +718,7 @@ function ResourceRow({
     operator: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
   };
 
-  const regionInfo = resource.region ? REGION_MAP[resource.region] : null;
+  const regionInfo = catalogRegionInfo(resource.region);
 
   return (
     <>
@@ -1529,20 +1549,39 @@ export function CatalogPage() {
     retry: false,
   });
 
-  // Auto-pick a region when no filter is active and rows exist somewhere.
-  // Mirrors the CostsPage fallback so a user landing on /catalog after
-  // /setup/databases doesn't see "0 resources" when the just-loaded region
-  // is sitting one click away.
+  // The region of the reader's market: the active project's currency or
+  // country, else the interface language. The page opens on it rather than
+  // on whichever region holds the most rows, which was a European set priced
+  // in euro for a Vietnamese reader.
+  const marketProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const { data: preferredRegion, isFetched: preferredRegionSettled } = useQuery({
+    queryKey: ['catalog', 'regions', 'preferred', marketProjectId ?? '', i18n.language],
+    queryFn: () =>
+      apiGet<{ region: string; currency: string; source: string }>(
+        `/v1/catalog/regions/preferred/${marketProjectId ? `?project_id=${encodeURIComponent(marketProjectId)}` : ''}`,
+      ),
+    retry: false,
+    staleTime: 5 * 60_000,
+    meta: { suppressGlobalErrorToast: true },
+  });
+
+  // Auto-pick a region when no filter is active and rows exist somewhere, so
+  // a user landing on /catalog after /setup/databases does not see
+  // "0 resources" with the just-loaded region one click away. Waits for the
+  // market answer (or its failure) and prefers that region.
   useEffect(() => {
     if (region) return;
     if (regionFromUrl) return;
-    const first = (regionStats ?? [])
-      .map((r) => r.region)
-      .find((r): r is string => Boolean(r));
+    if (!preferredRegionSettled) return;
+    const first = chooseInitialRegion({
+      preferred: preferredRegion?.region,
+      loadedRegions: (regionStats ?? []).map((r) => r.region).filter((r): r is string => Boolean(r)),
+      catalogNames: new Set(),
+    });
     if (!first) return;
     setRegion(first);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [regionStats]);
+  }, [regionStats, preferredRegionSettled, preferredRegion?.region]);
 
   // Fetch resources
   const searchUrl = buildSearchUrl(debouncedQuery, resourceType, category, unit, region, offset);
@@ -1572,7 +1611,7 @@ export function CatalogPage() {
   const selectedItems = items.filter((i) => selectedIds.has(i.id));
 
   // Region info for subtitle
-  const regionInfo = region ? REGION_MAP[region] : null;
+  const regionInfo = catalogRegionInfo(region);
 
   const handleSearch = useCallback((value: string) => {
     setQuery(value);
@@ -1707,10 +1746,11 @@ export function CatalogPage() {
                   {t('catalog.all_regions', { defaultValue: 'All regions' })}
                 </option>
                 {(regionStats ?? []).map((rs) => {
-                  const info = REGION_MAP[rs.region];
+                  const info = catalogRegionInfo(rs.region);
                   return (
                     <option key={rs.region} value={rs.region}>
-                      {info?.name ?? rs.region} ({rs.count.toLocaleString(getNumberLocale())})
+                      {info ? t(`catalog.region_name_${rs.region}`, { defaultValue: info.name }) : rs.region} (
+                      {rs.count.toLocaleString(getNumberLocale())})
                     </option>
                   );
                 })}
@@ -2679,10 +2719,10 @@ function PriceAdjustModal({
                   {t('catalog.all_regions', { defaultValue: 'All regions' })}
                 </option>
                 {regionStats.map((rs) => {
-                  const info = REGION_MAP[rs.region];
+                  const info = catalogRegionInfo(rs.region);
                   return (
                     <option key={rs.region} value={rs.region}>
-                      {info?.name ?? rs.region}
+                      {info ? t(`catalog.region_name_${rs.region}`, { defaultValue: info.name }) : rs.region}
                     </option>
                   );
                 })}

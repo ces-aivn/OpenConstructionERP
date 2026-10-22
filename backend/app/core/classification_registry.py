@@ -104,6 +104,11 @@ CLASSIFICATION_STANDARD_LABELS: Mapping[str, str] = MappingProxyType(
         "tetelrend": "Tételrend",
         "nlsfb": "NL/SfB",
         "knr": "KNR",
+        # Vietnam: the work-item code groups of the cost norms issued with
+        # Circular 12/2021/TT-BXD (AA site preparation ... AL other works,
+        # BA.. installation works). A Vietnamese estimate names its norm code
+        # on every priced line, the way a Polish one names its KNR norm.
+        "vn_tt12": "TT 12/2021/TT-BXD",
         # National codings a country pack writes on every line, which no
         # country maps to by default. Labelled so a line coded against them
         # can be named, like ONORM and GAEB above.
@@ -220,7 +225,6 @@ COUNTRY_TO_STANDARD: Mapping[str, str] = MappingProxyType(
         "TW": "masterformat",
         "ID": "masterformat",
         "TH": "masterformat",
-        "VN": "masterformat",
         "PH": "masterformat",
         # ── Native systems ───────────────────────────────────────────
         # France reads DPGF, the lot-by-lot price breakdown a French bill
@@ -245,6 +249,12 @@ COUNTRY_TO_STANDARD: Mapping[str, str] = MappingProxyType(
         "JP": "sekisan",
         "KR": "kbim",
         "TR": "birimfiyat",
+        # Vietnam. A Vietnamese bill is priced against the national cost norms
+        # (Circular 12/2021/TT-BXD), whose work-item codes AA..AL group every
+        # line, so that is the classification a Vietnamese estimator reads.
+        # This read masterformat until 2026-10, the CSI default for
+        # Asia-Pacific markets with no native scheme in the product.
+        "VN": "vn_tt12",
         # Hungary. Hungarian bills are written against a sectoral item
         # order rather than a cost-group hierarchy: a chapter-and-item code
         # for building works, a per-project item number for infrastructure.
@@ -310,6 +320,10 @@ REGION_ALIAS_TO_COUNTRY: Mapping[str, str] = MappingProxyType(
         # pack rather than a standard the renderer knows.
         "FRANCE": "FR",
         "UNITED_STATES": "US",
+        # The VN/US build's region picker writes "Vietnam" for its home
+        # market. It matched nothing, so every Vietnamese project fell
+        # through to DIN 276 and picked up no country rule pack.
+        "VIETNAM": "VN",
         # ── The project region picker's vocabulary ────────────────────
         #
         # The second source of region strings, and the one that reaches

@@ -27,7 +27,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { Button, Badge, CountryFlag } from '@/shared/ui';
-import { apiGet, apiPost } from '@/shared/lib/api';
+import { ApiError, apiGet, apiPost } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
 import { REGION_MAP } from '@/stores/useCostDatabaseStore';
 import { localizedUnitCode } from '@/shared/lib/unitLabels';
@@ -553,8 +553,12 @@ export function CostDatabaseSearchModal({
       cursorErrorToastShown.current = false;
       return;
     }
-    const msg = searchErrorObj instanceof Error ? searchErrorObj.message : '';
-    if (/cursor|400/i.test(msg) && !cursorErrorToastShown.current) {
+    // The status decides: the message is translated for the reader and may
+    // not carry the server's "cursor" wording.
+    const isStaleCursor =
+      (searchErrorObj instanceof ApiError && searchErrorObj.status === 400) ||
+      (searchErrorObj instanceof Error && /cursor/i.test(searchErrorObj.message));
+    if (isStaleCursor && !cursorErrorToastShown.current) {
       cursorErrorToastShown.current = true;
       addToast({
         type: 'info',

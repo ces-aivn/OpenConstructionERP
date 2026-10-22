@@ -5336,8 +5336,11 @@ export function UnitRateCellRenderer(params: ICellRendererParams) {
   const t = ctx?.t ?? ((key: string, opts?: Record<string, string | number>) =>
     (opts?.defaultValue as string) ?? key);
 
-  // Footer / section / resource sub-row / add-resource row → default cell.
-  if (!data || data._isSection || data._isFooter || data._isResource || data._isAddResource) {
+  // A totals row has an amount, not a unit rate: its cell stays empty
+  // rather than showing the placeholder 0 next to the total.
+  if (data?._isFooter) return <span />;
+  // Section / resource sub-row / add-resource row → default cell.
+  if (!data || data._isSection || data._isResource || data._isAddResource) {
     return <span className="text-right text-xs tabular-nums">{value ?? ''}</span>;
   }
 

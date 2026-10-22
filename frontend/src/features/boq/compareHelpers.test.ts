@@ -7,6 +7,8 @@ import {
   toFiniteOrNull,
   deltaSign,
   showsPair,
+  orderForCompare,
+  type CompareSide,
 } from './compareHelpers';
 import type { ComparePositionRow } from './api';
 
@@ -108,3 +110,26 @@ describe('showsPair', () => {
     expect(showsPair('removed', 'rate')).toBe(false);
   });
 });
+
+describe('orderForCompare', () => {
+  const original: CompareSide = { id: 'a', created_at: '2026-10-22T10:00:00Z', parent_estimate_id: null };
+  const revision: CompareSide = { id: 'b', created_at: '2026-10-22T11:00:00Z', parent_estimate_id: 'a' };
+
+  it('puts a revision after its original whichever is open', () => {
+    expect(orderForCompare(revision, original).map((b) => b.id)).toEqual(['a', 'b']);
+    expect(orderForCompare(original, revision).map((b) => b.id)).toEqual(['a', 'b']);
+  });
+
+  it('orders unrelated bills by creation time', () => {
+    const later = { id: 'c', created_at: '2026-10-23T09:00:00Z' };
+    const earlier = { id: 'd', created_at: '2026-10-21T09:00:00Z' };
+    expect(orderForCompare(later, earlier).map((b) => b.id)).toEqual(['d', 'c']);
+  });
+
+  it('lineage wins over timestamps', () => {
+    const copyMadeEarlierClock = { id: 'e', created_at: '2020-01-01T00:00:00Z', parent_estimate_id: 'f' };
+    const source = { id: 'f', created_at: '2026-01-01T00:00:00Z' };
+    expect(orderForCompare(copyMadeEarlierClock, source).map((b) => b.id)).toEqual(['f', 'e']);
+  });
+});
+

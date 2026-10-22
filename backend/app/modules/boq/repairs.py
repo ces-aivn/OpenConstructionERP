@@ -129,3 +129,84 @@ BOQ_COPILOT_PROVENANCE = register_data_repair(
         nature="always_wrong",
     )
 )
+
+
+async def _run_stale_line_totals(session: AsyncSession) -> int:
+    """Re-multiply line totals left at zero beside a filled quantity and rate.
+
+    Two cell edits of one line in flight together (the quantity, then the rate
+    a Tab later) each multiplied the other's old value, so the line was stored
+    with quantity and rate filled in and a total of zero. The grid showed
+    quantity x rate, every sum of the bill left the line out, and it stayed
+    that way across reloads until somebody edited the rate again.
+
+    Only that symptom is repaired: a total of exactly zero with a non-zero
+    quantity and a non-zero rate. A total that merely differs from quantity x
+    rate is left alone, because some writers store a different figure on
+    purpose: an approved change order writes its cost delta (a line modified
+    from 100 x 100 to 120 x 100 carries 2,000, not 12,000), and its lines are
+    skipped outright whatever their total. Lines in locked bills are skipped
+    too, because a locked bill keeps its figures until somebody unlocks or
+    revises it. Idempotent: a repaired line no longer has a zero total and is
+    not selected again.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    from sqlalchemy import select, update
+
+    from app.modules.boq.models import BOQ, Position
+    from app.modules.boq.service import _compute_total
+
+    rows = (
+        await session.execute(
+            select(Position.id, Position.quantity, Position.unit_rate, Position.total, Position.metadata_)
+            .join(BOQ, BOQ.id == Position.boq_id)
+            .where(BOQ.is_locked.is_(False))
+        )
+    ).all()
+
+    changed = 0
+    for position_id, quantity, unit_rate, total, metadata in rows:
+        if isinstance(metadata, dict) and metadata.get("origin") == "change_order":
+            continue
+        try:
+            q = Decimal(str(quantity if quantity not in (None, "") else "0"))
+            r = Decimal(str(unit_rate if unit_rate not in (None, "") else "0"))
+            stored = Decimal(str(total if total not in (None, "") else "0"))
+        except (InvalidOperation, ValueError):
+            continue
+        if not (q.is_finite() and r.is_finite() and stored.is_finite()):
+            continue
+        if stored != 0 or q == 0 or r == 0:
+            continue
+        expected = _compute_total(q, r)
+        if Decimal(expected) == 0:
+            continue
+        # The total guard lets a concurrent edit that already settled the
+        # line win.
+        result = await session.execute(
+            update(Position)
+            .where(Position.id == position_id, Position.total == total)
+            .values(total=expected)
+            .execution_options(synchronize_session=False)
+        )
+        changed += result.rowcount or 0
+
+    if changed:
+        logger.info("Re-multiplied %d BOQ line total(s) left at zero beside a quantity and a unit rate.", changed)
+    return changed
+
+
+#: Nature ``always_wrong``: a hand-entered line with a non-zero quantity and a
+#: non-zero rate is never worth zero; that state is what a lost concurrent
+#: edit left behind. Change-order lines, which store their cost delta rather
+#: than quantity x rate, are never selected.
+BOQ_STALE_LINE_TOTALS = register_data_repair(
+    DataRepair(
+        repair_id="boq_stale_line_totals",
+        revision="",
+        summary="Re-multiply BOQ line totals left at zero by two concurrent cell edits of the same line",
+        run=_run_stale_line_totals,
+        nature="always_wrong",
+    )
+)

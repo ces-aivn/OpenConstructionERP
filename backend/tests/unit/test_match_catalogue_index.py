@@ -471,7 +471,11 @@ async def test_an_encoder_that_cannot_load_fails_the_job_instead_of_leaving_it_w
     from app.core.processes import InMemoryProcessStore, ProcessRegistry
     from app.core.processes.matching import register_matching_processes
 
+    from app.core.processes import matching
+
     monkeypatch.delenv("OE_TEST_FAST_STARTUP", raising=False)
+    # The models' packages are optional; this test fakes the loads instead.
+    monkeypatch.setattr(matching, "missing_libraries", lambda modules: [])
     registry = ProcessRegistry(store=InMemoryProcessStore())
     registry.stagger_s = 0
     registry.settle_timeout_s = 30

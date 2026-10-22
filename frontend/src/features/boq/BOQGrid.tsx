@@ -68,11 +68,14 @@ import {
   type CollabLock,
 } from '@/features/collab_locks';
 import { getColumnDefs, getCustomColumnDefs } from './grid/columnDefs';
+import { ContextMenuFrame } from './grid/ContextMenuFrame';
+import { createKeystrokeBuffer, findOpenEditorInput, type KeystrokeBuffer } from './grid/keystrokeBuffer';
 import { auditRowTooltip } from './grid/auditMarkers';
 import type { FormulaVariable } from './grid/formula';
 import {
   FormulaCellEditor,
   RateCellEditor,
+  LongTextCellEditor,
   AutocompleteCellEditor,
   UnitCellEditor,
 } from './grid/cellEditors';
@@ -117,6 +120,12 @@ import { VariantPicker } from '@/features/costs/VariantPicker';
 import type { CostVariant, VariantStats } from '@/features/costs/api';
 import { copyToClipboard, readClipboard } from '@/shared/lib/browser';
 import { parseDecimalInput } from '@/shared/lib/parseDecimal';
+import {
+  detectBlockNumberFormat,
+  localeForCurrency,
+  parseDecimalInConvention,
+  type DecimalConvention,
+} from '@/shared/lib/parseDecimalBlock';
 import { useHasPermission } from '@/shared/lib/permissionGates';
 import { isAltOrAltGraph } from './boqShortcuts';
 
@@ -192,11 +201,14 @@ export function parseTypedAmount(raw: string, fallback: number): number {
  * (both comma and period variants) and strips currency symbols.
  * Returns NaN when the string is not a valid number.
  */
-export function parseClipboardNumber(raw: string): number {
+export function parseClipboardNumber(raw: string, convention?: DecimalConvention): number {
   // Strip leading/trailing whitespace
   let cleaned = raw.trim();
   // Remove common currency symbols / prefixes that users may copy from spreadsheets
   cleaned = cleaned.replace(/^[€$£¥₹₽Fr.C\$A\$NZ\$zł₺Kčkr]+/i, '').trim();
+  // A cell of a multi-cell paste is read in the format of the whole block,
+  // so "450,000" next to "1,400.00" is not read as 450.
+  if (convention) return parseDecimalInConvention(cleaned, convention) ?? NaN;
   // If both comma and period are present, the last one is the decimal separator
   const hasComma = cleaned.includes(',');
   const hasPeriod = cleaned.includes('.');
@@ -221,6 +233,39 @@ export function parseClipboardNumber(raw: string): number {
     }
   }
   return parseFloat(cleaned);
+}
+
+/**
+ * The number format a multi-cell paste is read in, decided only by the cells
+ * that land in a numeric column.
+ *
+ * A pasted row usually carries a position number, a description and a unit
+ * next to its quantity and rate. Those are not amounts: a position number such
+ * as `1.1` reads as a point-decimal number and would outvote a Vietnamese
+ * `12.500 | 850.000`, so the quantity and rate came in a thousand times too
+ * small. Cells are mapped to columns the way the paste applies them: the
+ * clipboard column `i` lands on `columnIds[startColIdx + i]`.
+ *
+ * A single-cell paste returns `undefined` and keeps the cell-by-cell reading,
+ * as does a block in which no cell lands on a numeric column.
+ */
+export function pasteBlockConvention(
+  clipboardRows: readonly string[],
+  columnIds: readonly string[],
+  startColIdx: number,
+  fallbackLocale: string,
+): DecimalConvention | undefined {
+  const cells = clipboardRows.map((row) => row.split('\t'));
+  if (cells.reduce((n, row) => n + row.length, 0) <= 1) return undefined;
+  const numericCells: string[] = [];
+  for (const row of cells) {
+    row.forEach((cell, colOffset) => {
+      const colId = columnIds[startColIdx + colOffset];
+      if (colId !== undefined && NUMERIC_FIELDS.has(colId)) numericCells.push(cell);
+    });
+  }
+  if (numericCells.length === 0) return undefined;
+  return detectBlockNumberFormat(numericCells, fallbackLocale).convention;
 }
 
 /* ── Types ─────────────────────────────────────────────────────────── */
@@ -679,6 +724,82 @@ export interface BOQGridHandle {
 /** Stable stand-in for "no positions" so memo deps do not see a new array. */
 const NO_POSITIONS: Position[] = [];
 
+/** A grid row that is a priced line: not a section, total, resource or helper row. */
+function isLineRow(data: Record<string, unknown> | undefined): boolean {
+  return !!data && !!data.id && !data._isFooter && !data._isSection && !data._isResource
+    && !data._isAddResource && !data._isVariantHeader && !data._isCopilot;
+}
+
+/**
+ * The line at ``rowIndex`` is the last one of its section (or of the bill):
+ * the next line shown, past its own resource rows, belongs to another parent,
+ * or there is none.
+ */
+export function isLastLineOfItsGroup(
+  api: Pick<GridApi, 'getDisplayedRowAtIndex' | 'getDisplayedRowCount'>,
+  rowIndex: number,
+): boolean {
+  const here = api.getDisplayedRowAtIndex(rowIndex)?.data as Record<string, unknown> | undefined;
+  if (!isLineRow(here)) return false;
+  const count = api.getDisplayedRowCount();
+  for (let i = rowIndex + 1; i < count; i++) {
+    const data = api.getDisplayedRowAtIndex(i)?.data as Record<string, unknown> | undefined;
+    if (!data) return true;
+    if (data._isResource || data._isAddResource || data._isVariantHeader || data._isCopilot) continue;
+    if (!isLineRow(data)) return true;
+    return (data.parent_id ?? null) !== (here!.parent_id ?? null);
+  }
+  return true;
+}
+
+/** Columns Tab never stops on, whatever the row. */
+const TAB_SKIPPED_FIELDS = new Set(['_drag', '_checkbox', 'total', '_actions', '_expand', '_bim_link', '_bim_qty']);
+
+/**
+ * Where Tab (or Shift+Tab) goes from ``from``: the next cell of a priced line
+ * the user can edit, row after row, never a read-only cell (code, total) or a
+ * totals row.
+ *
+ * ``false`` when there is no such cell (past the last editable cell, before the
+ * first, or anywhere on a locked bill, where nothing is editable): AG Grid then
+ * leaves the keystroke to the browser and the focus moves on out of the grid,
+ * so Tab is never a keyboard trap. From a pinned totals row the grid's own
+ * answer (``gridNext``) stands, and ``false`` again when it has none.
+ */
+export function nextEntryCell(
+  api: Pick<GridApi, 'getAllDisplayedColumns' | 'getDisplayedRowAtIndex' | 'getDisplayedRowCount'>,
+  from: CellPosition,
+  backwards: boolean,
+  gridNext: CellPosition | null = null,
+): CellPosition | false {
+  if (from.rowPinned) return gridNext ?? false;
+  const columns = api.getAllDisplayedColumns();
+  const rowCount = api.getDisplayedRowCount();
+  let colIdx = columns.findIndex((c) => c.getColId() === from.column.getColId());
+  if (colIdx === -1) return gridNext ?? false;
+  let rowIndex = from.rowIndex;
+  const step = backwards ? -1 : 1;
+  // Bounded walk: at most every cell once.
+  for (let guard = 0; guard < columns.length * Math.max(rowCount, 1) + columns.length; guard++) {
+    colIdx += step;
+    if (colIdx >= columns.length) {
+      colIdx = 0;
+      rowIndex += 1;
+    } else if (colIdx < 0) {
+      colIdx = columns.length - 1;
+      rowIndex -= 1;
+    }
+    if (rowIndex < 0 || rowIndex >= rowCount) return false;
+    const node = api.getDisplayedRowAtIndex(rowIndex);
+    const column = columns[colIdx];
+    if (!node || !column || !isLineRow(node.data as Record<string, unknown> | undefined)) continue;
+    if (TAB_SKIPPED_FIELDS.has(column.getColId())) continue;
+    if (column.isSuppressNavigable(node) || !column.isCellEditable(node)) continue;
+    return { rowIndex, column, rowPinned: null };
+  }
+  return false;
+}
+
 const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   positions,
   onUpdatePosition,
@@ -783,6 +904,39 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   const gridRef = useRef<AgGridReact>(null);
   const gridApiRef = useRef<GridApi | null>(null);
   const gridWrapperRef = useRef<HTMLDivElement>(null);
+
+  // Keystrokes typed while the next cell editor is still opening are held and
+  // replayed into it (see keystrokeBuffer).
+  const keyBufferRef = useRef<KeystrokeBuffer | null>(null);
+  useEffect(() => {
+    const root = gridWrapperRef.current;
+    if (!root) return;
+    const buffer = createKeystrokeBuffer(root, () => gridApiRef.current);
+    keyBufferRef.current = buffer;
+    return () => {
+      buffer.dispose();
+      keyBufferRef.current = null;
+    };
+  }, []);
+
+  // Lines being typed in from the keyboard: opened on their description by
+  // "Add position". Enter on the rate of the last such line opens the next one.
+  const entryRowsRef = useRef<Set<string>>(new Set());
+  const onAddPositionRef = useRef(onAddPosition);
+  onAddPositionRef.current = onAddPosition;
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
+  const handleRateEntered = useCallback((rowId: string) => {
+    const api = gridApiRef.current;
+    if (!api || readOnlyRef.current || !entryRowsRef.current.has(rowId)) return;
+    const node = api.getRowNode(rowId);
+    if (!node || typeof node.rowIndex !== 'number') return;
+    if (!isLastLineOfItsGroup(api, node.rowIndex)) return;
+    entryRowsRef.current.delete(rowId);
+    // Hold what is typed next until the new line's description editor opens.
+    keyBufferRef.current?.arm(6000);
+    onAddPositionRef.current();
+  }, []);
   const addToast = useToastStore((s) => s.addToast);
 
   // Description density (compact / comfortable / tall) drives how many lines a
@@ -881,6 +1035,9 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
     data: Record<string, unknown>;
   }
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  // The grid cell the menu was opened from. The menu takes the focus; closing
+  // it puts the focus back on this cell, so the keyboard stays in the bill.
+  const menuReturnCellRef = useRef<CellPosition | null>(null);
 
   const showContextMenu = useCallback(
     (e: React.MouseEvent, type: ContextMenuTarget, data: Record<string, unknown>) => {
@@ -894,15 +1051,26 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
         clientX = rect.left;
         clientY = rect.bottom;
       }
-      // Position adjusted to not overflow viewport
-      const x = Math.min(clientX, window.innerWidth - 220);
-      const y = Math.min(clientY, window.innerHeight - 300);
-      setContextMenu({ x, y, type, data });
+      // The menu frame measures itself and keeps inside the window.
+      menuReturnCellRef.current = gridApiRef.current?.getFocusedCell() ?? null;
+      setContextMenu({ x: clientX, y: clientY, type, data });
     },
     [],
   );
 
-  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+    const cell = menuReturnCellRef.current;
+    menuReturnCellRef.current = null;
+    const api = gridApiRef.current;
+    if (!cell || !api || api.isDestroyed()) return;
+    // Only when the focus is still in the menu (Escape, a scroll, the overlay):
+    // an action that already moved it, into a dialog or an editor, keeps it.
+    const active = document.activeElement;
+    const inMenu = !active || active === document.body || !!active.closest('[role="menu"]');
+    if (!inMenu) return;
+    api.setFocusedCell(cell.rowIndex, cell.column, cell.rowPinned);
+  }, []);
 
   /* ── Issue #136: depth helpers for the deep-nesting cap ──────────────
    * ``rowTier`` is 1-based (a top-level row is tier 1). Adding a CHILD
@@ -1306,6 +1474,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
           `.ag-row[row-id="${positionId}"] .ag-cell[col-id="description"]`,
         );
         if (!cell) { window.setTimeout(step, 120); return; }
+        entryRowsRef.current.add(positionId);
         api.setFocusedCell(rowIndex, 'description');
         api.startEditingCell({ rowIndex, colKey: 'description' });
         if (api.getEditingCells().length === 0) {
@@ -1317,10 +1486,11 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
         // toast / "Add" button would tear the fresh editor down — pull
         // focus into the editor input once it has mounted.
         window.requestAnimationFrame(() => {
-          const editor = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
-            '.ag-cell.ag-cell-inline-editing input, .ag-cell.ag-cell-inline-editing textarea',
-          );
-          if (editor) {
+          // The description editor is a popup: it is not inside the cell.
+          const editor = gridWrapperRef.current
+            ? findOpenEditorInput(gridWrapperRef.current)
+            : null;
+          if (editor && document.activeElement !== editor) {
             editor.focus();
             editor.select?.();
           }
@@ -1469,6 +1639,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
       variationTraces,
       variationUntracedBadge,
       readOnly,
+      onRateEntered: handleRateEntered,
     }) as FullGridContext,
     [descDensity, currencySymbol, currencyCode, fxRates, onUpsertProjectFxRate, displayCurrency, onOpenFxRateSettings, locale, fmt, t, collapsedSections, onToggleSection, onAddPosition, onAddSubSection,
      expandedPositions, toggleResources, onRemoveResource, onUpdateResource, onUpdateResourceFields,
@@ -1478,7 +1649,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
      onDuplicatePosition, showContextMenu, anomalyMap, onApplyAnomalySuggestion, bimModelId,
      onUpdatePosition, onHighlightBIMElements, onLinkFromModel, onDeleteSection, onReorderSections, onFormulaApplied,
      positions, boqVariablesMap, customColumns, showResourceSplit, showResourceSplitPill, showCostAllocation, costAllocations, onOpenCostAllocation, renderInlineCopilot, displayQuantity,
-     sectionTotalBasis, variationTraces, variationUntracedBadge, readOnly, canDelete, addToast],
+     sectionTotalBasis, variationTraces, variationUntracedBadge, readOnly, canDelete, addToast, handleRateEntered],
   );
 
   /* ── Column defs (standard + custom) ─────────────────────────────── */
@@ -2101,6 +2272,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   );
 
   /* ── Row class rules ──────────────────────────────────────────── */
+  const grandTotalFooterType = footerRows[footerRows.length - 1]?._footerType;
   const getRowClass = useCallback((params: RowClassParams) => {
     const classes: string[] = [];
     if (params.data?._isSection) {
@@ -2114,6 +2286,8 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
     }
     if (params.data?._isFooter) {
       classes.push('bg-surface-tertiary/50', 'border-t', 'border-border');
+      // The last footer row is the bill's bottom line (gross, or net when there is no VAT).
+      if (params.data._footerType === grandTotalFooterType) classes.push('oe-grand-total-row');
     }
     if (params.data?._isResource || params.data?._isAddResource || params.data?._isVariantHeader) {
       classes.push('oe-resource-row');
@@ -2158,7 +2332,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
       }
     }
     return classes.join(' ');
-  }, []);
+  }, [grandTotalFooterType]);
 
   /* ── Full-width row: sections + resource sub-rows ─────────────── */
   const isFullWidthRow = useCallback(
@@ -2485,6 +2659,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
     () => ({
       formulaCellEditor: FormulaCellEditor,
       rateCellEditor: RateCellEditor,
+      longTextCellEditor: LongTextCellEditor,
       autocompleteCellEditor: AutocompleteCellEditor,
       unitCellEditor: UnitCellEditor,
       actionsCellRenderer: ActionsCellRenderer,
@@ -2515,49 +2690,14 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
     [],
   );
 
-  /* ── Tab navigation: skip non-editable cells (Drag, Total, Actions) */
-  const NON_EDITABLE_FIELDS = useMemo(() => new Set(['_drag', '_checkbox', 'total', '_actions', '_expand', '_bim_link', '_bim_qty']), []);
-
+  /* ── Tab navigation: editable cells of priced lines only ─────────── */
   const tabToNextCell = useCallback(
     (params: TabToNextCellParams): CellPosition | boolean => {
-      const { nextCellPosition, backwards } = params;
-      if (!nextCellPosition) return false;
-
-      // Walk forward/backward until we find an editable column
       const api = gridApiRef.current;
-      if (!api) return nextCellPosition;
-
-      const allColumns = api.getAllDisplayedColumns();
-      const startIdx = allColumns.findIndex(
-        (col) => col.getColId() === nextCellPosition.column.getColId(),
-      );
-      if (startIdx === -1) return nextCellPosition;
-
-      const step = backwards ? -1 : 1;
-      let colIdx = startIdx;
-      let { rowIndex } = nextCellPosition;
-
-      // Search across columns (and rows if we wrap around)
-      for (let attempts = 0; attempts < allColumns.length * 2; attempts++) {
-        const col = allColumns[colIdx];
-        const colId = col?.getColId() ?? '';
-        if (col && !NON_EDITABLE_FIELDS.has(colId)) {
-          return { rowIndex, column: col, rowPinned: nextCellPosition.rowPinned };
-        }
-
-        colIdx += step;
-        if (colIdx >= allColumns.length) {
-          colIdx = 0;
-          rowIndex += 1;
-        } else if (colIdx < 0) {
-          colIdx = allColumns.length - 1;
-          rowIndex -= 1;
-        }
-      }
-
-      return nextCellPosition;
+      if (!api) return params.nextCellPosition ?? false;
+      return nextEntryCell(api, params.previousCellPosition, params.backwards, params.nextCellPosition);
     },
-    [NON_EDITABLE_FIELDS],
+    [],
   );
 
   /* ── Clipboard: Ctrl+C / Ctrl+V on focused cells ────────────────── */
@@ -2613,7 +2753,13 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
    * and `invalid` means the clipboard text was not a usable number.
    */
   const applyCellPaste = useCallback(
-    (api: GridApi, rowIndex: number, colId: string, rawClipboard: string): CellPasteOutcome => {
+    (
+      api: GridApi,
+      rowIndex: number,
+      colId: string,
+      rawClipboard: string,
+      convention?: DecimalConvention,
+    ): CellPasteOutcome => {
       const rowNode = api.getDisplayedRowAtIndex(rowIndex);
       if (!rowNode?.data?.id) return 'blocked';
 
@@ -2625,7 +2771,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
       let newValue: string | number = rawClipboard;
 
       if (NUMERIC_FIELDS.has(colId)) {
-        const parsed = parseClipboardNumber(rawClipboard);
+        const parsed = parseClipboardNumber(rawClipboard, convention);
         if (isNaN(parsed) || !isFinite(parsed) || parsed < 0) return 'invalid';
         // Issue #287: a pasted number is typed against the DISPLAYED measurement
         // system, so round it as the user sees it and then convert back to
@@ -2728,6 +2874,16 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
           (col) => col.getColId() === focusedCell.column.getColId(),
         );
         if (startColIdx === -1) return;
+        // A block of several cells is read in one number format, decided by
+        // the unambiguous cells that land in the quantity and rate columns;
+        // the project's market breaks a tie. A single cell keeps the
+        // cell-by-cell reading.
+        const blockConvention = pasteBlockConvention(
+          clipboardRows,
+          allColumns.map((col) => col.getColId()),
+          startColIdx,
+          localeForCurrency(currencyCode) ?? getNumberLocale(),
+        );
 
         let pastedCount = 0;
         let invalidCount = 0;
@@ -2745,7 +2901,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
 
             const targetCol = allColumns[targetColIdx]!;
             const targetColId = targetCol.getColId();
-            const outcome = applyCellPaste(api, targetRowIdx, targetColId, cells[colOffset] ?? '');
+            const outcome = applyCellPaste(api, targetRowIdx, targetColId, cells[colOffset] ?? '', blockConvention);
             if (outcome === 'applied') pastedCount++;
             // A cell that carried data but was not a usable number is the silent
             // drop from #347: count it so the user is warned. Read-only targets
@@ -2955,6 +3111,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
     isCellPasteable,
     onUpdatePosition,
     displayQuantity,
+    currencyCode,
   ]);
 
   /* ── Right-click on AG Grid cells → context menu ──────────────── */
@@ -2970,9 +3127,11 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
       else if (data._isFooter) type = 'footer';
       else if (data._isResource) type = 'resource';
       else if (data._isAddResource) type = 'addResource';
-      const x = Math.min(e.clientX, window.innerWidth - 220);
-      const y = Math.min(e.clientY, window.innerHeight - 300);
-      setContextMenu({ x, y, type, data });
+      menuReturnCellRef.current =
+        event.rowIndex !== null && event.column
+          ? { rowIndex: event.rowIndex, column: event.column, rowPinned: event.rowPinned ?? null }
+          : (gridApiRef.current?.getFocusedCell() ?? null);
+      setContextMenu({ x: e.clientX, y: e.clientY, type, data });
     },
     [],
   );
@@ -3234,22 +3393,12 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
         <>
           {/* Backdrop */}
           <div className="fixed inset-0 z-[9998]" onClick={closeContextMenu} onContextMenu={(e) => { e.preventDefault(); closeContextMenu(); }} />
-          {/* Menu — flip to the left if it would overflow the viewport (Bug 11). */}
-          <div
-            className="fixed z-[9999] min-w-[200px] rounded-lg border border-border-light bg-surface-elevated shadow-lg py-1"
-            style={(() => {
-              const MENU_WIDTH = 240;
-              const MENU_HEIGHT_EST = 360;
-              const overflowX = contextMenu.x + MENU_WIDTH > window.innerWidth - 8;
-              const overflowY = contextMenu.y + MENU_HEIGHT_EST > window.innerHeight - 8;
-              const left = overflowX
-                ? Math.max(8, contextMenu.x - MENU_WIDTH)
-                : contextMenu.x;
-              const top = overflowY
-                ? Math.max(8, contextMenu.y - MENU_HEIGHT_EST)
-                : contextMenu.y;
-              return { left, top };
-            })()}
+          {/* Menu: measured, kept inside the window and scrollable (ContextMenuFrame). */}
+          <ContextMenuFrame
+            x={contextMenu.x}
+            y={contextMenu.y}
+            onClose={closeContextMenu}
+            label={t('common.actions', { defaultValue: 'Actions' })}
           >
             {/* — Position context menu — */}
             {contextMenu.type === 'position' && (() => {
@@ -3599,7 +3748,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                 />
               </>;
             })()}
-          </div>
+          </ContextMenuFrame>
         </>,
         document.body,
       )}
@@ -4010,8 +4159,8 @@ function CtxSeparator() {
 function CtxGroupLabel({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-1.5 px-3 py-1 select-none">
-      <Sparkles size={10} className="text-violet-500" />
-      <span className="text-[10px] font-semibold text-violet-500 uppercase tracking-wider">{label}</span>
+      <Sparkles size={11} className="text-content-tertiary" />
+      <span className="text-xs font-semibold text-content-secondary">{label}</span>
     </div>
   );
 }

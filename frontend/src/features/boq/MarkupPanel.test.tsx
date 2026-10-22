@@ -1,9 +1,10 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MarkupPanel } from './MarkupPanel';
-import type { Markup } from './api';
+import { vi } from 'vitest';
+import { MarkupPanel, draftToMarkup } from './MarkupPanel';
+import { boqApi, type Markup } from './api';
 
 /**
  * Regression tests for audit findings #4 and #5 (BOQ fixed-amount markups).
@@ -94,5 +95,66 @@ describe('MarkupPanel fixed-amount markups (audit #4/#5)', () => {
 
     expect(screen.getByText('1,500.00')).toBeInTheDocument();
     expect(screen.queryByText('1000500.00')).toBeNull();
+  });
+});
+
+describe('Adding a markup', () => {
+  it('opens a form and adds nothing until the user confirms a rate', async () => {
+    const add = vi.spyOn(boqApi, 'addMarkup').mockResolvedValue(fixedMarkup('0'));
+    renderPanel([], 1000);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Markup' }));
+    expect(add).not.toHaveBeenCalled();
+    const form = screen.getByRole('form', { name: 'New markup' });
+    expect(form).toBeInTheDocument();
+
+    // No rate typed: refused with a message, nothing stored.
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Chi phí chung' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add to estimate' }));
+    expect(add).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('percentage');
+
+    fireEvent.change(screen.getByLabelText('%'), { target: { value: '6,5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add to estimate' }));
+    await waitFor(() => expect(add).toHaveBeenCalledTimes(1));
+    expect(add.mock.calls[0]?.[1]).toMatchObject({
+      name: 'Chi phí chung',
+      percentage: 6.5,
+      category: 'overhead',
+      apply_to: 'direct_cost',
+    });
+    add.mockRestore();
+  });
+
+  it('cancelling the form adds nothing', () => {
+    const add = vi.spyOn(boqApi, 'addMarkup').mockResolvedValue(fixedMarkup('0'));
+    renderPanel([], 1000);
+    fireEvent.click(screen.getByRole('button', { name: 'Add Markup' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('form', { name: 'New markup' })).toBeNull();
+    expect(add).not.toHaveBeenCalled();
+    add.mockRestore();
+  });
+});
+
+describe('draftToMarkup', () => {
+  const base = { name: 'VAT', percentage: '10', category: 'tax' as const, applyTo: 'cumulative' as const };
+
+  it('builds the payload from what the user typed', () => {
+    expect(draftToMarkup(base, 4)).toEqual({
+      ok: true,
+      data: { name: 'VAT', percentage: 10, category: 'tax', apply_to: 'cumulative', sort_order: 4 },
+    });
+  });
+
+  it('refuses a missing name or an empty / out-of-range rate', () => {
+    expect(draftToMarkup({ ...base, name: '  ' }, 0)).toEqual({ ok: false, error: 'name' });
+    expect(draftToMarkup({ ...base, percentage: '' }, 0)).toEqual({ ok: false, error: 'percentage' });
+    expect(draftToMarkup({ ...base, percentage: '150' }, 0)).toEqual({ ok: false, error: 'percentage' });
+  });
+
+  it('carries the section a scoped markup is for', () => {
+    const result = draftToMarkup({ ...base, scopePositionId: 'sec-1' }, 0);
+    expect(result.ok && result.data.scope_position_id).toBe('sec-1');
   });
 });

@@ -211,6 +211,21 @@ class CatalogResourceRepository:
         result = await self.session.execute(stmt)
         return [{"region": region, "count": count} for region, count in result.all()]
 
+    async def currency_by_region(self) -> dict[str, str]:
+        """The currency most active resources of each region are priced in."""
+        stmt = (
+            select(CatalogResource.region, CatalogResource.currency, func.count())
+            .where(CatalogResource.is_active.is_(True), CatalogResource.region.isnot(None))
+            .group_by(CatalogResource.region, CatalogResource.currency)
+        )
+        best: dict[str, tuple[int, str]] = {}
+        for region, currency, count in (await self.session.execute(stmt)).all():
+            if not region or not currency:
+                continue
+            if region not in best or count > best[region][0]:
+                best[region] = (int(count), str(currency).upper())
+        return {region: currency for region, (_count, currency) in best.items()}
+
     async def delete_by_region(self, region: str) -> int:
         """Hard-delete all resources for a given region. Returns count deleted."""
         from sqlalchemy import delete as sa_delete

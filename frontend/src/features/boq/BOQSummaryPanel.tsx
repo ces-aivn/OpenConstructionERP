@@ -126,7 +126,7 @@ export function QualityScoreRing({
           </span>
         </div>
         <div className="flex flex-col">
-          <span className="text-2xs font-medium text-content-tertiary uppercase tracking-wider">
+          <span className="text-2xs font-medium text-content-tertiary">
             {t('boq.quality', { defaultValue: 'Quality' })}
           </span>
           <span className="text-xs font-semibold text-content-primary">{label}</span>

@@ -109,6 +109,47 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 const CATEGORIES = ['overhead', 'profit', 'tax', 'contingency', 'insurance', 'bond', 'other'] as const;
 
+/** A markup the user is still filling in; nothing is stored until confirmed. */
+export interface MarkupDraft {
+  name: string;
+  /** As typed, so `6,5` and `6.5` both read as six and a half. */
+  percentage: string;
+  category: (typeof CATEGORIES)[number];
+  applyTo: 'direct_cost' | 'cumulative';
+  scopePositionId?: string;
+  scopeLabel?: string;
+}
+
+function emptyDraft(): MarkupDraft {
+  return { name: '', percentage: '', category: 'overhead', applyTo: 'direct_cost' };
+}
+
+/**
+ * Turn a confirmed draft into the create payload, or say which field is
+ * missing. The percentage has to be typed: there is no default rate, so a
+ * markup can never land on the total at a figure nobody chose.
+ */
+export function draftToMarkup(
+  draft: MarkupDraft,
+  sortOrder: number,
+): { ok: true; data: CreateMarkupData } | { ok: false; error: 'name' | 'percentage' } {
+  const name = draft.name.trim();
+  if (!name) return { ok: false, error: 'name' };
+  const pct = parseDecimalInput(draft.percentage);
+  if (pct === null || pct < 0 || pct > 100) return { ok: false, error: 'percentage' };
+  return {
+    ok: true,
+    data: {
+      name,
+      percentage: pct,
+      category: draft.category,
+      apply_to: draft.applyTo,
+      sort_order: sortOrder,
+      ...(draft.scopePositionId ? { scope_position_id: draft.scopePositionId } : {}),
+    },
+  };
+}
+
 /**
  * Charge each tranche of `base` at its own band rate and add them up.
  *
@@ -207,6 +248,10 @@ export function MarkupPanel({ boqId, markups, directCost, currencySymbol, curren
   const [isOpen, setIsOpen] = useState(true);
   const [editState, setEditState] = useState<EditState | null>(null);
   const [showRegionMenu, setShowRegionMenu] = useState(false);
+  // A new markup is a draft until the user has named it and typed its rate:
+  // nothing is added to the bill, and nothing to its total, before that.
+  const [draft, setDraft] = useState<MarkupDraft | null>(null);
+  const [draftError, setDraftError] = useState<string | null>(null);
 
   // Re-expand when the host bumps openSignal (toolbar "Markups / OH&P" jump).
   // Ignore the initial 0 so a user who manually collapsed the panel is not
@@ -225,6 +270,7 @@ export function MarkupPanel({ boqId, markups, directCost, currencySymbol, curren
     mutationFn: (data: CreateMarkupData) => boqApi.addMarkup(boqId, data),
     onSuccess: () => {
       invalidate();
+      setDraft(null);
       addToast({ type: 'success', title: t('boq.markup_added', { defaultValue: 'Markup added' }) });
     },
     onError: (err: Error) => {
@@ -348,13 +394,26 @@ export function MarkupPanel({ boqId, markups, directCost, currencySymbol, curren
   }, [markups, directCost]);
 
   const handleAddMarkup = useCallback(() => {
-    addMutation.mutate({
-      name: t('boq.new_markup', { defaultValue: 'New Markup' }),
-      percentage: 5,
-      category: 'overhead',
-      sort_order: markups.length,
-    });
-  }, [addMutation, markups.length, t]);
+    setDraftError(null);
+    setDraft(emptyDraft());
+  }, []);
+
+  const handleConfirmDraft = useCallback(() => {
+    if (!draft) return;
+    const result = draftToMarkup(draft, markups.length);
+    if (!result.ok) {
+      setDraftError(
+        result.error === 'name'
+          ? t('boq.markup_draft_name_required', { defaultValue: 'Enter a name for the markup.' })
+          : t('boq.markup_draft_percentage_invalid', {
+              defaultValue: 'Enter a percentage between 0 and 100.',
+            }),
+      );
+      return;
+    }
+    setDraftError(null);
+    addMutation.mutate(result.data);
+  }, [draft, markups.length, addMutation, t]);
 
   const handleToggleActive = useCallback(
     (markup: Markup) => {
@@ -565,12 +624,11 @@ export function MarkupPanel({ boqId, markups, directCost, currencySymbol, curren
                   onChange={(e) => {
                     if (!e.target.value) return;
                     const sec = sections.find((s) => s.id === e.target.value);
-                    addMutation.mutate({
-                      name: `${t('boq.new_markup', { defaultValue: 'New Markup' })} (${sec?.ordinal ?? ''})`,
-                      percentage: 5,
-                      category: 'overhead',
-                      sort_order: markups.length,
-                      scope_position_id: e.target.value,
+                    setDraftError(null);
+                    setDraft({
+                      ...emptyDraft(),
+                      scopePositionId: e.target.value,
+                      scopeLabel: `${sec?.ordinal ?? ''} ${sec?.description ?? ''}`.trim(),
                     });
                     e.target.value = '';
                   }}
@@ -601,6 +659,96 @@ export function MarkupPanel({ boqId, markups, directCost, currencySymbol, curren
                 })}
               </div>
             )}
+
+          {draft && (
+            <form
+              aria-label={t('boq.markup_draft_title', { defaultValue: 'New markup' })}
+              className="px-5 py-3 border-t border-border-light bg-surface-secondary/30 space-y-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleConfirmDraft();
+              }}
+            >
+              {draft.scopeLabel && (
+                <div className="text-xs text-content-secondary">
+                  {t('boq.markup_draft_scope', { defaultValue: 'For section {{section}}', section: draft.scopeLabel })}
+                </div>
+              )}
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="flex flex-col gap-1 text-xs text-content-secondary">
+                  {t('boq.markup_name', { defaultValue: 'Name' })}
+                  <input
+                    autoFocus
+                    value={draft.name}
+                    onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                    className="h-8 w-56 rounded-md border border-border bg-surface-primary px-2 text-sm"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-xs text-content-secondary">
+                  {t('boq.markup_percentage', { defaultValue: '%' })}
+                  <input
+                    inputMode="decimal"
+                    value={draft.percentage}
+                    onChange={(e) => setDraft({ ...draft, percentage: e.target.value })}
+                    className="h-8 w-20 rounded-md border border-border bg-surface-primary px-2 text-sm text-right tabular-nums"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-xs text-content-secondary">
+                  {t('boq.markup_category', { defaultValue: 'Category' })}
+                  <select
+                    value={draft.category}
+                    onChange={(e) => setDraft({ ...draft, category: e.target.value as MarkupDraft['category'] })}
+                    className="h-8 rounded-md border border-border bg-surface-primary px-1.5 text-sm"
+                  >
+                    {CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {categoryLabel(cat)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-xs text-content-secondary">
+                  {t('boq.markup_draft_base', { defaultValue: 'Applied to' })}
+                  <select
+                    value={draft.applyTo}
+                    onChange={(e) => setDraft({ ...draft, applyTo: e.target.value as MarkupDraft['applyTo'] })}
+                    className="h-8 rounded-md border border-border bg-surface-primary px-1.5 text-sm"
+                  >
+                    <option value="direct_cost">
+                      {t('boq.markup_base_direct_cost', { defaultValue: 'Direct cost' })}
+                    </option>
+                    <option value="cumulative">
+                      {t('boq.markup_base_cumulative', { defaultValue: 'Direct cost + markups above' })}
+                    </option>
+                  </select>
+                </label>
+                <div className="flex items-center gap-1 ml-auto">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraft(null);
+                      setDraftError(null);
+                    }}
+                    className="h-8 rounded-md px-3 text-xs text-content-secondary hover:bg-surface-secondary"
+                  >
+                    {t('common.cancel', { defaultValue: 'Cancel' })}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={addMutation.isPending}
+                    className="h-8 rounded-md bg-oe-blue px-3 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    {t('boq.markup_draft_confirm', { defaultValue: 'Add to estimate' })}
+                  </button>
+                </div>
+              </div>
+              {draftError && (
+                <p role="alert" className="text-xs text-semantic-error">
+                  {draftError}
+                </p>
+              )}
+            </form>
+          )}
 
           {/* Markup table */}
           {markups.length > 0 ? (

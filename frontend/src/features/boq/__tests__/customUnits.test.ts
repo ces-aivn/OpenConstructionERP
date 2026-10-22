@@ -54,7 +54,11 @@ describe('saveCustomUnit', () => {
     saveCustomUnit('CRATE');
 
     expect(apiPatch).toHaveBeenCalledTimes(1);
-    expect(apiPatch).toHaveBeenCalledWith('/v1/users/me/custom-units/', { units: ['Pallet²'] });
+    expect(apiPatch).toHaveBeenCalledWith(
+      '/v1/users/me/custom-units/',
+      { units: ['Pallet²'] },
+      { suppressErrorToast: true },
+    );
     expect(getUnitsForLocale('en')).toContain('Pallet²');
   });
 });

@@ -149,7 +149,7 @@ class TestTheControl:
             await BOQService(session).delete_position(first.id)
 
         assert exc.value.status_code == 409
-        assert exc.value.detail == LOCKED_DETAIL
+        assert str(exc.value.detail) == LOCKED_DETAIL
         assert await _position_rows(session, boq.id) == before
 
 
@@ -168,7 +168,7 @@ class TestRestoringASnapshot:
             await service.restore_snapshot(boq.id, snapshot.id)
 
         assert exc.value.status_code == 409
-        assert exc.value.detail == LOCKED_DETAIL
+        assert str(exc.value.detail) == LOCKED_DETAIL
         # Same row ids, not just the same count: a restore recreates every line
         # under a fresh id, so an id that survived is a line nobody touched.
         assert await _position_rows(session, boq.id) == lines_before
@@ -203,7 +203,7 @@ class TestDuplicatingALine:
             await BOQService(session).duplicate_position(first.id)
 
         assert exc.value.status_code == 409
-        assert exc.value.detail == LOCKED_DETAIL
+        assert str(exc.value.detail) == LOCKED_DETAIL
         assert await _position_rows(session, boq.id) == before
 
     async def test_an_unlocked_bill_still_duplicates(self, session: AsyncSession) -> None:

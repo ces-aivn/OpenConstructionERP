@@ -815,6 +815,53 @@ async def list_catalog_regions(
     return await repo.stats_by_region()
 
 
+#: Country of the market resource sets, by their region tag.
+_MARKET_REGION_COUNTRY = {"VN": "VN", "US": "US"}
+
+
+@router.get("/regions/preferred/")
+async def preferred_catalog_region(
+    session: SessionDep,
+    user_id: CurrentUserId,
+    project_id: uuid.UUID | None = Query(default=None, description="Active project, when one is open"),
+) -> dict[str, str]:
+    """The loaded resource region the catalogue should open on for this reader.
+
+    Same rule as the cost database: the active project's currency (or its
+    country's) first, the interface language second (``vi`` -> VND, ``en`` ->
+    USD). Among the loaded regions priced in that currency the one in the same
+    country wins, then the largest. ``region`` is empty when none is loaded,
+    and the page then keeps its own default.
+    """
+    from app.dependencies import verify_project_access
+    from app.modules.catalog.repository import CatalogResourceRepository
+    from app.modules.costs.preferred_region import market_hint, pick_preferred_region, region_country_table
+
+    project_currency: str | None = None
+    project_country: str | None = None
+    if project_id is not None:
+        await verify_project_access(project_id, user_id, session)
+        from app.modules.projects.models import Project
+
+        project = await session.get(Project, project_id)
+        if project is not None:
+            project_currency = project.currency or None
+            project_country = project.country_code or None
+
+    hint = market_hint(project_currency=project_currency, project_country=project_country, language=get_locale())
+    if hint is None:
+        return {"region": "", "currency": "", "source": "none"}
+    repo = CatalogResourceRepository(session)
+    stats = await repo.stats_by_region()
+    region = pick_preferred_region(
+        ((str(entry["region"]), int(entry["count"])) for entry in stats),  # type: ignore[call-overload]
+        hint,
+        region_currency=await repo.currency_by_region(),
+        region_country={**region_country_table(), **_MARKET_REGION_COUNTRY},
+    )
+    return {"region": region, "currency": hint.currency, "source": hint.source if region else "none"}
+
+
 # ── Delete region ────────────────────────────────────────────────────────
 
 

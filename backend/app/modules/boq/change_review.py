@@ -43,8 +43,6 @@ from sqlalchemy import func, null, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.i18n import get_locale
-from app.core.validation.messages import translate
 from app.modules.boq.change_review_models import (
     FLAG_STATUS_OPEN,
     FLAG_STATUS_REVIEWED,
@@ -63,6 +61,7 @@ from app.modules.boq.change_review_schemas import (
     ChangeFlagScanResponse,
     ChangeFlagSummaryResponse,
 )
+from app.modules.boq.locked_bill import boq_locked_error
 from app.modules.boq.models import BOQ, Position, QuantityLink
 from app.modules.boq.repository import PositionRepository
 from app.modules.boq.service import (
@@ -1650,10 +1649,7 @@ class ChangeReviewService:
         """
         boq = await self._get_boq(boq_id)
         if boq.is_locked:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=translate("errors.boq_locked", locale=get_locale()),
-            )
+            raise boq_locked_error()
         wanted = list(dict.fromkeys(position_ids))
         _checked, rows = await self._proposals(boq, only=set(wanted))
         by_position = {row.position_id: row for row in rows}

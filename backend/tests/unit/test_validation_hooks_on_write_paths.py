@@ -298,9 +298,10 @@ class _StubSubmittalRepo:
 
 
 @pytest.mark.asyncio
-async def test_submitting_a_hollow_submittal_logs_its_rule_ids(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_submitting_a_hollow_submittal_is_refused_with_its_rule_ids() -> None:
+    """Checks at error level block the submission and name the failing rules."""
+    from fastapi import HTTPException
+
     from app.modules.submittals.models import Submittal
 
     # No reviewer, no required date, no spec section, no linked scope.
@@ -318,6 +319,42 @@ async def test_submitting_a_hollow_submittal_logs_its_rule_ids(
     service.session = _StubSession()
     service.repo = _StubSubmittalRepo(row)
 
+    with pytest.raises(HTTPException) as exc_info:
+        await service.submit_submittal(row.id)
+
+    detail = exc_info.value.detail
+    assert exc_info.value.status_code == 422
+    assert detail["code"] == "submittal_validation_blocked"
+    assert "submittal.reviewer_assigned" in detail["rules"]
+    assert "submittal.required_date_present" in detail["rules"]
+    # Warnings do not block, so they are not listed as the reason.
+    assert "submittal.spec_section_present" not in detail["rules"]
+    assert row.status == "draft"
+
+
+@pytest.mark.asyncio
+async def test_submitting_with_only_warnings_logs_their_rule_ids(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.modules.submittals.models import Submittal
+
+    # A reviewer and a due date, but no spec section and no linked scope.
+    row = Submittal(
+        id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        submittal_number="SUB-001",
+        title="Shop drawing - structural steel",
+        submittal_type="shop_drawing",
+        status="draft",
+        current_revision=0,
+        reviewer_id=uuid.uuid4(),
+        date_required="2999-01-31",
+        linked_boq_item_ids=[],
+    )
+    service = SubmittalService.__new__(SubmittalService)
+    service.session = _StubSession()
+    service.repo = _StubSubmittalRepo(row)
+
     with caplog.at_level(logging.INFO):
         await service.submit_submittal(row.id)
 
@@ -325,10 +362,8 @@ async def test_submitting_a_hollow_submittal_logs_its_rule_ids(
     assert payloads, "submitting must emit the structured state-change line"
     payload = payloads[-1]
     assert payload["to_status"] == "submitted"
-    reported = set(payload.get("validation_errors", [])) | set(payload.get("validation_warnings", []))
-    assert "submittal.reviewer_assigned" in reported
-    assert "submittal.required_date_present" in reported
-    assert "submittal.spec_section_present" in reported
+    assert payload.get("validation_errors", []) == []
+    assert "submittal.spec_section_present" in payload.get("validation_warnings", [])
 
 
 @pytest.mark.asyncio

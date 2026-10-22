@@ -57,14 +57,18 @@ async def _refusal_of_the_full_guard() -> str:
     with pytest.raises(HTTPException) as exc:
         await service._ensure_not_locked(uuid.uuid4())
     assert exc.value.status_code == 409
-    return exc.value.detail
+    # Coded for the client, and still the sentence wherever it is read as text.
+    assert exc.value.detail["code"] == "boq_locked"
+    return str(exc.value.detail)
 
 
 async def _refusal_of_the_column_guard() -> str:
     with pytest.raises(HTTPException) as exc:
         await _service_with_locked_row()._ensure_boq_writable(uuid.uuid4())
     assert exc.value.status_code == 409
-    return exc.value.detail
+    # Coded for the client, and still the sentence wherever it is read as text.
+    assert exc.value.detail["code"] == "boq_locked"
+    return str(exc.value.detail)
 
 
 async def _refusal_of_the_link() -> str:

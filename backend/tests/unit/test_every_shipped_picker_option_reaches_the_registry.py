@@ -172,50 +172,12 @@ PICKER_REGIONS_WITH_NO_COUNTRY: dict[str, str] = {
 #: reason says so, because "every member reads this" and "we picked one" produce
 #: the same resolver output and only a written reason tells them apart.
 MACRO_OPTION_ANCHORS: dict[str, tuple[str, str]] = {
-    "Nordics": (
-        "SE",
-        "Sweden, Norway, Denmark and Finland all read DIN 276 in COUNTRY_TO_STANDARD, so the "
-        "anchor changes no answer and only decides which country the resolution reports.",
-    ),
-    "LatinAmerica": (
-        "MX",
-        "The residual 'Other' option. Every Spanish-speaking market in the table reads "
-        "MasterFormat; Brazil is the one member that does not and it ships its own picker option "
-        "resolving to SINAPI, so it never reaches this anchor.",
-    ),
-    "MiddleEast": (
-        "AE",
-        "Matches the MIDDLE_EAST alias the table already carried. Every Gulf and Levantine market "
-        "in COUNTRY_TO_STANDARD reads MasterFormat, so the anchor changes no answer.",
-    ),
-    "GulfStates": (
-        "AE",
-        "Matches the GULF and GCC aliases. All six GCC states read MasterFormat, so the anchor changes no answer.",
-    ),
-    "NorthAfrica": (
-        "EG",
-        "Egypt, Morocco, Tunisia and Algeria all read MasterFormat, so the anchor changes no "
-        "answer. Egypt is the largest construction market in the option.",
-    ),
-    "EastAfrica": (
-        "KE",
-        "Kenya, Uganda and Tanzania all read NRM, so the anchor changes no answer.",
-    ),
-    "WestAfrica": (
-        "NG",
-        "A genuine split, and the anchor is a decision. Nigeria and Ghana read NRM while Senegal, "
-        "Ivory Coast and Cameroon read DPGF on the DTU lineage. Nigeria is the larger market and "
-        "the one the country programme ships. The alternative is not neutrality but DIN 276, which "
-        "is wrong for every member, so anchoring is strictly better than leaving it unresolved. A "
-        "Francophone project resolves to DPGF on its own country, which beats the region.",
-    ),
-    "SoutheastAsia": (
-        "ID",
-        "A genuine split, and the anchor is a decision. Indonesia, Thailand, Vietnam and the "
-        "Philippines read MasterFormat while Malaysia and Singapore read NRM on RICS-aligned QS "
-        "practice. Indonesia matches the ASIA_PAC alias the table already anchored, so the two "
-        "spellings of the same region cannot answer differently.",
-    ),
+    # The VN/US build's picker ships no macro-region option: its markets are
+    # Vietnam and the United States, plus the countryless "International".
+    # The macro anchors this table used to pin (Nordics, LatinAmerica,
+    # MiddleEast, GulfStates, NorthAfrica, EastAfrica, WestAfrica,
+    # SoutheastAsia) still live in REGION_ALIAS_TO_COUNTRY for stored rows;
+    # an option re-added to the picker must be declared here again.
 }
 
 
@@ -781,7 +743,7 @@ STANDARD_PICKERS: dict[str, tuple[Path, str]] = {
 #: catches one that reads the wrong literal entirely and still finds a coherent
 #: handful. Changing a picker means changing the number here, deliberately.
 STANDARD_PICKER_OPTION_COUNTS: dict[str, int] = {
-    "CreateProjectPage.STANDARD_GROUPS": 16,
+    "CreateProjectPage.STANDARD_GROUPS": 17,
     "QuickEstimatePage.STANDARDS": 4,
     "CreateAssemblyPage.STANDARDS": 3,
 }

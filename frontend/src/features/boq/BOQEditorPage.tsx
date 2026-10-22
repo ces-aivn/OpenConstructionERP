@@ -23,7 +23,8 @@ import { useAuthStore } from '@/stores/useAuthStore';
 import { useHasPermission } from '@/shared/lib/permissionGates';
 import { useBackendModuleOff } from '@/shared/hooks/useBackendModuleOff';
 import { useBIMLinkSelectionStore } from '@/stores/useBIMLinkSelectionStore';
-import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useProjectContextStore, useSyncActiveProjectWithRecord } from '@/stores/useProjectContextStore';
+import { isTypingTarget } from '@/shared/hooks/useKeyboardShortcuts';
 import { usePreferencesStore, useNumberLocale } from '@/stores/usePreferencesStore';
 import { useDisplayQuantity } from '@/shared/hooks/useDisplayQuantity';
 import {
@@ -121,13 +122,15 @@ import {
   computeQualityScore,
   isResourceDrivenRate,
   nextTopLevelSectionOrdinal,
+  nextPositionOrdinals,
   type QualityBreakdown,
   type Tip,
 } from './boqHelpers';
 
 import { BOQToolbar } from './BOQToolbar';
 import { PriceReviewPanel } from './PriceReviewPanel';
-import { ExcelPasteModal, type PastedRow } from './ExcelPasteModal';
+import { ExcelPasteModal, pastedRowsToBulkItems, type PastedRow } from './ExcelPasteModal';
+import { localeForCurrency } from '@/shared/lib/parseDecimalBlock';
 import { QualityScoreRing, TipsPanel, QuickAddFAB, EmptyBOQOnboarding, ExportWarningDialog } from './BOQSummaryPanel';
 import { ActivityPanel } from './ActivityPanel';
 import { CostDatabaseSearchModal, AssemblyPickerModal } from './BOQModals';
@@ -137,6 +140,7 @@ import { BOQVariablesDialog } from './BOQVariablesDialog';
 import { CostPerAreaBenchmark } from './CostPerAreaBenchmark';
 import { HistoricalRangePanel } from '@/features/analytics/HistoricalRange';
 import { RenumberDialog, type RenumberScheme, type RenumberCustom } from './RenumberDialog';
+import { BOQRevisionDialog, type RevisionRequest } from './BOQRevisionDialog';
 import { LinkedPositionsModal } from './LinkedPositionsModal';
 import { repointedMetadata } from './repointedMetadata';
 import { fmtList } from '@/shared/lib/formatters';
@@ -256,16 +260,11 @@ export function BOQEditorPage() {
     enabled: !!boq?.project_id,
   });
 
-  // A bill opened by its URL names its project in the breadcrumb, while the
-  // header picker read "Select project" because nothing had set the context.
-  // Pin the bill's project once it is known, only when no project is active,
-  // so an explicit pick elsewhere is never overridden.
-  const contextProjectId = useProjectContextStore((s) => s.activeProjectId);
-  const pinActiveProject = useProjectContextStore((s) => s.setActiveProject);
-  useEffect(() => {
-    if (!boq?.project_id || !project?.name || contextProjectId) return;
-    pinActiveProject(boq.project_id, project.name);
-  }, [boq?.project_id, project?.name, contextProjectId, pinActiveProject]);
+  // A bill opened by its URL works in its own project: the header follows the
+  // bill's project, also when another project was active (a bill of project A
+  // opened by link used to leave the header on project B, and every module
+  // reading the header context then worked on the wrong project).
+  useSyncActiveProjectWithRecord(boq?.project_id, project?.name);
 
   /* ── Deferred warm-up for non-critical queries ─────────────────────
      The editor's first paint used to fire seven heavy requests at once
@@ -1057,10 +1056,14 @@ export function BOQEditorPage() {
     createBudgetMutation.mutate();
   }, [createBudgetMutation]);
 
+  const [revisionDialogOpen, setRevisionDialogOpen] = useState(false);
+
   const createRevisionMutation = useMutation({
-    mutationFn: () => apiPost<{ id: string }>(`/v1/boq/boqs/${boqId}/create-revision/`, {}),
+    mutationFn: (request: RevisionRequest) =>
+      apiPost<{ id: string }>(`/v1/boq/boqs/${boqId}/create-revision/`, request),
     onSuccess: (result) => {
       invalidateAll();
+      setRevisionDialogOpen(false);
       addToast({
         type: 'success',
         title: t('boq.revision_created', { defaultValue: 'Revision created' }),
@@ -1079,8 +1082,8 @@ export function BOQEditorPage() {
   });
 
   const handleCreateRevision = useCallback(() => {
-    createRevisionMutation.mutate();
-  }, [createRevisionMutation]);
+    setRevisionDialogOpen(true);
+  }, []);
 
   const handleRenumber = useCallback(() => {
     setRenumberDialogOpen(true);
@@ -2851,18 +2854,10 @@ export function BOQEditorPage() {
        * sibling ordinal (parsed) and add 10 — that way ordinals stay sorted
        * even if previous ones were manually edited. */
 
-      const nextChildOrdinal = (parentOrdinal: string, siblings: Position[]): string => {
-        // Pick the largest numeric suffix among siblings (e.g. "01.30" → 30)
-        let maxSuffix = 0;
-        const prefix = `${parentOrdinal}.`;
-        for (const sib of siblings) {
-          if (!sib.ordinal?.startsWith(prefix)) continue;
-          const suffix = parseInt(sib.ordinal.slice(prefix.length), 10);
-          if (!isNaN(suffix) && suffix > maxSuffix) maxSuffix = suffix;
-        }
-        const nextSuffix = maxSuffix + 10;
-        return `${parentOrdinal}.${String(nextSuffix).padStart(2, '0')}`;
-      };
+      const allOrdinals = allPositions.map((p) => p.ordinal);
+      const nextChildOrdinal = (parentOrdinal: string): string =>
+        nextPositionOrdinals(allOrdinals, parentOrdinal, 1)[0]!;
+      const nextTopLevelOrdinal = (): string => nextPositionOrdinals(allOrdinals, null, 1)[0]!;
 
       /* Issue #139 — when inserting *between* two siblings, pick an ordinal
        * that sorts strictly between them by halving the gap on the trailing
@@ -2936,40 +2931,21 @@ export function BOQEditorPage() {
             ? allPositions.find((p) => p.id === parentId)
             : undefined;
           const parentOrdinal = parentSection?.ordinal ?? '01';
-          ordinal = parentId
-            ? nextChildOrdinal(
-                parentOrdinal,
-                allPositions.filter((p) => p.parent_id === parentId),
-              )
-            : (() => {
-                let maxTop = 0;
-                for (const p of allPositions) {
-                  const num = parseInt(p.ordinal ?? '', 10);
-                  if (!isNaN(num) && num > maxTop) maxTop = num;
-                }
-                return String((Math.floor(maxTop / 10) + 1) * 10).padStart(4, '0');
-              })();
+          ordinal = parentId ? nextChildOrdinal(parentOrdinal) : nextTopLevelOrdinal();
         }
       } else if (parentId) {
         const parentSection = allPositions.find((p) => p.id === parentId);
         const parentOrdinal = parentSection?.ordinal ?? '01';
-        const siblings = allPositions.filter((p) => p.parent_id === parentId);
-        ordinal = nextChildOrdinal(parentOrdinal, siblings);
+        ordinal = nextChildOrdinal(parentOrdinal);
       } else {
         // Add to last section, or generate top-level ordinal
         const lastSection = grouped.sections[grouped.sections.length - 1];
         if (lastSection) {
           parentId = lastSection.section.id;
-          ordinal = nextChildOrdinal(lastSection.section.ordinal, lastSection.children);
+          ordinal = nextChildOrdinal(lastSection.section.ordinal);
         } else {
-          // No sections — generate a unique top-level ordinal in 4-digit gap-of-10
-          let maxTop = 0;
-          for (const p of allPositions) {
-            const num = parseInt(p.ordinal ?? '', 10);
-            if (!isNaN(num) && num > maxTop) maxTop = num;
-          }
-          const next = (Math.floor(maxTop / 10) + 1) * 10;
-          ordinal = String(next).padStart(4, '0');
+          // No sections — a unique top-level ordinal in 4-digit gap-of-10.
+          ordinal = nextTopLevelOrdinal();
         }
       }
 
@@ -3515,12 +3491,12 @@ export function BOQEditorPage() {
     setShowRecalcConfirm(true);
   }, []);
 
-  // "s" shortcut → save / recalculate rates (when not typing in an input)
+  // "s" shortcut → save / recalculate rates (when not typing in an input).
+  // Not from the grid either: an "s" on a focused cell is the first letter of
+  // a description, and it opened the update-rates dialog instead.
   useEffect(() => {
-    const INTERACTIVE = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
     const handler = (e: KeyboardEvent) => {
-      const el = document.activeElement;
-      if (el && (INTERACTIVE.has(el.tagName) || (el as HTMLElement).isContentEditable)) return;
+      if (isTypingTarget(document.activeElement) || isTypingTarget(e.target)) return;
       if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
       if (e.key === 's') {
         e.preventDefault();
@@ -3533,18 +3509,36 @@ export function BOQEditorPage() {
 
   /* ── Excel paste handler ──────────────────────────────────────────── */
 
+  /* Pasted lines land where Add Position puts a line with nothing else said:
+   * in the selected row's section, else the last section, else at the top
+   * level, and are numbered in that place's scheme (see nextPositionOrdinals). */
+  const pasteTarget = useMemo(() => {
+    const positions = boq?.positions ?? [];
+    let section: Position | undefined;
+    if (selectedPosition) {
+      section = isSection(selectedPosition)
+        ? selectedPosition
+        : positions.find((p) => p.id === selectedPosition.parent_id);
+    }
+    section ??= grouped.sections[grouped.sections.length - 1]?.section;
+    return { parentId: section?.id ?? null, parentOrdinal: section?.ordinal ?? null };
+  }, [boq?.positions, selectedPosition, grouped]);
+  const pasteExistingOrdinals = useMemo(
+    () => new Set((boq?.positions ?? []).map((p) => p.ordinal)),
+    [boq?.positions],
+  );
+  const pasteNextOrdinals = useCallback(
+    (count: number) => nextPositionOrdinals(pasteExistingOrdinals, pasteTarget.parentOrdinal, count),
+    [pasteExistingOrdinals, pasteTarget.parentOrdinal],
+  );
+  // The project's market decides a number the paste cannot settle itself.
+  const pasteNumberLocale = localeForCurrency(currencyCode) ?? locale;
+
   const handleExcelPaste = useCallback(async (rows: PastedRow[]) => {
     if (!boqId || rows.length === 0) return;
     setIsExcelPasteImporting(true);
     try {
-      const items = rows.map((r) => ({
-        boq_id: boqId,
-        ordinal: r.ordinal,
-        description: r.description,
-        unit: r.unit,
-        quantity: r.quantity,
-        unit_rate: r.unit_rate,
-      }));
+      const items = pastedRowsToBulkItems(rows, boqId, pasteTarget.parentId);
       await apiPost(`/v1/boq/boqs/${boqId}/positions/bulk/`, { items });
       addToast({
         type: 'success',
@@ -3567,7 +3561,7 @@ export function BOQEditorPage() {
     } finally {
       setIsExcelPasteImporting(false);
     }
-  }, [boqId, addToast, t, invalidateAll]);
+  }, [boqId, addToast, t, invalidateAll, pasteTarget.parentId]);
 
   /* ── Resource management ────────────────────────────────────────────── */
 
@@ -6108,6 +6102,9 @@ export function BOQEditorPage() {
         onClose={() => setExcelPasteOpen(false)}
         onImport={handleExcelPaste}
         loading={isExcelPasteImporting}
+        numberLocale={pasteNumberLocale}
+        nextOrdinals={pasteNextOrdinals}
+        existingOrdinals={pasteExistingOrdinals}
       />
 
       {/* ── Custom Columns Manager ────────────────────────────────── */}
@@ -6128,6 +6125,15 @@ export function BOQEditorPage() {
           onClose={() => { setVariablesOpen(false); setVariableSeed(null); }}
           boqId={boqId}
           seed={variableSeed}
+        />
+      )}
+
+      {revisionDialogOpen && (
+        <BOQRevisionDialog
+          baseName={boq?.name ?? ''}
+          isPending={createRevisionMutation.isPending}
+          onSubmit={(request) => createRevisionMutation.mutate(request)}
+          onClose={() => setRevisionDialogOpen(false)}
         />
       )}
 

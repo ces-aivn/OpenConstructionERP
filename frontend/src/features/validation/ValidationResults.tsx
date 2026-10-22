@@ -25,6 +25,7 @@ import { fmtFixed, fmtList } from '@/shared/lib/formatters';
 import { ruleTitle } from './ruleTitles';
 import {
   countFindings,
+  findingMessage,
   groupFindings,
   resolveScope,
   shortDescription,
@@ -314,7 +315,7 @@ function FindingRow<T extends FindingLike>({
     <li className="flex flex-col gap-1 px-4 py-2.5 sm:flex-row sm:items-start sm:gap-4">
       <div className="min-w-0 flex-1">
         <ScopeLabel scope={scope} boqId={boqId} />
-        <p className="mt-0.5 text-sm text-content-secondary">{finding.message}</p>
+        <p className="mt-0.5 text-sm text-content-secondary">{findingMessage(finding, t)}</p>
         {showSuggestion && finding.suggestion && (
           <p className="mt-1 flex items-start gap-1.5 text-xs text-oe-blue">
             <Wand2 size={12} className="mt-0.5 shrink-0" />

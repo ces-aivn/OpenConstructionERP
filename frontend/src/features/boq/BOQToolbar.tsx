@@ -688,13 +688,13 @@ export function BOQToolbar({
       {summary && hasPositions && (
         <section
           aria-label={t('boq.grand_total', { defaultValue: 'Grand Total' })}
-          className="flex min-w-[208px] shrink-0 flex-col justify-center gap-1.5 rounded-xl
-                     border border-border-light bg-surface-primary px-4 py-2.5 shadow-sm tabular-nums"
+          className="flex min-w-[208px] shrink-0 flex-col justify-center gap-1.5 rounded-lg
+                     border border-border-light bg-surface-elevated px-4 py-2.5 tabular-nums"
           data-testid="boq-grand-total-card"
         >
           {/* Label + display-currency selector */}
           <div className="flex items-center justify-between gap-3">
-            <span className="text-2xs font-semibold uppercase tracking-wider text-content-tertiary">
+            <span className="text-xs font-medium text-content-secondary">
               {t('boq.grand_total', { defaultValue: 'Grand Total' })}
             </span>
             {summary.fxRates.length > 0 && (
@@ -772,12 +772,17 @@ export function BOQToolbar({
           {/* Meta line: counts + quality status badges */}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="text-2xs text-content-tertiary">
-              {t('boq.sections_count', {
-                count: summary.sectionCount,
-                defaultValue_one: '{{count}} section',
-                defaultValue: '{{count}} sections',
-              })}
-              {' · '}
+              {/* A flat bill has no sections: say nothing rather than "0 sections". */}
+              {summary.sectionCount > 0 && (
+                <>
+                  {t('boq.sections_count', {
+                    count: summary.sectionCount,
+                    defaultValue_one: '{{count}} section',
+                    defaultValue: '{{count}} sections',
+                  })}
+                  {' · '}
+                </>
+              )}
               {t('boq.positions_count', {
                 count: summary.positionCount,
                 defaultValue_one: '{{count}} position',
@@ -928,17 +933,17 @@ function QualityAiMenu(props: QualityAiMenuProps) {
         aria-haspopup="menu"
         aria-expanded={open}
         title={t('boq.quality_ai_menu_tip', { defaultValue: 'More quality & AI tools' })}
-        className={`flex shrink-0 items-center gap-1.5 px-2.5 h-7 whitespace-nowrap rounded-lg border text-2xs font-semibold uppercase tracking-wider transition-colors ${
+        className={`flex shrink-0 items-center gap-1.5 px-2.5 h-7 whitespace-nowrap rounded-md border text-xs font-medium transition-colors ${
           open
-            ? 'bg-violet-100 dark:bg-violet-900/40 border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-200'
-            : 'bg-gradient-to-r from-violet-50 to-blue-50 dark:from-violet-950/30 dark:to-blue-950/30 border-violet-200/50 dark:border-violet-800/30 text-violet-700 dark:text-violet-300 hover:from-violet-100 hover:to-blue-100 dark:hover:from-violet-900/40'
+            ? 'border-border bg-surface-tertiary text-content-primary'
+            : 'border-border-light bg-surface-elevated text-content-secondary hover:border-border hover:bg-surface-tertiary hover:text-content-primary'
         }`}
         data-testid="boq-quality-ai-menu"
       >
         {isRecalculating ? (
           <RefreshCw size={13} className="animate-spin text-oe-blue" />
         ) : (
-          <Sparkles size={13} className="text-violet-500" />
+          <Sparkles size={13} className="text-oe-blue-text" />
         )}
         <span className="hidden lg:inline whitespace-nowrap">{t('boq.quality_ai_menu', { defaultValue: 'Quality & AI' })}</span>
         <ChevronDown size={11} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -955,7 +960,7 @@ function QualityAiMenu(props: QualityAiMenuProps) {
           >
             {/* Quality section */}
             <div className="px-3 pt-2.5 pb-1 border-b border-border-light dark:border-border-dark bg-surface-secondary/30">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-content-quaternary">
+              <span className="text-xs font-semibold text-content-secondary">
                 {t('boq.toolbar_quality', { defaultValue: 'Quality' })}
               </span>
             </div>
@@ -992,8 +997,8 @@ function QualityAiMenu(props: QualityAiMenuProps) {
             </div>
 
             {/* AI section */}
-            <div className="px-3 pt-2.5 pb-1 border-b border-t border-border-light dark:border-border-dark bg-gradient-to-r from-violet-50/40 to-blue-50/40 dark:from-violet-950/20 dark:to-blue-950/20">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-violet-700 dark:text-violet-300 inline-flex items-center gap-1">
+            <div className="px-3 pt-2.5 pb-1 border-b border-t border-border-light dark:border-border-dark bg-surface-secondary/30">
+              <span className="text-xs font-semibold text-content-secondary inline-flex items-center gap-1">
                 <Sparkles size={10} /> AI
               </span>
             </div>
@@ -1039,14 +1044,14 @@ function MenuRow({ icon, label, hint, active, disabled, trailing, onClick }: Men
       disabled={disabled}
       className={`w-full text-left px-3 py-2 flex items-start gap-2.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
         active
-          ? 'bg-violet-50 dark:bg-violet-950/30 hover:bg-violet-100 dark:hover:bg-violet-900/40'
+          ? 'bg-oe-blue-subtle hover:bg-oe-blue-subtle'
           : 'hover:bg-surface-secondary'
       }`}
     >
       <span className="shrink-0 mt-0.5">{icon}</span>
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">
-          <span className={`text-xs font-medium ${active ? 'text-violet-700 dark:text-violet-200' : 'text-content-primary'}`}>
+          <span className={`text-xs font-medium ${active ? 'text-oe-blue-text' : 'text-content-primary'}`}>
             {label}
           </span>
           {trailing}

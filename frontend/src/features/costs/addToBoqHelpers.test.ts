@@ -9,10 +9,14 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  addToBoqFailureMessage,
   buildBoqPositionDraft,
+  firstWritableBoq,
   massEffectiveUnitRate,
+  ordinalsForAddedItems,
   type FullCostItem,
 } from './addToBoqHelpers';
+import { ApiError } from '@/shared/lib/api';
 import type { CostVariant, VariantStats } from './api';
 
 const LABELS = { labor: 'Labor', material: 'Material', equipment: 'Equipment' };
@@ -61,7 +65,7 @@ describe('buildBoqPositionDraft', () => {
     expect(metadata.cost_item_id).toBe('item-1');
   });
 
-  it('auto-defaults a variant-bearing component to the mean rate and carries its catalog', () => {
+  it('falls back to the mean for a variant-bearing component the catalogue left unpriced', () => {
     const variants: CostVariant[] = [
       { index: 0, label: 'C25/30', price: 165, price_per_unit: null },
       { index: 1, label: 'C30/37', price: 185, price_per_unit: null },
@@ -122,13 +126,14 @@ describe('buildBoqPositionDraft', () => {
     const resources = metadata.resources as Array<Record<string, unknown>>;
     expect(resources).toHaveLength(1);
     const top = resources[0]!;
-    expect(top.variant_default).toBe('mean');
-    expect(top.unit_rate).toBe(190);
+    // Priced at the catalogue rate the cost database showed, not the mean.
+    expect(top.unit_rate).toBe(320);
+    expect(top.variant_default).toBeUndefined();
     expect(top.name).toBe('Concrete delivery');
-    expect(unitRate).toBe(190);
+    expect(unitRate).toBe(320);
     // Variant catalog cached at the top level for the inline re-pick.
     expect(metadata.cost_item_variant_count).toBe(2);
-    expect(metadata.variant_default).toBe('mean');
+    expect(top.available_variants).toEqual(variants);
     // The heavy variants array is NOT duplicated at the top level.
     expect(metadata.variants).toBeUndefined();
   });
@@ -160,6 +165,55 @@ describe('buildBoqPositionDraft', () => {
     const resources = metadata.resources as Array<Record<string, unknown>>;
     // Only the component line — no synthetic top-level duplicate.
     expect(resources).toHaveLength(1);
+  });
+
+  it('keeps the catalogue price of a variant slot, so the line lands on the rate the database showed', () => {
+    const variants: CostVariant[] = [
+      { index: 0, label: 'M300', price: 1_480_000, price_per_unit: null },
+      { index: 1, label: 'M350', price: 1_720_000, price_per_unit: null },
+      { index: 2, label: 'M400', price: 1_960_000, price_per_unit: null },
+    ];
+    const stats: VariantStats = {
+      min: 1_480_000, max: 1_960_000, mean: 1_720_000, median: 1_720_000, unit: 'm3', group: '', count: 3,
+    };
+    const item = baseItem({
+      rate: 2_115_000,
+      components: [
+        {
+          name: 'Bê tông thương phẩm', code: 'BT', type: 'material', unit: 'm3',
+          quantity: 1.015, unit_rate: 1_500_000, cost: 1_522_500,
+          available_variants: variants, available_variant_stats: stats,
+        },
+        { name: 'Nhân công 3,5/7', code: 'NC', type: 'labor', unit: 'công', quantity: 1.5, unit_rate: 395_000, cost: 592_500 },
+      ],
+    });
+    const { metadata, unitRate } = buildBoqPositionDraft(item, 'VND', LABELS);
+    const resources = metadata.resources as Array<Record<string, unknown>>;
+
+    expect(unitRate).toBe(2_115_000);
+    expect(resources[0]!.unit_rate).toBe(1_500_000);
+    expect(resources[0]!.total).toBe(1_522_500);
+    expect(resources[0]!.variant_default).toBeUndefined();
+    // The other grades are still one click away on the BOQ row.
+    expect(resources[0]!.available_variants).toEqual(variants);
+  });
+
+  it('prices a top-level variant set at what the catalogue rate leaves after the components', () => {
+    const variants: CostVariant[] = [
+      { index: 0, label: 'delivered', price: 180, price_per_unit: null },
+      { index: 1, label: 'pumped', price: 200, price_per_unit: null },
+    ];
+    const stats: VariantStats = { min: 180, max: 200, mean: 190, median: 190, unit: 'm3', group: '', count: 2 };
+    const item = baseItem({
+      rate: 320,
+      components: [{ name: 'Labour', code: 'LAB', type: 'labor', unit: 'h', quantity: 4, unit_rate: 30, cost: 120 }],
+      metadata_: { variants, variant_stats: stats },
+    });
+    const { metadata, unitRate } = buildBoqPositionDraft(item, 'EUR', LABELS);
+    const resources = metadata.resources as Array<Record<string, unknown>>;
+
+    expect(resources.map((r) => r.total)).toEqual([120, 200]);
+    expect(unitRate).toBe(320);
   });
 
   it('synthesizes labor/material/equipment lines when no components but cost summary present', () => {
@@ -243,5 +297,44 @@ describe('massEffectiveUnitRate', () => {
     expect(massEffectiveUnitRate(1850, '0', 't')).toBeNull();
     expect(massEffectiveUnitRate(1850, undefined, 't')).toBeNull();
     expect(massEffectiveUnitRate(-1, '44.7', 't')).toBeNull();
+  });
+});
+
+describe('the Add to BOQ dialog', () => {
+  const t = (key: string, o?: Record<string, string | number>) => `${key}|${String(o?.defaultValue ?? '')}`;
+
+  it('never preselects a locked bill', () => {
+    const boqs = [
+      { id: 'sofi', is_locked: true },
+      { id: 'l81', is_locked: false },
+    ];
+    expect(firstWritableBoq(boqs)?.id).toBe('l81');
+    expect(firstWritableBoq([{ id: 'sofi', is_locked: true }])).toBeUndefined();
+  });
+
+  it('continues a bill numbered 01 to 09 at 10, not at 01.031', () => {
+    const positions = Array.from({ length: 9 }, (_, i) => ({ id: `p${i}`, ordinal: String(i + 1).padStart(2, '0') }));
+    expect(ordinalsForAddedItems(positions, '', 2)).toEqual(['10', '11']);
+  });
+
+  it('numbers the lines under the chosen section', () => {
+    const positions = [
+      { id: 's1', ordinal: '01' },
+      { id: 'a', ordinal: '01.10' },
+      { id: 'b', ordinal: '01.20' },
+    ];
+    expect(ordinalsForAddedItems(positions, 's1', 1)).toEqual(['01.30']);
+  });
+
+  it('names a locked bill when the server refuses the add', () => {
+    const locked = new ApiError(409, 'Conflict', {
+      detail: { code: 'boq_locked', message: 'BOQ is locked and cannot be modified.', params: {} },
+    });
+    expect(addToBoqFailureMessage(locked, t)).toMatch(/^costs\.add_to_boq_locked\|/);
+  });
+
+  it('shows the reason of any other failure', () => {
+    expect(addToBoqFailureMessage(new Error('Network down'), t)).toBe('Network down');
+    expect(addToBoqFailureMessage('??', t)).toBe('common.unknown_error|Unknown error');
   });
 });

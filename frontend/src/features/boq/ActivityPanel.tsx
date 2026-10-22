@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import type { ActivityEntry, ActivityAction } from './api';
 import { formatRelativeTime } from './boqHelpers';
+import { activityText } from './activityText';
 
 /* ── Activity icon map ───────────────────────────────────────────────── */
 
@@ -171,7 +172,7 @@ export function ActivityPanel({
                   {/* Description */}
                   <div className="min-w-0 flex-1">
                     <p className="text-sm text-content-primary truncate">
-                      {entry.description}
+                      {activityText(entry.description, t)}
                     </p>
                     {entry.user_name && (
                       <p className="text-2xs text-content-tertiary mt-0.5">

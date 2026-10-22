@@ -131,7 +131,8 @@ async def test_a_eur_bill_keeps_the_thresholds_it_always_had() -> None:
     assert at_limit.passed is True
     assert over.passed is False
     assert over.details["rate_threshold"] == 100_000
-    assert over.details["total_threshold"] == 10_000_000
+    # A line total is quantity x rate; a large quantity is not an unrealistic rate.
+    assert "total_threshold" not in over.details
     assert "100,000.00 EUR" in over.message
 
     (bench,) = await RateVsBenchmark().validate(_ctx([_pos("c", 10_000.01, currency="EUR")]))
@@ -140,16 +141,15 @@ async def test_a_eur_bill_keeps_the_thresholds_it_always_had() -> None:
     assert "10,000.00 EUR/m2" in bench.message
 
 
-async def test_the_total_threshold_is_scaled_as_well_as_the_rate() -> None:
+async def test_a_large_quantity_at_an_ordinary_rate_is_not_an_unrealistic_rate() -> None:
     per_eur = await _units_per_eur("IDR")
-    # Ordinary rate, enormous quantity: only the total crosses its line.
+    # Ordinary rate, enormous quantity: the line total is huge, the rate is not.
     (row,) = await UnrealisticRate().validate(
         _ctx([_pos("t", 1_000 * per_eur, currency="IDR", qty=20_000)]),
     )
 
-    assert row.passed is False
-    assert "total" in row.message and "unit_rate" not in row.message
-    assert row.details["total_threshold"] == pytest.approx(UnrealisticRate.TOTAL_THRESHOLD * per_eur)
+    assert row.passed is True
+    assert "total_threshold" not in row.details
 
 
 # ── the honest outcome when nothing can be scaled ─────────────────────────────

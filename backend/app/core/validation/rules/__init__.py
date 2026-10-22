@@ -1563,6 +1563,123 @@ class NegativeValues(ValidationRule):
         return results
 
 
+# What a unit rate is judged against, per base unit of each dimension, in
+# _REFERENCE_CURRENCY. A rate is a price per unit, so one flat ceiling cannot
+# fit them all: 100,000 EUR is absurd for a square metre of finish and ordinary
+# for one operating theatre fitted out. Generous on purpose: the rule exists to
+# catch a rate typed a thousand times too high, not to second-guess a price.
+_RATE_CEILING_PER_BASE_UNIT: dict[str, float] = {
+    "area": 100_000,  # per m2
+    "volume": 100_000,  # per m3
+    "length": 250_000,  # per m
+    "mass": 250_000,  # per tonne
+    "count": 10_000_000,  # per piece, set, room
+    "time": 50_000,  # per hour
+}
+# A unit nothing knows the dimension of (kWp, a trade's own unit) is judged as
+# one item: the ceiling of a piece, so an unfamiliar unit never fires falsely.
+_RATE_CEILING_UNKNOWN_UNIT = 10_000_000
+
+# How many base units of its dimension one unit holds, for the units that are
+# not the base unit. A kilogram is a thousandth of a tonne, so its ceiling is
+# a thousandth of the tonne's.
+_UNIT_SIZE_IN_BASE_UNITS: dict[str, float] = {
+    "mm": 0.001,
+    "cm": 0.01,
+    "km": 1_000,
+    "ft": 0.3048,
+    "lft": 0.3048,
+    "in": 0.0254,
+    "inch": 0.0254,
+    "yd": 0.9144,
+    "ft2": 0.092903,
+    "sqft": 0.092903,
+    "sf": 0.092903,
+    "yd2": 0.836127,
+    "sqyd": 0.836127,
+    "sy": 0.836127,
+    "ha": 10_000,
+    "ft3": 0.0283168,
+    "cuft": 0.0283168,
+    "cf": 0.0283168,
+    "cy": 0.764555,
+    "yd3": 0.764555,
+    "l": 0.001,
+    "ltr": 0.001,
+    "litre": 0.001,
+    "liter": 0.001,
+    "gal": 0.00378541,
+    "gallon": 0.00378541,
+    "kg": 0.001,
+    "g": 0.000001,
+    "lb": 0.000453592,
+    "lbs": 0.000453592,
+    "ton_us": 0.907185,
+    "day": 8,
+    "wk": 40,
+    "week": 40,
+    "mo": 173,
+}
+
+# Unit spellings found on bills that the shared unit register does not file,
+# mapped to a register unit. Vietnamese bills write "tấn", "md" (metre run),
+# "cái", "bộ", "gói" (a package priced whole); US bills write "LF".
+_RATE_UNIT_ALIASES: dict[str, str] = {
+    "tấn": "t",
+    "md": "m",
+    "m dài": "m",
+    "mét": "m",
+    "lít": "l",
+    "cái": "pcs",
+    "chiếc": "pcs",
+    "con": "pcs",
+    "cây": "pcs",
+    "căn": "pcs",
+    "phòng": "pcs",
+    "bộ": "set",
+    "hệ": "set",
+    "hệ thống": "set",
+    "gói": "lsum",
+    "trọn gói": "lsum",
+    "khoán": "lsum",
+    "lf": "lft",
+    "giờ": "h",
+    "ngày": "day",
+    "ca": "day",
+    "tháng": "mo",
+}
+
+
+def _rate_unit(unit: str) -> tuple[str, str | None]:
+    """The register unit a bill's unit spelling stands for, and its dimension.
+
+    ``"m2 sàn"`` and ``"m2 GFA"`` qualify a square metre and read as ``m2``; an
+    alias such as ``"tấn"`` reads as ``t``. A unit neither the register nor the
+    aliases know returns its own spelling and ``None``.
+    """
+    text = " ".join((unit or "").strip().lower().split())
+    for candidate in (text, text.split(" ", 1)[0] if text else ""):
+        token = _RATE_UNIT_ALIASES.get(candidate, candidate)
+        dimension = _unit_dimension(token)
+        if dimension is not None:
+            return token, dimension
+    return text, None
+
+
+def _rate_ceiling(unit: str) -> tuple[float | None, str | None]:
+    """The reference-currency ceiling for a rate per ``unit``, and its dimension.
+
+    ``None`` for a lump sum: it is priced as one unit whose rate is the whole
+    line, so there is no rate per unit to judge.
+    """
+    token, dimension = _rate_unit(unit)
+    if dimension == "lump":
+        return None, dimension
+    if dimension is None:
+        return float(_RATE_CEILING_UNKNOWN_UNIT), None
+    return _RATE_CEILING_PER_BASE_UNIT[dimension] * _UNIT_SIZE_IN_BASE_UNITS.get(token, 1.0), dimension
+
+
 class UnrealisticRate(ValidationRule):
     rule_id = "boq_quality.unrealistic_rate"
     name = "Unrealistic Rate Detection"
@@ -1570,15 +1687,16 @@ class UnrealisticRate(ValidationRule):
     severity = Severity.WARNING
     category = RuleCategory.QUALITY
     description = (
-        "Flags positions with a unit rate above 100,000 EUR or a total above 10,000,000 EUR, "
-        "both limits converted into the bill's own currency"
+        "Flags positions whose unit rate is above a ceiling for its unit (100,000 EUR per m2 or m3, "
+        "250,000 EUR per metre or tonne, 10,000,000 EUR per piece), converted into the bill's own "
+        "currency. Lump sums and line totals are not judged: a large quantity is not an unrealistic rate."
     )
 
-    # Written in _REFERENCE_CURRENCY and scaled into the bill's currency at run
-    # time; see the note above _REFERENCE_CURRENCY for why a bare number is not
-    # a threshold.
-    RATE_THRESHOLD = 100_000
-    TOTAL_THRESHOLD = 10_000_000
+    # The ceiling per square or cubic metre, written in _REFERENCE_CURRENCY and
+    # scaled into the bill's currency at run time; see the note above
+    # _REFERENCE_CURRENCY for why a bare number is not a threshold. The other
+    # units' ceilings are in _RATE_CEILING_PER_BASE_UNIT.
+    RATE_THRESHOLD = _RATE_CEILING_PER_BASE_UNIT["area"]
 
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
@@ -1592,51 +1710,48 @@ class UnrealisticRate(ValidationRule):
         for pos in positions:
             rate = _num(pos.get("unit_rate"), default=0.0) or 0.0
             total = _num(pos.get("total"), default=0.0) or 0.0
+            unit = str(pos.get("unit") or "")
+            reference_limit, dimension = _rate_ceiling(unit)
             currency = _bill_currency(context, pos)
             if currency not in multipliers:
                 multipliers[currency] = _reference_multiplier(fx, currency)
             multiplier, provenance = multipliers[currency]
-            if multiplier is None and (rate > 0 or total > 0):
+            if multiplier is None and rate > 0 and reference_limit is not None:
                 unscaled.setdefault((provenance["fx_reason"], currency), []).append(pos)
                 continue
-            # A row carrying no money passes in any currency; only money needs a scale.
+            # A row carrying no rate passes in any currency; only money needs a scale.
             scale = multiplier if multiplier is not None else 1.0
-            rate_limit = self.RATE_THRESHOLD * scale
-            total_limit = self.TOTAL_THRESHOLD * scale
-            # A lump sum is one unit whose rate is the whole line, so its rate
-            # is its total and only the total ceiling says anything about it.
-            # Judging it per unit flagged every lump-sum section of a schedule
-            # of values above the rate ceiling.
-            rate_ok = rate <= rate_limit or _unit_dimension(str(pos.get("unit") or "")) == "lump"
-            total_ok = total <= total_limit
-            passed = rate_ok and total_ok
+            rate_limit = reference_limit * scale if reference_limit is not None else None
+            passed = rate_limit is None or rate <= rate_limit
             if passed:
                 message = _ok(locale)
                 suggestion = None
             else:
-                parts: list[str] = []
-                if not rate_ok:
-                    parts.append(f"unit_rate {_fmt_money(rate, currency)} > {_fmt_money(rate_limit, currency)}")
-                if not total_ok:
-                    parts.append(f"total {_fmt_money(total, currency)} > {_fmt_money(total_limit, currency)}")
+                per_unit = f" per {unit.strip()}" if unit.strip() else ""
                 message = translate(
                     "boq_quality.unrealistic_rate.fail",
                     locale=locale,
                     ordinal=pos.get("ordinal", "?"),
-                    details="; ".join(parts),
+                    details=(
+                        f"unit_rate {_fmt_money(rate, currency)} > {_fmt_money(rate_limit or 0, currency)}{per_unit}"
+                    ),
                 )
                 suggestion = translate(
                     "boq_quality.unrealistic_rate.suggestion",
                     locale=locale,
                 )
-            details: dict[str, Any] = {"unit_rate": rate, "total": total, "currency": currency}
-            if multiplier is not None:
+            details: dict[str, Any] = {
+                "unit_rate": rate,
+                "total": total,
+                "currency": currency,
+                "unit": unit,
+                "unit_dimension": dimension,
+            }
+            if multiplier is not None and rate_limit is not None:
                 details.update(
                     {
                         "rate_threshold": rate_limit,
-                        "total_threshold": total_limit,
-                        "reference_rate_threshold": self.RATE_THRESHOLD,
-                        "reference_total_threshold": self.TOTAL_THRESHOLD,
+                        "reference_rate_threshold": reference_limit,
                         **provenance,
                     }
                 )
@@ -1661,7 +1776,7 @@ class UnrealisticRate(ValidationRule):
                     currency=currency,
                     reason=reason,
                     positions=rows,
-                    reference_thresholds={"unit_rate": self.RATE_THRESHOLD, "total": self.TOTAL_THRESHOLD},
+                    reference_thresholds={"unit_rate": self.RATE_THRESHOLD},
                 )
             )
         return results

@@ -283,7 +283,7 @@ export function saveCustomUnit(unit: string): void {
   writeCustomUnits([...custom, trimmed]);
   // Best-effort server sync with the new unit alone: the server adds it to
   // the stored list. Don't block the UI on the round-trip.
-  apiPatch(CUSTOM_UNITS_ENDPOINT, { units: [trimmed] }).catch(() => undefined);
+  apiPatch(CUSTOM_UNITS_ENDPOINT, { units: [trimmed] }, { suppressErrorToast: true }).catch(() => undefined);
 }
 
 /**
@@ -951,4 +951,73 @@ export function nextTopLevelSectionOrdinal(ordinals: Iterable<string | null | un
     candidate = String(next).padStart(2, '0');
   }
   return candidate;
+}
+
+/**
+ * The next `count` position numbers in the bill's one numbering scheme.
+ *
+ * Every way of adding lines (Add Position, paste from Excel, the cost database)
+ * numbers them the same way, so a bill never mixes `0010/0020` typed lines with
+ * `01…09` pasted ones that sort among the section headers.
+ *
+ * The scheme follows the numbers already used beside the new line:
+ *
+ *   - a bill or section numbered one by one (`01, 02 … 12`, or `01.1, 01.2`)
+ *     continues one by one at the same width: `13`, `01.3`;
+ *   - otherwise the gap-of-10 scheme: `01.10`, `01.20` inside section `01`,
+ *     `0010`, `0020` at the top level, continuing from the highest number used,
+ *     rounded up to the next ten.
+ *
+ * A bill counts as numbered one by one when at least two of its numbers, and
+ * most of them, are not multiples of ten; a single line slotted in between
+ * (`01.15`) does not change the scheme. Numbers taken anywhere in the bill are
+ * skipped so the server's uniqueness check never refuses the batch.
+ */
+export function nextPositionOrdinals(
+  ordinals: Iterable<string | null | undefined>,
+  parentOrdinal: string | null | undefined,
+  count: number,
+): string[] {
+  const used = new Set<string>();
+  let max = 0;
+  let width = 0;
+  let siblings = 0;
+  let offTen = 0;
+  const prefix = parentOrdinal ? `${parentOrdinal}.` : null;
+  for (const ordinal of ordinals) {
+    if (!ordinal) continue;
+    used.add(ordinal);
+    let own: string | null = null;
+    if (prefix) {
+      if (!ordinal.startsWith(prefix)) continue;
+      const rest = ordinal.slice(prefix.length);
+      const m = rest.match(/^\d+/);
+      if (m) max = Math.max(max, parseInt(m[0], 10));
+      if (/^\d+$/.test(rest)) own = rest;
+    } else {
+      const n = parseInt(ordinal, 10);
+      if (!Number.isNaN(n)) max = Math.max(max, n);
+      const trimmed = ordinal.trim();
+      if (/^\d+$/.test(trimmed)) own = trimmed;
+    }
+    if (own !== null) {
+      siblings += 1;
+      width = Math.max(width, own.length);
+      if (parseInt(own, 10) % 10 !== 0) offTen += 1;
+    }
+  }
+  const oneByOne = offTen >= 2 && offTen * 2 > siblings;
+  const pad = oneByOne ? width : Math.max(width, prefix ? 2 : 4);
+  const format = (n: number) => `${prefix ?? ''}${String(n).padStart(pad, '0')}`;
+  const step = oneByOne ? 1 : 10;
+  const out: string[] = [];
+  let next = oneByOne ? max + 1 : (Math.floor(max / 10) + 1) * 10;
+  while (out.length < count) {
+    const candidate = format(next);
+    next += step;
+    if (used.has(candidate)) continue;
+    used.add(candidate);
+    out.push(candidate);
+  }
+  return out;
 }

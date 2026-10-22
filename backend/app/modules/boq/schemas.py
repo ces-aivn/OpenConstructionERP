@@ -309,6 +309,20 @@ class BOQCreate(BaseModel):
         return _readable_tax_date(v)
 
 
+class BOQCopyRequest(BaseModel):
+    """Optional name and reason for a copy or a revision of a bill.
+
+    Both endpoints accept an empty body, as they always have. A revision left
+    unnamed is named after its original with the next version number
+    (``SoFi v2``, ``SoFi v3``); a plain copy keeps ``<name> (Copy)``.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, max_length=255, description="Name of the new bill")
+    reason: str | None = Field(default=None, max_length=2000, description="Why the revision was made")
+
+
 class BOQUpdate(BaseModel):
     """Partial update for a BOQ."""
 

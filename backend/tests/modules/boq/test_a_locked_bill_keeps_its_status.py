@@ -91,7 +91,7 @@ class TestALockedBill:
             await BOQService(session).update_boq(boq_id, BOQUpdate(status=new_status))
 
         assert exc.value.status_code == 409
-        assert exc.value.detail == LOCKED_DETAIL
+        assert str(exc.value.detail) == LOCKED_DETAIL
         assert await _state(session, boq_id) == ("final", True, "Approved estimate")
 
     async def test_a_status_change_is_refused_with_the_rest_of_the_patch(self, session: AsyncSession) -> None:

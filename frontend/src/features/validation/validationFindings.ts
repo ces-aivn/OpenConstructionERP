@@ -12,6 +12,8 @@
 // It is pure so the ordering and the filter can be tested without the page.
 
 import { compareNames } from '@/shared/lib/collator';
+import { formatCurrency } from '@/shared/lib/money';
+import type { Translate } from './ruleSetLabels';
 
 export type FindingSeverity = 'error' | 'warning' | 'info';
 
@@ -24,6 +26,8 @@ export interface FindingLike {
   message: string;
   element_ref: string | null;
   suggestion: string | null;
+  /** Structured figures behind the message, when the rule sends them. */
+  details?: Record<string, unknown> | null;
 }
 
 /**
@@ -219,3 +223,50 @@ export function shortDescription(text: string, max = 90): string {
   if (flat.length <= max) return flat;
   return `${flat.slice(0, max - 1).trimEnd()}…`;
 }
+
+const finiteNumber = (v: unknown): number | null => {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * The message of a finding, with its money in the reader's number format.
+ *
+ * The engine writes the figures of a money-threshold finding into its message
+ * in one fixed format ("total 240,000,000.00 USD > 10,800,000.00 USD"), which a
+ * Vietnamese reader sees in the middle of a Vietnamese sentence. The same
+ * figures travel in `details`, so for those rules the sentence is rebuilt here
+ * in the reader's language and number format. Any other finding, and one whose
+ * details are incomplete, keeps the engine's message.
+ */
+export function findingMessage(finding: FindingLike, t: Translate, locale?: string): string {
+  if (finding.passed || finding.rule_id !== 'boq_quality.unrealistic_rate') return finding.message;
+  const d = finding.details ?? {};
+  const currency = typeof d.currency === 'string' ? d.currency : '';
+  const rate = finiteNumber(d.unit_rate);
+  const rateLimit = finiteNumber(d.rate_threshold);
+  const total = finiteNumber(d.total);
+  const totalLimit = finiteNumber(d.total_threshold);
+  const money = (v: number) => formatCurrency(v, currency, locale);
+  const parts: string[] = [];
+  if (rate !== null && rateLimit !== null && rate > rateLimit) {
+    parts.push(
+      t('validation.unrealistic_rate_over_rate', {
+        defaultValue: 'unit rate {{value}} is above {{limit}}',
+        value: money(rate),
+        limit: money(rateLimit),
+      }),
+    );
+  }
+  if (total !== null && totalLimit !== null && total > totalLimit) {
+    parts.push(
+      t('validation.unrealistic_rate_over_total', {
+        defaultValue: 'line total {{value}} is above {{limit}}',
+        value: money(total),
+        limit: money(totalLimit),
+      }),
+    );
+  }
+  return parts.length > 0 ? parts.join('; ') : finding.message;
+}
+

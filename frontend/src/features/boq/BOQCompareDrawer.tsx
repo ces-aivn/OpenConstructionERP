@@ -20,7 +20,13 @@ import { X, GitCompare, Loader2, ArrowRight } from 'lucide-react';
 import clsx from 'clsx';
 import { Badge } from '@/shared/ui';
 import { boqApi } from './api';
-import { CHANGE_VARIANT, filterCompareRows, showsPair } from './compareHelpers';
+import {
+  CHANGE_VARIANT,
+  filterCompareRows,
+  orderForCompare,
+  showsPair,
+  type CompareSide,
+} from './compareHelpers';
 import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 export interface BOQCompareDrawerProps {
@@ -101,15 +107,26 @@ export function BOQCompareDrawer({
     }
   }, [isOpen, parentEstimateId, otherId]);
 
+  // The older bill is the baseline whichever one is open, so every delta
+  // reads new − old (see orderForCompare).
+  const sides = useMemo(() => {
+    if (!otherId) return null;
+    type Side = CompareSide & { name?: string };
+    const current: Side = (boqs ?? []).find((b) => b.id === boqId) ?? { id: boqId, parent_estimate_id: parentEstimateId };
+    const other: Side = (boqs ?? []).find((b) => b.id === otherId) ?? { id: otherId };
+    const [older, newer] = orderForCompare(current, other);
+    return { older, newer };
+  }, [boqs, boqId, otherId, parentEstimateId]);
+
   const {
     data: cmp,
     isLoading,
     isError,
     error,
   } = useQuery({
-    queryKey: ['boq-compare', boqId, otherId],
-    queryFn: () => boqApi.compareBoqs(boqId, otherId),
-    enabled: isOpen && !!boqId && !!otherId,
+    queryKey: ['boq-compare', sides?.older.id, sides?.newer.id],
+    queryFn: () => boqApi.compareBoqs(sides!.older.id, sides!.newer.id),
+    enabled: isOpen && !!sides,
     retry: false,
   });
 
@@ -239,6 +256,15 @@ export function BOQCompareDrawer({
         {/* Summary */}
         {cmp && (
           <div className="border-b border-border px-4 py-3">
+            {sides && (
+              <p className="mb-2 text-2xs text-content-secondary">
+                {t('boq.compare_direction', {
+                  defaultValue: 'Changes from {{older}} (older) to {{newer}} (newer)',
+                  older: sides.older.name ?? '',
+                  newer: sides.newer.name ?? '',
+                })}
+              </p>
+            )}
             <div className="flex flex-wrap gap-1.5 mb-2">
               <Badge variant="success" size="sm">
                 {t('boq.compare_added', { defaultValue: 'Added' })}: {cmp.summary.added}

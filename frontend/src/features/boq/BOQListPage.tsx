@@ -14,7 +14,8 @@ import { PageHeader } from '@/shared/ui/PageHeader';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { apiGet } from '@/shared/lib/api';
 import { fetchProjectList } from '@/shared/lib/projectList';
-import { fmtCompact, fmtNumber, fmtPercent } from '@/shared/lib/formatters';
+import { fmtNumber, fmtPercent } from '@/shared/lib/formatters';
+import { formatCompactMoney } from '@/shared/lib/money';
 import { useNameCollator } from '@/shared/lib/collator';
 import { getNumberLocale } from '@/stores/usePreferencesStore';
 import {
@@ -36,6 +37,7 @@ import { useAuthStore } from '@/stores/useAuthStore';
 import { canDeleteBoq } from './canDeleteBoq';
 import { CreateBOQModal } from './CreateBOQPage';
 import { BOQRenameDialog } from './BOQRenameDialog';
+import { BOQDuplicateDialog } from './BOQDuplicateDialog';
 import { projectFilterOptions } from './projectFilterOptions';
 
 interface Project {
@@ -87,17 +89,6 @@ const STATUS_DISPLAY_ORDER = ['draft', 'in_review', 'final', 'approved', 'archiv
  * helper in `shared/lib/formatters` already does.
  */
 const currencyFmt = { format: (value: number) => fmtNumber(value, 0) };
-
-/**
- * Compact money for the stat cards — always paired with its ISO currency
- * code by the caller (money rule: a figure is never shown without its
- * currency). Locale-aware: "22.1M" under en, "22,1 Mio." under de, so the
- * tile agrees with the row-level money formatting on the same screen.
- */
-function compactMoney(value: number): string {
-  if (value >= 1_000) return fmtCompact(value);
-  return currencyFmt.format(value);
-}
 
 /* ── Compare Modal ───────────────────────────────────────────────────── */
 
@@ -496,6 +487,8 @@ export function BOQListPage() {
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
+  // The bill whose copy is being named; the copy is made once the name is confirmed.
+  const [duplicateTarget, setDuplicateTarget] = useState<{ id: string; name: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState(() => {
     try {
@@ -809,9 +802,10 @@ export function BOQListPage() {
   /* ── Mutations ────────────────────────────────────────────────────── */
 
   const duplicateMutation = useMutation({
-    mutationFn: (boqId: string) => boqApi.duplicateBoq(boqId),
+    mutationFn: ({ boqId, name }: { boqId: string; name: string }) => boqApi.duplicateBoq(boqId, name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['all-boqs'] });
+      setDuplicateTarget(null);
       addToast({ type: 'success', title: t('boq.duplicated', { defaultValue: 'BOQ duplicated' }) });
     },
     onError: (e: Error) => {
@@ -877,12 +871,6 @@ export function BOQListPage() {
   const uniqueProjects = projectFilterOptions(projects ?? []);
   const uniqueStatuses = [...new Set((allBoqs ?? []).map((b) => b.status))];
 
-  function valueBorderColor(value: number): string {
-    if (value > 10_000_000) return 'border-l-amber-500';
-    if (value > 1_000_000) return 'border-l-emerald-500';
-    if (value > 100_000) return 'border-l-blue-500';
-    return 'border-l-gray-300 dark:border-l-gray-600';
-  }
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -1001,59 +989,40 @@ export function BOQListPage() {
         />
       )}
 
-      {/* Stats cards — scoped to the SAME filtered set the list renders.
-          When a filter narrows the set, an inline scope label says so.
-          Canon KPI tile: shared Card, top-aligned label+value, text-lg value. */}
+      {/* Stats strip — scoped to the SAME filtered set the list renders.
+          One bordered strip with hairline dividers; each currency gets its
+          own compact line, so totals are never blended across currencies. */}
       {stats && allBoqs && allBoqs.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <div className="flex flex-col justify-start rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-gradient-to-b from-slate-50/70 to-slate-100/45 dark:from-slate-800/50 dark:to-slate-900/35 p-4 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
-            <div className="text-2xs font-medium text-content-tertiary uppercase tracking-wide">
+        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border-light bg-border-light sm:grid-cols-4">
+          <div className="bg-surface-elevated px-4 py-3.5">
+            <div className="text-xs font-medium text-content-secondary">
               {isFiltered
                 ? t('boq.matching_estimates', { defaultValue: 'Matching Estimates' })
                 : t('boq.total_estimates', { defaultValue: 'Total Estimates' })}
             </div>
-            <div className="mt-1 text-lg font-semibold text-content-primary tabular-nums">{stats.count}</div>
+            <div className="mt-1.5 text-xl font-semibold leading-none text-content-primary tabular-nums">{stats.count}</div>
           </div>
-          <div className="flex flex-col justify-start rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-gradient-to-b from-slate-50/70 to-slate-100/45 dark:from-slate-800/50 dark:to-slate-900/35 p-4 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
-            <div className="text-2xs font-medium text-content-tertiary uppercase tracking-wide">{t('boq.total_positions', { defaultValue: 'Total Positions' })}</div>
-            <div className="mt-1 text-lg font-semibold text-content-primary tabular-nums">{stats.totalPositions.toLocaleString(getNumberLocale())}</div>
+          <div className="bg-surface-elevated px-4 py-3.5">
+            <div className="text-xs font-medium text-content-secondary">{t('boq.total_positions', { defaultValue: 'Total Positions' })}</div>
+            <div className="mt-1.5 text-xl font-semibold leading-none text-content-primary tabular-nums">{stats.totalPositions.toLocaleString(getNumberLocale())}</div>
           </div>
-          <div className="flex flex-col justify-start rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-gradient-to-b from-slate-50/70 to-slate-100/45 dark:from-slate-800/50 dark:to-slate-900/35 p-4 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
-            <div className="text-2xs font-medium text-content-tertiary uppercase tracking-wide">{t('boq.total_value', { defaultValue: 'Total Value' })}</div>
-            {/* Money rule: never blend currencies into one scalar. One
-                labelled total when all share a currency; the dominant
-                currency plus a "+N more" affordance otherwise, so the tile
-                keeps one baseline and one height across the row. ISO code
-                always shown. */}
+          <div className="bg-surface-elevated px-4 py-3.5">
+            <div className="text-xs font-medium text-content-secondary">{t('boq.total_value', { defaultValue: 'Total Value' })}</div>
             {stats.totalsByCurrency.length === 0 ? (
-              <div className="mt-1 text-lg font-semibold text-content-primary tabular-nums">&mdash;</div>
-            ) : stats.multiCurrency ? (
-              <div className="mt-1 text-lg font-semibold text-content-primary tabular-nums">
-                {compactMoney(stats.totalsByCurrency[0]!.total)}
-                {' '}
-                <span className="text-xs font-medium text-content-tertiary">
-                  {stats.totalsByCurrency[0]!.currency}
-                </span>
-                <span className="ml-1 text-2xs font-medium text-content-tertiary">
-                  {t('boq.plus_n_more', {
-                    defaultValue: '+{{count}} more',
-                    count: stats.totalsByCurrency.length - 1,
-                  })}
-                </span>
-              </div>
+              <div className="mt-1.5 text-xl font-semibold leading-none text-content-primary tabular-nums">&mdash;</div>
             ) : (
-              <div className="mt-1 text-lg font-semibold text-content-primary tabular-nums">
-                {compactMoney(stats.totalsByCurrency[0]!.total)}
-                {' '}
-                <span className="text-xs font-medium text-content-tertiary">
-                  {stats.totalsByCurrency[0]!.currency}
-                </span>
+              <div className="mt-1.5 space-y-0.5">
+                {stats.totalsByCurrency.map((c) => (
+                  <div key={c.currency} className="text-base font-semibold text-content-primary tabular-nums">
+                    {formatCompactMoney(c.total, c.currency, getNumberLocale())}
+                  </div>
+                ))}
               </div>
             )}
           </div>
-          <div className="flex flex-col justify-start rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-gradient-to-b from-slate-50/70 to-slate-100/45 dark:from-slate-800/50 dark:to-slate-900/35 p-4 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
-            <div className="text-2xs font-medium text-content-tertiary uppercase tracking-wide">{t('boq.status', { defaultValue: 'Status' })}</div>
-            <div className="mt-1 flex flex-wrap items-center gap-2">
+          <div className="bg-surface-elevated px-4 py-3.5">
+            <div className="text-xs font-medium text-content-secondary">{t('boq.status', { defaultValue: 'Status' })}</div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
               {statusEntries.map(([status, n]) => (
                 <Badge key={status} variant={statusVariant(status)} size="sm" dot>
                   {n} {statusLabel(status)}
@@ -1336,7 +1305,7 @@ export function BOQListPage() {
                     <Pencil size={13} />
                   </button>
                   <button
-                    onClick={() => duplicateMutation.mutate(boq.id)}
+                    onClick={() => setDuplicateTarget({ id: boq.id, name: boq.name })}
                     disabled={duplicateMutation.isPending}
                     className="flex h-7 w-7 items-center justify-center rounded-md text-content-tertiary hover:text-oe-blue-text hover:bg-oe-blue-subtle transition-all disabled:opacity-40"
                     title={t('boq.duplicate', { defaultValue: 'Duplicate' })}
@@ -1367,7 +1336,7 @@ export function BOQListPage() {
               key={boq.id}
               hoverable
               padding="none"
-              className={`group relative flex h-full flex-col cursor-pointer animate-card-in overflow-hidden border-l-4 ${valueBorderColor(boq.grandTotal)} ${selectedForCompare?.id === boq.id ? 'ring-2 ring-oe-blue' : ''}`}
+              className={`group relative flex h-full flex-col cursor-pointer animate-card-in overflow-hidden ${selectedForCompare?.id === boq.id ? 'ring-2 ring-oe-blue' : ''}`}
               style={{ animationDelay: `${50 + i * 30}ms` }}
               onClick={() => {
                 if (compareMode && selectedForCompare && selectedForCompare.id !== boq.id) {
@@ -1384,9 +1353,7 @@ export function BOQListPage() {
                   matter how many lines each name wraps to. */}
               <div className="flex flex-col gap-2.5 p-4 pb-2">
                 <div className="flex items-start justify-between gap-2">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-oe-blue-subtle text-oe-blue-text">
-                    <Table2 size={18} strokeWidth={1.75} />
-                  </div>
+                  <Table2 size={16} strokeWidth={1.75} className="mt-0.5 shrink-0 text-content-tertiary" aria-hidden="true" />
                   <Badge variant={statusVariant(boq.status)} size="sm" dot>{statusLabel(boq.status)}</Badge>
                 </div>
 
@@ -1412,7 +1379,7 @@ export function BOQListPage() {
                   to the card bottom, so the breathing room on a short card
                   falls above the rule and reads as deliberate. */}
               <div className="mt-auto border-t border-border-light px-4 pb-2 pt-3">
-                <div className="text-xl font-bold leading-none text-content-primary tabular-nums">
+                <div className="text-xl font-semibold leading-none text-content-primary tabular-nums">
                   {currencyFmt.format(boq.grandTotal)}{' '}
                   <span className="ml-1 text-xs font-medium text-content-tertiary">{boq.currency}</span>
                 </div>
@@ -1493,7 +1460,7 @@ export function BOQListPage() {
                         <Pencil size={13} />
                       </button>
                       <button
-                        onClick={(e) => { e.stopPropagation(); duplicateMutation.mutate(boq.id); }}
+                        onClick={(e) => { e.stopPropagation(); setDuplicateTarget({ id: boq.id, name: boq.name }); }}
                         disabled={duplicateMutation.isPending}
                         className="flex h-7 w-7 items-center justify-center rounded-md text-content-tertiary hover:text-oe-blue-text hover:bg-oe-blue-subtle transition-all disabled:opacity-40"
                         title={t('boq.duplicate', { defaultValue: 'Duplicate' })}
@@ -1624,6 +1591,15 @@ export function BOQListPage() {
           boqId={renameTarget.id}
           name={renameTarget.name}
           onClose={() => setRenameTarget(null)}
+        />
+      )}
+      {duplicateTarget && (
+        <BOQDuplicateDialog
+          key={duplicateTarget.id}
+          baseName={duplicateTarget.name}
+          isPending={duplicateMutation.isPending}
+          onSubmit={(name) => duplicateMutation.mutate({ boqId: duplicateTarget.id, name })}
+          onClose={() => setDuplicateTarget(null)}
         />
       )}
     </div>

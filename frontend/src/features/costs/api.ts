@@ -1,7 +1,7 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 
-import { apiDelete, apiGet, apiPatch, apiPost } from '@/shared/lib/api';
+import { ApiError, apiDelete, apiGet, apiPatch, apiPost } from '@/shared/lib/api';
 
 /* ── CWICR abstract-resource variant types ─────────────────────────────── */
 
@@ -167,6 +167,22 @@ export interface CostCatalogUpdateBody {
 export type CatalogDeleteMode = 'keep_items' | 'delete_items';
 
 /** GET /v1/costs/catalogs/ - all catalogs with live item counts. */
+/** The loaded cost base to open on for the reader's market. */
+export interface PreferredRegion {
+  /** Empty when no loaded base is priced in the market's currency. */
+  region: string;
+  currency: string;
+  /** What decided it: the active project, the interface language, or nothing. */
+  source: 'project' | 'language' | 'none';
+}
+
+/** Ask which loaded base matches the active project's market (or, with no
+ *  project, the interface language: Vietnamese reads VND, English USD). */
+export async function fetchPreferredRegion(projectId: string | null | undefined): Promise<PreferredRegion> {
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+  return apiGet<PreferredRegion>(`/v1/costs/regions/preferred/${qs}`);
+}
+
 export async function fetchCostCatalogs(): Promise<CostCatalog[]> {
   return apiGet<CostCatalog[]>('/v1/costs/catalogs/');
 }
@@ -353,7 +369,7 @@ export async function fetchCertainty(
   try {
     return await apiGet<CertaintyBadge>(`/v1/costs/${costItemId}/certainty/`);
   } catch (err) {
-    if (err instanceof Error && /404/.test(err.message)) {
+    if (err instanceof ApiError && err.status === 404) {
       return null;
     }
     throw err;

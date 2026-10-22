@@ -118,7 +118,9 @@ from app.modules.boq.copilot_schemas import (
 )
 from app.modules.boq.exchange_formats import ExchangeCatalogue, build_catalogue
 from app.modules.boq.gaeb_exchange_router import gaeb_exchange_router
+from app.modules.boq.importers._encoding import parse_numeric_cell
 from app.modules.boq.importers.excel import (
+    _grouping_conventions,
     _parse_csv,
     _parse_rows_from_csv,
     _parse_rows_from_excel,
@@ -141,6 +143,7 @@ from app.modules.boq.schemas import (
     AnomalyCheckResponse,
     AnomalyResponse,
     BOQCompareResponse,
+    BOQCopyRequest,
     BOQCreate,
     BOQFromTemplateRequest,
     BOQListByProjectsRequest,
@@ -229,6 +232,7 @@ from app.modules.boq.service import (
     BOQService,
     build_position_response,
     exportable_positions,
+    ordinals_for_unnumbered,
     resource_fx_factor,
 )
 from app.modules.boq.supplier_suggestion_router import supplier_suggestion_router
@@ -1587,16 +1591,18 @@ async def duplicate_boq(
     user_id: CurrentUserId,
     payload: CurrentUserPayload,
     session: SessionDep,
+    data: BOQCopyRequest | None = None,
     service: BOQService = Depends(_get_service),
 ) -> BOQResponse:
     """Duplicate an entire BOQ with all its positions and markups.
 
-    Creates a new BOQ named "<original> (Copy)" in the same project.
-    All positions (with hierarchy) and markups are deep-copied with new IDs.
+    Creates a new BOQ named ``data.name``, by default "<original> (Copy)", in
+    the same project. All positions (with hierarchy) and markups are
+    deep-copied with new IDs.
     """
     # IDOR guard: verify the caller owns the source BOQ before cloning it
     await _verify_boq_owner(session, boq_id, user_id, payload)
-    new_boq = await service.duplicate_boq(boq_id)
+    new_boq = await service.duplicate_boq(boq_id, name=(data.name if data else None) or None)
     await _stamp_creator(session, new_boq, user_id)
     return BOQResponse.model_validate(new_boq)
 
@@ -2015,18 +2021,31 @@ async def create_revision(
     _user_id: CurrentUserId,
     payload: CurrentUserPayload,
     session: SessionDep,
+    data: BOQCopyRequest | None = None,
     service: BOQService = Depends(_get_service),
 ) -> BOQResponse:
     """Create a new revision of a BOQ.
 
     Duplicates the entire BOQ (positions + markups) and links the copy
     back to the original via parent_estimate_id for revision tracking.
+    The revision carries its version number and the reason given for it in
+    its metadata (``revision_number``, ``revision_reason``) and is named
+    ``data.name`` or, by default, after the original with that number
+    (``SoFi v2``).
     """
     await _verify_boq_owner(session, boq_id, _user_id, payload)
     # Ensure Projects model is registered in SQLAlchemy metadata (FK resolution)
     from app.modules.projects import models as _proj_models  # noqa: F401
 
-    new_boq = await service.duplicate_boq(boq_id)
+    default_name, number, root_id = await service.next_revision(boq_id)
+    lineage: dict[str, Any] = {"revision_root_id": root_id, "revision_number": number}
+    if data and data.reason:
+        lineage["revision_reason"] = data.reason
+    new_boq = await service.duplicate_boq(
+        boq_id,
+        name=(data.name if data else None) or default_name,
+        extra_metadata=lineage,
+    )
     new_boq_id = new_boq.id  # Capture before session expires attributes
     # Link the new BOQ to the original as its revision parent
     await service.boq_repo.update_fields(
@@ -2116,9 +2135,14 @@ async def bulk_add_positions(
     # Determine next ordinal base from existing positions (cheap, one query)
     try:
         boq_data = await service.get_boq_with_positions(boq_id)
-        existing_count = len(boq_data.positions) if boq_data.positions else 0
+        existing_positions = list(boq_data.positions or [])
     except HTTPException:
-        existing_count = 0
+        existing_positions = []
+    existing_count = len(existing_positions)
+
+    # A row sent without a position number is numbered in the bill's one
+    # scheme, the same as a line added by hand (see ``ordinals_for_unnumbered``).
+    _generated_ordinals = ordinals_for_unnumbered(items, [(p.id, p.ordinal) for p in existing_positions])
 
     # Validate every row up-front. A bad row aborts the whole batch with
     # 422; the previous serial loop accepted partial success which made
@@ -2127,7 +2151,7 @@ async def bulk_add_positions(
     errors: list[dict[str, Any]] = []
     for idx, item in enumerate(items):
         try:
-            ordinal = item.get("ordinal", f"{existing_count + idx + 1:03d}")
+            ordinal = str(item.get("ordinal") or "").strip() or _generated_ordinals[idx]
             description = str(item.get("description", "")).strip()
             if not description:
                 description = f"Position {existing_count + idx + 1}"
@@ -2149,6 +2173,7 @@ async def bulk_add_positions(
             payloads.append(
                 PositionCreate(
                     boq_id=boq_id,
+                    parent_id=item.get("parent_id") or None,
                     ordinal=ordinal,
                     description=description,
                     unit=item.get("unit", "pcs"),
@@ -6848,6 +6873,16 @@ async def import_boq_excel(
     _rate_samples.sort()
     _median_rate = _rate_samples[len(_rate_samples) // 2] if _rate_samples else 0.0
 
+    # One number format for the whole file, decided by the cells that can only
+    # be read one way ("12.00", "7,000,000", "8.500.000"), so "450,000" in a
+    # US bill is not read as 450 (see ``_grouping_conventions``).
+    _dot_thousands, _comma_thousands = _grouping_conventions(rows, import_meta.get("header_language"))
+
+    def _parse_import_number(value: Any) -> tuple[float | None, str | None]:
+        if isinstance(value, str) and (_dot_thousands or _comma_thousands):
+            return parse_numeric_cell(value, dot_thousands=_dot_thousands, comma_thousands=_comma_thousands)
+        return _parse_numeric_cell(value)
+
     # Section totals, tax lines and the recap page are not work: leave them
     # out and say so, instead of importing each one as an empty section.
     kept_rows, summary_rows = partition_summary_rows(rows, row_numbers=import_meta.get("row_numbers"))
@@ -6906,8 +6941,8 @@ async def import_boq_excel(
             # offending row + column to the user.
             quantity_raw = row.get("quantity")
             unit_rate_raw = row.get("unit_rate")
-            quantity, q_err = _parse_numeric_cell(quantity_raw)
-            unit_rate, r_err = _parse_numeric_cell(unit_rate_raw)
+            quantity, q_err = _parse_import_number(quantity_raw)
+            unit_rate, r_err = _parse_import_number(unit_rate_raw)
             if q_err is not None:
                 errors.append(
                     {
@@ -6968,7 +7003,9 @@ async def import_boq_excel(
             # fat-fingered by the client or - per QA fuzz - a deliberate
             # attempt to inflate the BOQ through an edited export file.
             _IMPORT_MAX_QUANTITY = 1e9
-            _IMPORT_MAX_UNIT_RATE = 1e8  # EUR/USD per unit - a steel beam is ~10k
+            # The rate is bounded by the line-total cap (POSITION_TOTAL_CAP):
+            # a lump sum priced in dong runs to trillions and is a real price.
+            _IMPORT_MAX_UNIT_RATE = 1e15
             if not (0 <= quantity <= _IMPORT_MAX_QUANTITY):
                 errors.append(
                     {
@@ -6978,7 +7015,7 @@ async def import_boq_excel(
                     }
                 )
                 continue
-            if not (0 <= unit_rate <= _IMPORT_MAX_UNIT_RATE):
+            if not (0 <= unit_rate <= _IMPORT_MAX_UNIT_RATE) or quantity * unit_rate > _IMPORT_MAX_UNIT_RATE:
                 errors.append(
                     {
                         "row": row_idx,

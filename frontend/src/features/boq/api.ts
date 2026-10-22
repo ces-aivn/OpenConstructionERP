@@ -1877,7 +1877,9 @@ export const boqApi = {
   deleteBoq: (boqId: string) => apiDelete(`/v1/boq/boqs/${boqId}`),
 
   /* Duplicate */
-  duplicateBoq: (boqId: string) => apiPost<BOQ>(`/v1/boq/boqs/${boqId}/duplicate/`, {}),
+  /** Copy a bill; without a name the server calls the copy "<name> (Copy)". */
+  duplicateBoq: (boqId: string, name?: string) =>
+    apiPost<BOQ>(`/v1/boq/boqs/${boqId}/duplicate/`, name ? { name } : {}),
 
   /* What-if scenario — clone + optional rate adjustment, linked to baseline. */
   createScenario: (boqId: string, data: ScenarioCreateData) =>

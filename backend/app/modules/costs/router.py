@@ -1073,6 +1073,51 @@ async def region_stats(
     return _with_own(stats)
 
 
+@router.get("/regions/preferred/")
+async def preferred_region(
+    session: SessionDep,
+    user_id: CurrentUserId,
+    project_id: uuid.UUID | None = Query(default=None, description="Active project, when one is open"),
+) -> dict[str, str]:
+    """The loaded cost base the cost database should open on for this reader.
+
+    The active project's currency (or its country's) decides first, the
+    interface language second (``vi`` -> VND, ``en`` -> USD). Among the loaded
+    bases in that currency the one in the same country wins, then the largest.
+    ``region`` is empty when no loaded base is in that currency, and the page
+    then keeps its own default rather than showing another market's prices.
+    """
+    from app.core.i18n import get_locale
+    from app.modules.costs.preferred_region import market_hint, pick_preferred_region, region_country_table
+
+    project_currency: str | None = None
+    project_country: str | None = None
+    if project_id is not None:
+        await verify_project_access(project_id, user_id, session)
+        from app.modules.projects.models import Project
+
+        project = await session.get(Project, project_id)
+        if project is not None:
+            project_currency = project.currency or None
+            project_country = project.country_code or None
+
+    hint = market_hint(
+        project_currency=project_currency,
+        project_country=project_country,
+        language=get_locale(),
+    )
+    if hint is None:
+        return {"region": "", "currency": "", "source": "none"}
+    stats = await region_stats(session, user_id)
+    region = pick_preferred_region(
+        ((str(entry["region"]), int(entry["count"])) for entry in stats),
+        hint,
+        region_currency=_REGION_CURRENCY,
+        region_country=region_country_table(),
+    )
+    return {"region": region, "currency": hint.currency, "source": hint.source if region else "none"}
+
+
 @router.delete(
     "/actions/clear-region/{region}",
     # Wholesale region wipe - admin only. ``costs.delete`` alone would let

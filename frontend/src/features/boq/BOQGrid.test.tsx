@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { evaluateFormula } from './grid/cellEditors';
 import { getColumnDefs } from './grid/columnDefs';
-import { parseClipboardNumber } from './BOQGrid';
+import { parseClipboardNumber, pasteBlockConvention } from './BOQGrid';
 import { isResourceDrivenRate } from './boqHelpers';
 
 describe('evaluateFormula', () => {
@@ -123,6 +123,53 @@ describe('getColumnDefs', () => {
     const unitCol = defs.find((d: { field?: string }) => d.field === 'unit');
     expect(unitCol).toBeDefined();
     expect(unitCol?.cellEditor).toBeDefined();
+  });
+});
+
+describe('parseClipboardNumber inside a pasted block', () => {
+  it('reads an ambiguous cell in the format of the block', () => {
+    expect(parseClipboardNumber('450,000', 'point')).toBe(450000);
+    expect(parseClipboardNumber('15.000', 'comma')).toBe(15000);
+  });
+
+  it('keeps an unambiguous cell on its own reading', () => {
+    expect(parseClipboardNumber('1,400.00', 'comma')).toBe(1400);
+    expect(parseClipboardNumber('$1,234.56', 'point')).toBeCloseTo(1234.56);
+  });
+
+  it('returns NaN for text', () => {
+    expect(parseClipboardNumber('Shoring', 'point')).toBeNaN();
+  });
+});
+
+describe('pasteBlockConvention', () => {
+  const columns = ['_drag', '_checkbox', 'ordinal', 'description', 'quantity', 'unit_rate', 'total'];
+  const fromOrdinal = columns.indexOf('ordinal');
+  const read = (row: string, convention: ReturnType<typeof pasteBlockConvention>) => {
+    const cells = row.split('\t');
+    return {
+      quantity: parseClipboardNumber(cells[2]!, convention),
+      rate: parseClipboardNumber(cells[3]!, convention),
+    };
+  };
+
+  it('reads a Vietnamese row by its quantity and rate, not by its position number', () => {
+    const row = '1.1\tBê tông\t12.500\t850.000';
+    const convention = pasteBlockConvention([row], columns, fromOrdinal, 'vi-VN');
+    expect(convention).toBe('comma');
+    expect(read(row, convention)).toEqual({ quantity: 12500, rate: 850000 });
+  });
+
+  it('still reads a US row whose amounts say point-decimal', () => {
+    const row = '2.5\tFormwork\t12.5\t1,400.00';
+    const convention = pasteBlockConvention([row], columns, fromOrdinal, 'vi-VN');
+    expect(convention).toBe('point');
+    expect(read(row, convention)).toEqual({ quantity: 12.5, rate: 1400 });
+  });
+
+  it('leaves a single cell, or a block with no amount column, to the cell-by-cell reading', () => {
+    expect(pasteBlockConvention(['12.500'], columns, columns.indexOf('quantity'), 'vi-VN')).toBeUndefined();
+    expect(pasteBlockConvention(['1.1\tBê tông'], columns, fromOrdinal, 'vi-VN')).toBeUndefined();
   });
 });
 

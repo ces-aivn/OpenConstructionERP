@@ -111,7 +111,7 @@ class TestDeletingABill:
             await BOQService(session).delete_boq(boq_id)
 
         assert exc.value.status_code == 409
-        assert exc.value.detail == LOCKED_DETAIL
+        assert str(exc.value.detail) == LOCKED_DETAIL
         assert await _bill_rows(session, boq_id) == (1, 1)
 
     async def test_an_unlocked_bill_is_still_deleted(self, session: AsyncSession) -> None:

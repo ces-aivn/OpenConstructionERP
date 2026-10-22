@@ -677,8 +677,9 @@ export function getColumnDefs(context: BOQColumnContext): ColDef[] {
       // can hold a full LV-style specification with newlines, not just one
       // line. The value is the same `description` field (stored as TEXT,
       // newlines preserved); the grid's density toggle controls how much of it
-      // shows at rest.
-      cellEditor: 'agLargeTextCellEditor',
+      // shows at rest. Our own editor rather than agLargeTextCellEditor: that
+      // one could leave the focus on its popup frame (see LongTextCellEditor).
+      cellEditor: 'longTextCellEditor',
       cellEditorPopup: true,
       cellEditorParams: {
         maxLength: 5000,
@@ -973,7 +974,8 @@ export function getColumnDefs(context: BOQColumnContext): ColDef[] {
         ? `${t('boq.total', { defaultValue: 'Total' })} (${context.displayCurrency.code})`
         : t('boq.total', { defaultValue: 'Total' }),
       field: 'total',
-      width: 130,
+      // Wide enough for a 13-digit VND bill total ("2.477.860.944.900 ₫") without an ellipsis.
+      width: 156,
       editable: false,
       // Compute total on-the-fly: for positions with resources, use
       // server-stored total; for positions without resources, always
@@ -1020,7 +1022,7 @@ export function getColumnDefs(context: BOQColumnContext): ColDef[] {
       cellClass: (params) => {
         const base = 'text-right tabular-nums text-xs !pr-2 !pl-2';
         if (params.data?._isSection) return `${base} font-bold`;
-        if (params.data?._isFooter) return `${base} font-bold`;
+        if (params.data?._isFooter) return `${base} font-semibold`;
         const ctx = params.context as { expandedPositions?: Set<string> } | undefined;
         const isExpanded = !!params.data?.id && (ctx?.expandedPositions?.has(params.data.id) ?? false);
         return isExpanded ? `${base} font-bold` : `${base} font-semibold`;

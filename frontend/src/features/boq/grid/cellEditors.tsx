@@ -136,6 +136,76 @@ export function editorSeed(eventKey: string | null | undefined, stored: string):
   return { text: stored, typed: false };
 }
 
+/** The part of the grid API the Tab hop needs; a subset so tests can stub it. */
+export interface TabHopApi {
+  tabToNextCell: () => boolean | void;
+  tabToPreviousCell: () => boolean | void;
+  getFocusedCell?: () => {
+    rowIndex: number;
+    rowPinned?: string | null;
+    column: { getColId: () => string; isCellEditable?: (node: never) => boolean };
+  } | null;
+  getDisplayedRowAtIndex?: (index: number) => unknown;
+  startEditingCell?: (params: { rowIndex: number; colKey: string }) => void;
+  setFocusedCell?: (rowIndex: number, colKey: string, rowPinned?: 'top' | 'bottom' | null) => void;
+}
+
+/**
+ * Leave a cell on Tab once its editor has committed and closed itself, and open
+ * the editor of the cell Tab lands on.
+ *
+ * The custom editors commit by writing the row and cancelling the grid's own
+ * commit, so by the time they move on the grid is no longer editing and
+ * ``tabToNextCell`` only FOCUSES the next cell. The estimator typing straight on
+ * ("Tab, 12, Tab, 85000") then started each edit with a keystroke, and every
+ * digit typed before the new editor mounted was lost. Opening the next editor
+ * here is what the grid's own Tab-while-editing does; the keystrokes that
+ * arrive before it has focus are held by the grid and replayed into it.
+ */
+export function tabAndEdit(api: TabHopApi, backwards: boolean): void {
+  const moved = backwards ? api.tabToPreviousCell() : api.tabToNextCell();
+  if (!moved) {
+    // No editable cell that way (the last one of the bill). The editor
+    // cancelled the keystroke, so the browser will not move the focus either:
+    // keep it on the cell the editor closed on rather than on the page body.
+    // The next Tab, with no editor open, leaves the grid.
+    const here = api.getFocusedCell?.();
+    if (here) {
+      const pinned = here.rowPinned === 'top' || here.rowPinned === 'bottom' ? here.rowPinned : null;
+      api.setFocusedCell?.(here.rowIndex, here.column.getColId(), pinned);
+    }
+    return;
+  }
+  if (!api.getFocusedCell || !api.startEditingCell) return;
+  const cell = api.getFocusedCell();
+  // Only body rows take entry; the pinned totals rows never do.
+  if (!cell || cell.rowPinned) return;
+  const node = api.getDisplayedRowAtIndex?.(cell.rowIndex);
+  if (!node) return;
+  if (cell.column.isCellEditable && !cell.column.isCellEditable(node as never)) return;
+  api.startEditingCell({ rowIndex: cell.rowIndex, colKey: cell.column.getColId() });
+}
+
+/**
+ * Give the focus back to the cell an editor just closed on (Enter, Escape).
+ *
+ * The editor's input is removed with the editor, and the browser then hands the
+ * focus to the page body: arrow keys stopped moving in the grid, and the next
+ * letter typed reached the page's single-key shortcuts ("s" opened the
+ * update-rates dialog) instead of the bill.
+ */
+export function refocusCell(props: Pick<ICellEditorParams, 'api' | 'node' | 'column'>): void {
+  const api = props.api as { setFocusedCell?: (rowIndex: number, colKey: string, rowPinned?: string | null) => void };
+  const rowIndex = props.node?.rowIndex;
+  const colId = props.column?.getColId?.();
+  if (typeof api.setFocusedCell !== 'function' || typeof rowIndex !== 'number' || !colId) return;
+  try {
+    api.setFocusedCell(rowIndex, colId, props.node?.rowPinned ?? undefined);
+  } catch {
+    /* the row went away with the edit */
+  }
+}
+
 /** Focus an editor's input: caret after a typed seed, the whole value selected otherwise. */
 function focusSeeded(el: HTMLInputElement | null, typed: boolean): void {
   if (!el) return;
@@ -607,12 +677,13 @@ export const FormulaCellEditor = forwardRef(
           // input, and the blur handler would otherwise commit what was typed.
           committedRef.current = true;
           props.api.stopEditing(true);
+          refocusCell(props);
           return;
         }
         if (ev.key === 'Enter') {
           ev.preventDefault();
           ev.stopPropagation();
-          commitFromInput(false);
+          if (commitFromInput(false)) refocusCell(props);
           return;
         }
         if (ev.key === 'Tab') {
@@ -624,8 +695,7 @@ export const FormulaCellEditor = forwardRef(
             // Direction follows the modifier: preventDefault above removed the
             // grid's own move, so always calling tabToNextCell would send
             // Shift+Tab forward.
-            if (ev.shiftKey) props.api.tabToPreviousCell();
-            else props.api.tabToNextCell();
+            tabAndEdit(props.api, ev.shiftKey);
           }
         }
       };
@@ -869,9 +939,12 @@ export const RateCellEditor = forwardRef((props: ICellEditorParams, ref) => {
       // a tail blur after Enter doesn't re-enter. An empty field is a plain
       // "changed my mind"; anything else earns the why-was-it-kept toast.
       committedRef.current = true;
-      if (live.trim() !== '') toastInvalidNumber(t);
+      const refused = live.trim() !== '';
+      if (refused) toastInvalidNumber(t);
       props.api.stopEditing(true);
-      return true;
+      // A refused rate was not entered: Enter must not go on to open the
+      // next line as if it had been.
+      return !refused;
     }
     committedRef.current = true;
     // Typed value is in the DISPLAYED system; convert back to metric-canonical
@@ -898,12 +971,20 @@ export const RateCellEditor = forwardRef((props: ICellEditorParams, ref) => {
         // Cancel, and keep the blur that follows from committing the typed rate.
         committedRef.current = true;
         props.api.stopEditing(true);
+        refocusCell(props);
         return;
       }
       if (ev.key === 'Enter') {
         ev.preventDefault();
         ev.stopPropagation();
-        commit(false);
+        const entered = commit(false);
+        refocusCell(props);
+        if (!entered) return;
+        // The rate is the last cell of a line typed from the keyboard. The grid
+        // decides whether Enter here opens the next line (see BOQGrid).
+        const rowId = props.data?.id;
+        const onRateEntered = (props.context as { onRateEntered?: (id: string) => void } | undefined)?.onRateEntered;
+        if (typeof rowId === 'string' && onRateEntered) onRateEntered(rowId);
         return;
       }
       if (ev.key === 'Tab') {
@@ -911,10 +992,9 @@ export const RateCellEditor = forwardRef((props: ICellEditorParams, ref) => {
         ev.stopPropagation();
         // Direction follows the modifier, for the same reason as in the other
         // two editors: the default move is already cancelled above.
-        if (commit(false)) {
-          if (ev.shiftKey) props.api.tabToPreviousCell();
-          else props.api.tabToNextCell();
-        }
+        // A refused rate keeps the stored one and Tab still moves on.
+        commit(false);
+        tabAndEdit(props.api, ev.shiftKey);
       }
     };
     const onBlur = () => commit(false);
@@ -959,6 +1039,159 @@ export const RateCellEditor = forwardRef((props: ICellEditorParams, ref) => {
   );
 });
 RateCellEditor.displayName = 'RateCellEditor';
+
+/* ── Long text (description) editor ───────────────────────────────── */
+
+export interface LongTextCellEditorParams extends ICellEditorParams {
+  maxLength?: number;
+  rows?: number;
+  cols?: number;
+}
+
+/**
+ * Multi-line editor for a position description.
+ *
+ * Replaces AG Grid's ``agLargeTextCellEditor``, which focused its textarea
+ * only when a user gesture opened it and left the focus on its popup wrapper
+ * otherwise (a second click of a double-click lands there too). Every key then
+ * went to the page: the global shortcuts navigated away to the BIM takeoff,
+ * opened the "update unit rates" dialog, Cmd+A selected the page, and the
+ * description was never saved. It also ignored the key that opened it, so the
+ * first character was dropped or appended to the stored text.
+ *
+ * This one always takes the focus, keeps it when the popup frame is clicked,
+ * starts from the key that opened it like the other editors, and handles Tab
+ * itself so it moves on to the unit cell and opens it. Enter saves, Shift+Enter
+ * or Alt+Enter starts a new line, Escape cancels.
+ */
+export const LongTextCellEditor = forwardRef((props: LongTextCellEditorParams, ref) => {
+  const { t } = useTranslation();
+  const maxLength = props.maxLength ?? 5000;
+  const [seed] = useState(() => editorSeed(props.eventKey, String(props.value ?? '')));
+  const areaRef = useRef<HTMLTextAreaElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
+  const committedRef = useRef(false);
+
+  const commit = (): void => {
+    if (committedRef.current) return;
+    committedRef.current = true;
+    const next = (areaRef.current?.value ?? seed.text).slice(0, maxLength);
+    const colId = props.column?.getColId?.() ?? 'description';
+    const old = props.node?.data?.[colId as keyof typeof props.node.data];
+    if (next !== String(old ?? '')) props.node?.setDataValue(colId, next);
+    // The row already holds the value: cancel the grid's own commit so it
+    // cannot write a second, stale one.
+    props.api.stopEditing(true);
+  };
+  const commitRef = useRef(commit);
+  commitRef.current = commit;
+
+  useEffect(() => {
+    const el = areaRef.current;
+    if (!el) return;
+    el.focus();
+    if (seed.typed) {
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+    } else {
+      el.select();
+    }
+    // Once, on mount: the seed never changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const el = areaRef.current;
+    const frame = frameRef.current;
+    if (!el || !frame) return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        ev.stopPropagation();
+        committedRef.current = true;
+        props.api.stopEditing(true);
+        refocusCell(props);
+        return;
+      }
+      if (ev.key === 'Tab') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        commitRef.current();
+        tabAndEdit(props.api, ev.shiftKey);
+        return;
+      }
+      if (ev.key === 'Enter') {
+        // A new line inside the text; the grid must not see it.
+        ev.stopPropagation();
+        if (ev.shiftKey || ev.altKey) return;
+        ev.preventDefault();
+        commitRef.current();
+        refocusCell(props);
+        return;
+      }
+      // Moving the caret is the textarea's business, not the grid's.
+      if (ev.key.startsWith('Arrow') || ev.key === 'Home' || ev.key === 'End'
+        || ev.key === 'PageUp' || ev.key === 'PageDown') {
+        ev.stopPropagation();
+      }
+    };
+    // A click on the frame around the textarea would move the focus to the
+    // popup wrapper, where typed keys reach the page shortcuts instead.
+    const onFrameMouseDown = (ev: MouseEvent) => {
+      if (ev.target !== el) {
+        ev.preventDefault();
+        el.focus();
+      }
+    };
+    const onBlur = (ev: FocusEvent) => {
+      const next = ev.relatedTarget as Node | null;
+      if (next && frame.contains(next)) return;
+      commitRef.current();
+    };
+    el.addEventListener('keydown', onKeyDown);
+    el.addEventListener('blur', onBlur);
+    frame.addEventListener('mousedown', onFrameMouseDown);
+    return () => {
+      el.removeEventListener('keydown', onKeyDown);
+      el.removeEventListener('blur', onBlur);
+      frame.removeEventListener('mousedown', onFrameMouseDown);
+    };
+    // The api is stable for the editor's life.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useImperativeHandle(ref, () => ({
+    getValue() {
+      return (areaRef.current?.value ?? seed.text).slice(0, maxLength);
+    },
+    isPopup() {
+      return true;
+    },
+  }));
+
+  return (
+    <div
+      ref={frameRef}
+      className="rounded-md border border-oe-blue/40 bg-surface-elevated p-1 shadow-lg"
+    >
+      <textarea
+        ref={areaRef}
+        defaultValue={seed.text}
+        maxLength={maxLength}
+        rows={props.rows ?? 10}
+        cols={props.cols ?? 60}
+        spellCheck
+        aria-label={t('boq.inline_edit_description', { defaultValue: 'Edit description' })}
+        className="block w-full min-w-[min(36rem,80vw)] max-w-[80vw] resize-y rounded bg-transparent px-2 py-1 text-sm text-content-primary outline-none"
+      />
+      <p className="px-2 pb-0.5 text-2xs text-content-tertiary">
+        {t('boq.description_editor_hint', {
+          defaultValue: 'Enter saves · Shift+Enter new line · Tab next cell · Esc cancels',
+        })}
+      </p>
+    </div>
+  );
+});
+LongTextCellEditor.displayName = 'LongTextCellEditor';
 
 /* ── Autocomplete Cell Editor ─────────────────────────────────────── */
 
@@ -1238,8 +1471,36 @@ export const UnitCellEditor = forwardRef((props: ICellEditorParams, ref) => {
   }, [props.api, props.node, props.column, channelKey]);
 
   const commit = useCallback((finalValue?: string) => {
-    applyCommit(finalValue ?? value);
+    // The input is the truth: keystrokes replayed into it a moment ago may not
+    // have reached the React state yet.
+    applyCommit(finalValue ?? inputRef.current?.value ?? value);
   }, [applyCommit, value]);
+
+  // Tab is taken on the input itself, natively, so it runs before the grid's
+  // own listeners. A React handler runs at the root, after the grid has already
+  // moved to quantity and opened its editor; committing then closed that editor
+  // again and the second move skipped quantity, or lost the focus altogether.
+  // Plain Tab commits the typed text, like Enter on a free-typed value, so the
+  // estimator can type past the dropdown.
+  const commitRef = useRef(commit);
+  commitRef.current = commit;
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const onTab = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Tab') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      commitRef.current();
+      // preventDefault also removed the grid's own move, so make it here, in
+      // the direction asked for, and open the editor it lands on.
+      tabAndEdit(props.api, ev.shiftKey);
+    };
+    el.addEventListener('keydown', onTab);
+    return () => el.removeEventListener('keydown', onTab);
+    // The api is stable for the editor's life.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const pick = useCallback((u: string) => {
     applyCommit(u);
@@ -1325,6 +1586,7 @@ export const UnitCellEditor = forwardRef((props: ICellEditorParams, ref) => {
             const sel = filtered[activeIdx];
             if (open && navigatedRef.current && sel != null) pick(sel);
             else commit();
+            refocusCell(props);
           } else if (e.key === 'Escape') {
             e.preventDefault();
             if (open) setOpen(false);
@@ -1332,6 +1594,7 @@ export const UnitCellEditor = forwardRef((props: ICellEditorParams, ref) => {
               // Cancel, and keep the deferred blur commit from saving the text.
               committedRef.current = true;
               props.api.stopEditing(true);
+              refocusCell(props);
             }
           } else if (e.key === 'ArrowDown') {
             e.preventDefault();
@@ -1342,28 +1605,6 @@ export const UnitCellEditor = forwardRef((props: ICellEditorParams, ref) => {
             e.preventDefault();
             navigatedRef.current = true;
             setActiveIdx((i) => Math.max(0, i - 1));
-          } else if (e.key === 'Tab') {
-            // Plain Tab commits the current text - same behaviour as Enter on
-            // a free-typed value, lets the user blow past the dropdown.
-            //
-            // Cancelling the keystroke matters as much as committing it. Left
-            // uncancelled, this same Tab also runs ag-grid's own
-            // Tab-during-edit path, so the grid advances a second time and,
-            // with stopEditingWhenCellsLoseFocus on, tears down the popup
-            // editor the first advance had just opened. That is the blink a
-            // user sees on the quantity cell after leaving unit: the editor
-            // opens and is closed by the duplicate of the keystroke that
-            // opened it, and only a mouse click gets it back. Every other
-            // branch in this handler already cancels; this one did not, which
-            // is why this was the only hop that broke.
-            e.preventDefault();
-            e.stopPropagation();
-            commit();
-            // preventDefault also removes the grid's own move, so the move has
-            // to be made here, and in the direction the user actually asked
-            // for. Without the shiftKey arm Shift+Tab would walk forward.
-            if (e.shiftKey) props.api.tabToPreviousCell();
-            else props.api.tabToNextCell();
           }
         }}
         onBlur={(e) => {

@@ -101,6 +101,13 @@ def test_get_reranker_caches_failure_state_to_skip_retries(
     calls don't re-attempt the import."""
     import builtins
 
+    from app.core.processes import matching
+
+    # The switch is on, so the import is what fails. With the processes
+    # registered and FlagEmbedding absent the registry already reports the
+    # model off and the loader never reaches the import; that state belongs
+    # to whichever test started the app, not to this one.
+    monkeypatch.setattr(matching, "matching_model_allowed", lambda _process_id: True)
     real_import = builtins.__import__
 
     def boom(name: str, *args, **kwargs):

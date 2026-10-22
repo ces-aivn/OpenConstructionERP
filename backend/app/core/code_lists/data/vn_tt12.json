@@ -1,0 +1,87 @@
+{
+  "key": "vn_tt12",
+  "name": "Mã hiệu định mức dự toán (TT 12/2021/TT-BXD)",
+  "standard": "vn_tt12",
+  "entries": [
+    {
+      "code": "A",
+      "title": "Định mức dự toán xây dựng công trình (Phụ lục II, TT 12/2021/TT-BXD)",
+      "parent": null
+    },
+    {
+      "code": "AA",
+      "title": "Công tác chuẩn bị mặt bằng xây dựng",
+      "parent": "A"
+    },
+    {
+      "code": "AB",
+      "title": "Công tác đào, đắp đất, đá, cát",
+      "parent": "A"
+    },
+    {
+      "code": "AC",
+      "title": "Công tác thi công cọc",
+      "parent": "A"
+    },
+    {
+      "code": "AD",
+      "title": "Công tác thi công đường",
+      "parent": "A"
+    },
+    {
+      "code": "AE",
+      "title": "Công tác xây gạch, đá",
+      "parent": "A"
+    },
+    {
+      "code": "AF",
+      "title": "Công tác bê tông tại chỗ",
+      "parent": "A"
+    },
+    {
+      "code": "AG",
+      "title": "Công tác sản xuất, lắp dựng cấu kiện bê tông đúc sẵn",
+      "parent": "A"
+    },
+    {
+      "code": "AH",
+      "title": "Công tác sản xuất, lắp dựng cấu kiện gỗ",
+      "parent": "A"
+    },
+    {
+      "code": "AI",
+      "title": "Công tác sản xuất, lắp dựng cấu kiện sắt thép",
+      "parent": "A"
+    },
+    {
+      "code": "AK",
+      "title": "Công tác làm mái, làm trần và các công tác hoàn thiện khác",
+      "parent": "A"
+    },
+    {
+      "code": "AL",
+      "title": "Các công tác khác",
+      "parent": "A"
+    },
+    {
+      "code": "B",
+      "title": "Định mức dự toán lắp đặt hệ thống kỹ thuật của công trình (Phụ lục III, TT 12/2021/TT-BXD)",
+      "parent": null
+    },
+    {
+      "code": "BA",
+      "title": "Lắp đặt hệ thống điện trong công trình",
+      "parent": "B"
+    },
+    {
+      "code": "BB",
+      "title": "Lắp đặt các loại ống và phụ tùng",
+      "parent": "B"
+    },
+    {
+      "code": "BC",
+      "title": "Bảo ôn đường ống, phụ tùng và thiết bị",
+      "parent": "B"
+    }
+  ]
+}

@@ -52,9 +52,18 @@ import { useCostDatabaseStore, REGION_MAP } from '@/stores/useCostDatabaseStore'
 import { useAuthStore } from '@/stores/useAuthStore';
 import { usePreferencesStore } from '@/stores/usePreferencesStore';
 import type { CostItemMetadata, CertaintyBadge as CertaintyBadgeData, CostCatalog } from './api';
-import { buildBoqPositionDraft, massEffectiveUnitRate, type FullCostItem } from './addToBoqHelpers';
+import {
+  addToBoqFailureMessage,
+  buildBoqPositionDraft,
+  firstWritableBoq,
+  massEffectiveUnitRate,
+  ordinalsForAddedItems,
+  type FullCostItem,
+} from './addToBoqHelpers';
 import { componentDisplayNumbers } from './costComponentDisplay';
-import { fetchUsageCounts, fetchCostCatalogs } from './api';
+import { fetchUsageCounts, fetchCostCatalogs, fetchPreferredRegion } from './api';
+import { useSemanticSearchReady } from './useSemanticSearchReady';
+import { chooseInitialRegion, readAutoPickedRegion, shouldFollowMarket, writeAutoPickedRegion } from './marketRegion';
 import { CatalogsSection } from './CatalogsSection';
 import { CostDatabaseInvite } from './CostDatabaseInvite';
 import { CustomCategoryList } from './CustomCategoryList';
@@ -158,6 +167,8 @@ interface BOQ {
   project_id: string;
   name: string;
   status: string;
+  /** A locked bill refuses new lines; the add dialog offers it greyed out. */
+  is_locked?: boolean;
 }
 
 interface BOQSection {
@@ -606,7 +617,10 @@ export function CostsPage() {
   const [catalogId, setCatalogId] = useState('');
   const [showEscalation, setShowEscalation] = useState(false);
   const [showRegionalAdjust, setShowRegionalAdjust] = useState(false);
-  const [semanticSearch, setSemanticSearch] = useState(false);
+  const [semanticChosen, setSemanticChosen] = useState(false);
+  // The AI search switch is offered only while the embedding model is ready.
+  const semanticReady = useSemanticSearchReady();
+  const semanticSearch = semanticChosen && semanticReady;
   const semanticOff = useSemanticSearchOff();
 
   // Column sorting
@@ -651,6 +665,19 @@ export function CostsPage() {
     queryFn: () => apiGet<string[]>('/v1/costs/regions/'),
     retry: false,
     staleTime: 5 * 60_000,
+  });
+
+  // The base of the reader's market: the active project's currency or
+  // country, else the interface language. The page opens on it instead of
+  // "All regions", where another market's rows (a demo base priced in euro)
+  // could come first.
+  const marketProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const { data: preferredRegion, isFetched: preferredRegionSettled } = useQuery({
+    queryKey: ['costs', 'regions', 'preferred', marketProjectId ?? '', i18n.language],
+    queryFn: () => fetchPreferredRegion(marketProjectId),
+    retry: false,
+    staleTime: 5 * 60_000,
+    meta: { suppressGlobalErrorToast: true },
   });
 
   // Auto-pick a region when the page mounts with no region selected and
@@ -736,17 +763,38 @@ export function CostsPage() {
     // invalidations (edit/delete) re-run this effect, and re-picking a
     // region here would intersect with catalog_id down to an empty list.
     if (catalogId) return;
-    const catalogNames = new Set((userCatalogs ?? []).map((c) => c.name));
-    const first = loadedRegions?.find((r) => !catalogNames.has(r));
+    // Wait for the market answer, so the page does not settle on the first
+    // region alphabetically and then jump.
+    if (!preferredRegionSettled) return;
+    const first = chooseInitialRegion({
+      preferred: preferredRegion?.region,
+      loadedRegions,
+      catalogNames: new Set((userCatalogs ?? []).map((c) => c.name)),
+    });
     if (!first) return;
     regionAutoPickDone.current = true;
+    writeAutoPickedRegion(first);
     setRegion(first);
     setActiveRegion(first);
   // `activeRegion` and `region` are dependencies so the pass that clears a
   // stale region is followed by one that picks a live one; both one-shot refs
   // stop that from becoming a loop.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadedRegions, userCatalogs, catalogId, activeRegion, region]);
+  }, [loadedRegions, userCatalogs, catalogId, activeRegion, region, preferredRegionSettled, preferredRegion?.region]);
+
+  // Follow the market when it changes (another project opened, the language
+  // switched), but only over a region the page picked by itself: a region
+  // the reader chose stays.
+  useEffect(() => {
+    const market = preferredRegion?.region ?? '';
+    if (catalogId || hadRegionDeepLink.current) return;
+    if (!shouldFollowMarket({ market, activeRegion, autoPicked: readAutoPickedRegion(), loadedRegions })) return;
+    writeAutoPickedRegion(market);
+    setRegion(market);
+    setOffset(0);
+    setActiveRegion(market);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preferredRegion?.region, loadedRegions, activeRegion, catalogId]);
 
   // Fetch per-region stats (for item counts in tabs)
   const { data: regionStats } = useQuery({
@@ -973,6 +1021,7 @@ export function CostsPage() {
     // Region counts as a filter, so "Clear all" drops it too. Latch the
     // auto-pick so the effect above does not immediately re-pick a region.
     regionAutoPickDone.current = true;
+    writeAutoPickedRegion('');
     setRegion('');
     setActiveRegion('');
   }, [setActiveRegion]);
@@ -983,6 +1032,7 @@ export function CostsPage() {
       // disarms the region auto-pick - re-picking here would override an
       // explicit decision.
       regionAutoPickDone.current = true;
+      writeAutoPickedRegion('');
       setCatalogId(id);
       setOffset(0);
       // A catalog and a region tab are alternative scopes over the same
@@ -1028,6 +1078,7 @@ export function CostsPage() {
       // Explicit user choice (including "All regions" = '') - disarm the
       // auto-pick so it cannot snap the page back to the first region.
       regionAutoPickDone.current = true;
+      writeAutoPickedRegion('');
       setRegion(value);
       setOffset(0);
       setActiveRegion(value);
@@ -1469,8 +1520,9 @@ export function CostsPage() {
                 </button>
               )}
             </div>
+            {semanticReady && (
             <button
-              onClick={() => setSemanticSearch(!semanticSearch)}
+              onClick={() => setSemanticChosen(!semanticSearch)}
               title={semanticSearch ? t('costs.switch_to_text_search', { defaultValue: 'Switch to text search' }) : t('costs.switch_to_ai_search', { defaultValue: 'Switch to AI semantic search' })}
               className={`flex h-10 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 transition-all text-xs font-medium ${
                 semanticSearch
@@ -1485,6 +1537,7 @@ export function CostsPage() {
                   : t('costs.ai_search_off', { defaultValue: 'AI search' })}
               </span>
             </button>
+            )}
           </div>
 
           {/* The semantic toggle is on but this deployment has no embedding
@@ -1999,6 +2052,9 @@ function AddToBOQModal({
   const [projectId, setProjectId] = useState(activeProjectId ?? '');
   const [boqId, setBoqId] = useState('');
   const [isAdding, setIsAdding] = useState(false);
+  // Why the last add failed, shown inside the dialog so a refusal is never
+  // lost behind the overlay or a toast that has already faded.
+  const [addError, setAddError] = useState<string | null>(null);
 
   // Follow the global project switcher. Without this the modal captured the
   // project once at mount, so switching project in the top bar left it pointed
@@ -2032,12 +2088,14 @@ function AddToBOQModal({
     retry: false,
   });
 
-  // Auto-select first BOQ when list loads
+  // Auto-select the first bill that accepts new lines when the list loads.
   useEffect(() => {
     if (boqs && boqs.length > 0 && !boqId) {
-      setBoqId(boqs[0]!.id);
+      const writable = firstWritableBoq(boqs);
+      if (writable) setBoqId(writable.id);
     }
   }, [boqs, boqId]);
+  const selectedBoqLocked = !!boqs?.find((b) => b.id === boqId)?.is_locked;
 
   // Fetch sections for selected BOQ (extract positions from BOQ detail)
   const { data: sections } = useQuery({
@@ -2055,36 +2113,21 @@ function AddToBOQModal({
   const [sectionId, setSectionId] = useState('');
 
   const handleAdd = useCallback(async () => {
-    if (!boqId) return;
+    if (!boqId || selectedBoqLocked) return;
     setIsAdding(true);
+    setAddError(null);
+    let added = 0;
 
     try {
-      let nextOrdinal = 1;
-      // Fetch BOQ detail to find the max existing ordinal for correct numbering
-      try {
-        const boqData = await apiGet<{ positions?: Array<{ ordinal: string }> }>(
-          `/v1/boq/boqs/${boqId}`,
-        );
-        const existing = boqData.positions ?? [];
-        if (existing.length > 0) {
-          let maxNum = 0;
-          for (const p of existing) {
-            const parts = p.ordinal.split('.');
-            for (const part of parts) {
-              const n = parseInt(part, 10);
-              if (!isNaN(n) && n > maxNum) maxNum = n;
-            }
-          }
-          nextOrdinal = maxNum + 1;
-        }
-      } catch {
-        // Fallback: start at 1
-      }
+      // The new lines continue the bill's own numbering (under the chosen
+      // section when there is one), the same rule every other add path uses.
+      const boqData = await apiGet<{ positions?: Array<{ id: string; ordinal: string }> }>(
+        `/v1/boq/boqs/${boqId}`,
+      );
+      const ordinals = ordinalsForAddedItems(boqData.positions ?? [], sectionId, items.length);
 
-      for (const item of items) {
-        const section = String(Math.floor((nextOrdinal - 1) / 999) + 1).padStart(2, '0');
-        const pos = String(((nextOrdinal - 1) % 999) + 1).padStart(3, '0');
-        const ordinal = `${section}.${pos}`;
+      for (const [index, item] of items.entries()) {
+        const ordinal = ordinals[index]!;
 
         // Resolve the item's currency: its own ISO code wins, then the
         // region's catalogue currency. Stamped on the position AND on each
@@ -2149,7 +2192,7 @@ function AddToBOQModal({
           source: 'cost_database',
           metadata,
         });
-        nextOrdinal++;
+        added++;
       }
 
       addToast({
@@ -2159,15 +2202,25 @@ function AddToBOQModal({
       });
       onSuccess();
     } catch (err) {
+      const reason = addToBoqFailureMessage(err, t);
+      const message =
+        added > 0
+          ? `${t('costs.add_items_partly_added', {
+              defaultValue: '{{added}} of {{count}} items were added before the error.',
+              added,
+              count: items.length,
+            })} ${reason}`
+          : reason;
+      setAddError(message);
       addToast({
         type: 'error',
         title: t('costs.add_items_failed', { defaultValue: 'Failed to add items' }),
-        message: err instanceof Error ? err.message : t('common.unknown_error', { defaultValue: 'Unknown error' }),
+        message,
       });
     } finally {
       setIsAdding(false);
     }
-  }, [boqId, sectionId, items, addToast, onSuccess]);
+  }, [boqId, selectedBoqLocked, sectionId, items, addToast, onSuccess, t]);
 
   // Currency-aware money formatter for the preview. Selected items can span
   // EUR / AED / SAR / USD, so the ISO code is always rendered, and each item
@@ -2271,12 +2324,15 @@ function AddToBOQModal({
               {boqs && boqs.length > 0 ? (
                 <select
                   value={boqId}
-                  onChange={(e) => { setBoqId(e.target.value); setSectionId(''); }}
+                  onChange={(e) => { setBoqId(e.target.value); setSectionId(''); setAddError(null); }}
                   className="h-10 w-full appearance-none rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
                 >
                   <option value="">{t('boq.select_boq', { defaultValue: 'Select BOQ...' })}</option>
                   {boqs.map((b) => (
-                    <option key={b.id} value={b.id}>{b.name} ({t(`boq.status_${b.status}`, { defaultValue: b.status })})</option>
+                    <option key={b.id} value={b.id} disabled={!!b.is_locked}>
+                      {b.name} ({t(`boq.status_${b.status}`, { defaultValue: b.status })})
+                      {b.is_locked ? ` - ${t('costs.boq_locked_option', { defaultValue: 'locked' })}` : ''}
+                    </option>
                   ))}
                 </select>
               ) : (
@@ -2288,6 +2344,15 @@ function AddToBOQModal({
                 </div>
               )}
             </div>
+          )}
+
+          {/* A locked bill cannot be the target: say so before the user tries. */}
+          {projectId && boqs && boqs.length > 0 && !firstWritableBoq(boqs) && (
+            <p className="text-xs text-content-tertiary" data-testid="add-to-boq-all-locked">
+              {t('costs.add_to_boq_all_locked', {
+                defaultValue: 'Every bill of quantities in this project is locked. Create a revision of one to add items.',
+              })}
+            </p>
           )}
 
           {/* Section selector (optional) */}
@@ -2374,6 +2439,17 @@ function AddToBOQModal({
           )}
         </div>
 
+        {addError && (
+          <div
+            role="alert"
+            data-testid="add-to-boq-error"
+            className="mx-6 mb-4 flex items-start gap-2 rounded-lg border border-red-300/60 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/40 dark:bg-red-900/20 dark:text-red-300"
+          >
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <span>{addError}</span>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-border-light bg-surface-secondary/30">
           <span className="text-xs text-content-tertiary">
@@ -2388,7 +2464,7 @@ function AddToBOQModal({
               size="sm"
               icon={isAdding ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
               onClick={handleAdd}
-              disabled={!boqId || isAdding}
+              disabled={!boqId || selectedBoqLocked || isAdding}
             >
               {isAdding
                 ? t('costs.adding', { defaultValue: 'Adding...' })
