@@ -161,47 +161,31 @@ export function DismissibleInfo({
 
   if (collapsed) return null;
 
-  // Expanded: a soft, translucent card - a VISIBLE light blue tint
-  // (bg-oe-blue/10 ~ #e5f1fc over white; /[0.14] over the dark surfaces),
-  // founder feedback 2026-06-06: the previous bg-oe-blue-subtle/25 emitted
-  // no CSS at all (alpha on an opaque var) so cards looked transparent.
+  // Expanded: a plain card on the page ground - card surface, hairline
+  // border, no tint, so the intro reads as help text beside the work rather
+  // than as an alert. The accent lives only in the info icon and the links.
   // The row is a plain div with no handler: the X is the collapse control and
   // carries aria-expanded for AT, and the link pills act on their own.
-  // No default margin (audit fix S2): pages provide rhythm via the root
-  // space-y-5; a built-in mb-5 doubled the gap below every info card.
-  // Tint at 80% of the first visible pass (founder 2026-06-06: light blue,
-  // a little more transparency, background at 80%): /10 -> /[0.08].
-  // Lightened again (founder 2026-07-26: the card still reads too blue, make
-  // it lighter): /[0.08] -> /[0.045] on light, /[0.11] -> /[0.07] on dark
-  // (the row hover went with the click-anywhere collapse). The card must
-  // still read as its own surface rather than as bare page, so the tint is halved rather than dropped: the
-  // left accent bar and the border carry the identity at this weight, which
-  // is why they are left alone.
-  // NO backdrop-blur here (founder 2026-06-06: cards "look opaque"): the
-  // app backdrop's texture is a 0.9px dot grid, and even blur-sm wipes it
-  // out completely - the tint then reads as a solid plate. With the blur
-  // gone the grid shows through the 8% tint and the card is visibly
-  // translucent.
-  const wrapper = `group rounded-xl border border-oe-blue/20 border-l-2 border-l-oe-blue/70 bg-oe-blue/[0.045] dark:bg-oe-blue/[0.07] shadow-sm animate-fade-in ${
+  // No default margin: pages provide rhythm via the root space-y-5.
+  const wrapper = `group rounded-lg border border-border-light bg-surface-elevated animate-fade-in ${
     className ?? ''
   }`;
 
   return (
-    <div className={wrapper}>
+    <div className={wrapper} data-testid="dismissible-info">
       {/* The card collapses through the X only. It used to collapse on a
           click anywhere in this row, the title included, so a reader who
           clicked the title (or selected a sentence to copy) lost the card
           without having asked for that. The title is plain text now, and the
           one collapse control is a real button with an accessible name. The
           way back is the info icon the Header shows beside the module name. */}
-      <div className="flex items-start gap-3 rounded-xl px-4 py-4">
-        {/* Chip and title share the same 28px midline (uniformity sweep: the
-            mt-0.5 chip on an items-start row read ~5px low on every page). */}
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-oe-blue/15">
+      <div className="flex items-start gap-3 rounded-lg px-4 py-3.5">
+        {/* Icon and title share the same 24px midline. */}
+        <span className="flex h-6 w-5 shrink-0 items-center justify-center">
           <Info size={16} className="text-oe-blue-text" />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="flex min-h-7 items-center text-base font-medium leading-snug text-content-primary">
+          <p className="flex min-h-6 items-center text-sm font-semibold leading-snug text-content-primary">
             {title}
           </p>
           {children != null && (
@@ -210,7 +194,7 @@ export function DismissibleInfo({
           {more != null && (
             <>
               {showMore && (
-                <div className="mt-3 border-t border-oe-blue/15 pt-3 text-sm leading-relaxed text-content-secondary animate-fade-in">
+                <div className="mt-3 border-t border-border-light pt-3 text-sm leading-relaxed text-content-secondary animate-fade-in">
                   {more}
                 </div>
               )}
@@ -234,7 +218,7 @@ export function DismissibleInfo({
                   key={l.label}
                   type="button"
                   onClick={l.onClick}
-                  className="inline-flex items-center gap-1 rounded-full border border-oe-blue/30 bg-surface-primary px-2.5 py-1 text-xs font-medium text-oe-blue-text transition-colors hover:bg-oe-blue hover:text-content-inverse"
+                  className="inline-flex items-center gap-1 rounded-md border border-border-light bg-surface-elevated px-2 py-1 text-xs font-medium text-content-secondary transition-colors hover:border-border hover:text-oe-blue-text"
                 >
                   {l.label}
                 </button>

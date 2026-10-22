@@ -4,7 +4,7 @@ import clsx from 'clsx';
 import { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNumberLocale } from '../../stores/usePreferencesStore';
-import { currencyFractionDigits } from '../lib/money';
+import { currencyFractionDigits, formatSpelledCompactMoney, spellsOutCompactScale } from '../lib/money';
 import { isDecimalString } from '../lib/exactDecimal';
 
 // Older engines silently convert strings to Number. Detect actual precision,
@@ -197,7 +197,11 @@ export function MoneyDisplay({
     if (exactDecimal !== null && !supportsExactStrings()) {
       throw new Error('Intl does not preserve decimal strings');
     }
-    if (showCode) {
+    if (compact && spellsOutCompactScale(numberLocale)) {
+      // The engine abbreviates Vietnamese magnitudes to "T" and "Tr", which
+      // read as typos; the scale words are spelled out instead.
+      formatted = formatSpelledCompactMoney(formatValue, safeCurrency, numberLocale, { showCode, signDisplay });
+    } else if (showCode) {
       // Format number without currency, then append ISO code
       const numFmt = new Intl.NumberFormat(numberLocale, {
         minimumFractionDigits: compact ? 0 : minorUnits,

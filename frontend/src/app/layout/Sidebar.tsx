@@ -68,6 +68,7 @@ import {
 import { getIntlLocale } from '@/shared/lib/formatters';
 import { useAppearanceStore } from '@/stores/useAppearanceStore';
 import { sectionTone, useMenuIcon } from './menuIcons';
+import { isTypingTarget } from '@/shared/hooks/useKeyboardShortcuts';
 
 // The picker carries the curated icon catalogue; both load on first use.
 const MenuIconPicker = lazy(() => import('./MenuIconPicker'));
@@ -845,10 +846,9 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
     };
 
     const handler = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      const editable = (e.target as HTMLElement | null)?.isContentEditable;
-      if (editable) return;
+      // Form fields, editable text and data grids (a focused cell or a cell
+      // editor still taking the focus) are typing, not navigation.
+      if (isTypingTarget(e.target) || isTypingTarget(document.activeElement)) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
 
       // #153 guard — non-printable keys (Dead/Meta combos on certain layouts)
@@ -944,8 +944,8 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
   // false and every row renders exactly as the flat default.
   const { profile: activeProfile } = useActiveProjectProfile();
   const gate = buildModuleGate(activeProfile);
-  // Running 1..N sequence assigned to project-needed rows as they
-  // render top-to-bottom. Resets every render (component body re-runs),
+  // Running 1..N sequence assigned to every visible row while focus mode
+  // is on, as rows render top-to-bottom. Resets every render (component body re-runs),
   // so the numbers always read in visual order regardless of grouping.
   let routeSeq = 0;
 
@@ -1082,27 +1082,29 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
 
   const renderRow = (item: NavItem, i: number) => {
     // In-place project-focus annotation (no reorder):
-    //   g === null      → route not profile-constrained →
-    //                      render exactly as the default.
-    //   g.enabled       → project needs it → sequence #.
-    //   g.enabled false → not needed → smaller + greyed.
+    //   every row        → sequence # (focus mode on).
+    //   g.enabled false  → not needed → smaller lettering, same columns.
+    //   g === null / g.enabled → default size.
     const g =
       gate.active && !iconified ? gate.byRoute(item.to) : null;
     const notNeeded = g != null && !g.enabled;
-    const needed = g != null && g.enabled;
-    const seq = needed ? (routeSeq += 1) : null;
+    // In focus mode every visible row carries its place in the list, the
+    // rows outside the project profile (Timeline, Quantities, Activity log)
+    // as well, so the numbers run 1..N without gaps and every row lines up.
+    const seq = gate.active && !iconified ? (routeSeq += 1) : null;
     // No opacity dimming: every visible nav row renders at full
     // strength. Modules that are empty for the current project or
     // outside the project focus are no longer greyed out, since
     // the faded rows read as broken or disabled rather than as a
-    // hint. Project focus still annotates needed rows with a
-    // sequence number and keeps them compact.
+    // hint. Project focus numbers every row and keeps the rows the
+    // project does not need compact.
     return (
-      <li
-        key={item.to}
-        className="oe-stagger"
-        style={{ animationDelay: `${i * 18}ms` }}
-      >
+      // No entrance fade: rows used to animate in from transparent with a
+      // per-row delay, and while a heavy page was loading the animation
+      // stalled part-way, so later rows sat half-faded and read as disabled.
+      // A row is always drawn at full strength; the row being opened shows
+      // its own spinner (see `isPendingTarget`).
+      <li key={item.to} data-nav-index={i}>
         <SidebarItem
           item={item}
           label={t(item.labelKey, { defaultValue: item.defaultLabel })}
@@ -1139,13 +1141,6 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
       {/* Page-scoped CSS — sidebar-only animations. Defined inline to
           keep this component fully self-contained. */}
       <style>{`
-        @keyframes oeStaggerIn {
-          0%   { opacity: 0; transform: translateY(-4px); }
-          100% { opacity: 1; transform: translateY(0); }
-        }
-        .oe-sidebar .oe-stagger {
-          animation: oeStaggerIn 220ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
-        }
         /* Hover-arrow: a subtle right-pointing chevron that fades in
            on hover - hints "click to navigate" without taking space
            when idle. The opacity transition keeps the layout stable. */
@@ -1333,11 +1328,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
             )}
             <ul className="space-y-0.5">
               {pinnedItems.map((item, i) => (
-                <li
-                  key={item.to}
-                  className="oe-stagger"
-                  style={{ animationDelay: `${i * 18}ms` }}
-                >
+                <li key={item.to} data-nav-index={i}>
                   <SidebarItem
                     item={item}
                     label={t(item.labelKey, { defaultValue: item.defaultLabel })}
@@ -1448,9 +1439,9 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
         )}
         {/* Project focus is applied IN PLACE inside the original groups
             below — there is NO separate "project route" section and no
-            reordering. Each row is only annotated: needed → sequence
-            number; not needed → smaller + greyed; unconstrained → as
-            default. Focus OFF / no profile → every row is default. */}
+            reordering. Each row is only annotated: every row gets its
+            sequence number; not needed → smaller lettering on the same
+            columns. Focus OFF / no profile → every row is default. */}
         {(!workspaceActive || moreExpanded) && loopGroups.map((group) => {
           const visibleItems = visibleGroupItems(group);
 
@@ -2129,6 +2120,7 @@ function SidebarItem({
         aria-label={label}
         onContextMenu={handleContextMenu}
         data-active={isActive || undefined}
+        aria-busy={isPendingTarget || undefined}
         onMouseEnter={() => preloadRouteOnHover(item.to)}
         onMouseLeave={() => cancelRoutePreload(item.to)}
         {...(item.tourId ? { 'data-tour': item.tourId } : {})}
@@ -2185,6 +2177,7 @@ function SidebarItem({
         title={titleText}
         onContextMenu={handleContextMenu}
         data-active={isActive || undefined}
+        aria-busy={isPendingTarget || undefined}
         {...(item.tourId ? { 'data-tour': item.tourId } : {})}
         {...(tourTestId ? { 'data-testid': tourTestId } : {})}
         className={() => {
@@ -2198,27 +2191,34 @@ function SidebarItem({
             // This is the modern-SaaS pattern — solid, calm, fast.
             'relative flex items-center rounded-md border-l-2 border-transparent',
             'transition-colors duration-fast ease-oe',
+            // A compact row is shorter and smaller-lettered, never indented
+            // differently: the same horizontal padding, gap and icon width
+            // keep its number, icon and label on the same columns as the
+            // rows around it.
             compact
-              ? 'gap-1.5 pl-2 pr-1.5 py-[3px] text-[12px]'
+              ? 'gap-2 pl-[10px] pr-2.5 py-[3px] text-[12px]'
               : 'gap-2 pl-[10px] pr-2.5 py-1 text-[13px]',
+            // Active: neutral fill, a 2px accent edge and an accent icon
+            // (index.css), so the row reads as "you are here" without a tint.
             item.highlight && !active
-              ? 'font-medium bg-gradient-to-r from-[#7c3aed]/10 to-[#0ea5e9]/10 text-[#6d28d9] hover:from-[#7c3aed]/15 hover:to-[#0ea5e9]/15'
+              ? 'font-medium text-oe-blue-text hover:bg-surface-secondary'
               : active
-                ? 'font-semibold border-oe-blue bg-oe-blue/[0.14] text-oe-blue shadow-[inset_0_0_0_1px_rgba(0,122,255,0.06)] dark:bg-oe-blue/25'
+                ? 'font-semibold bg-surface-secondary text-content-primary shadow-[inset_2px_0_0_var(--oe-blue)]'
                 : 'font-medium text-content-secondary hover:bg-surface-secondary hover:text-content-primary',
             editMode && isItemHidden && 'opacity-50',
           );
         }}
       >
-        {/* Project-focus sequence number — only set for rows the active
-            project needs (focus mode on). A small leading chip so the
-            menu reads as a numbered route while keeping its order. */}
+        {/* Project-focus sequence number, set on every row while focus
+            mode is on. A small leading chip so the menu reads as a
+            numbered route while keeping its order. */}
         {seq != null && (
           <span
+            data-nav-seq={seq}
             className={clsx(
               'shrink-0 flex h-3.5 min-w-[14px] items-center justify-center rounded-full px-1 text-[9px] font-bold tabular-nums opacity-60 transition-colors',
               isActive
-                ? 'bg-oe-blue/20 text-oe-blue'
+                ? 'bg-oe-blue-subtle text-oe-blue-text'
                 : 'bg-content-tertiary/15 text-content-tertiary',
             )}
             aria-hidden
@@ -2229,11 +2229,11 @@ function SidebarItem({
         <span className="oe-nav-icon" data-tone={tone}>
           {isPendingTarget ? (
             <Loader2
-              size={compact ? 14 : 16}
+              size={16}
               className="oe-nav-spinner shrink-0 text-oe-blue"
             />
           ) : (
-            <Icon size={compact ? 14 : 16} strokeWidth={isActive ? 2 : 1.75} className="shrink-0" />
+            <Icon size={16} strokeWidth={isActive ? 2 : 1.75} className="shrink-0" />
           )}
         </span>
         {/* German compound words (Leistungsverzeichnisse, Element-Abnahme)

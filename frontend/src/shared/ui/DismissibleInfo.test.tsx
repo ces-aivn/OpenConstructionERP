@@ -64,7 +64,7 @@ function storeEntries() {
 
 /** The row that used to carry a whole-card collapse handler. */
 function cardClickSurface(): HTMLElement {
-  const wrapper = document.querySelector('div.border-l-oe-blue\\/70') as HTMLElement | null;
+  const wrapper = document.querySelector('[data-testid="dismissible-info"]') as HTMLElement | null;
   if (!wrapper) throw new Error('no expanded card wrapper rendered');
   // First element child is the flex row under the wrapper.
   return wrapper.firstElementChild as HTMLElement;

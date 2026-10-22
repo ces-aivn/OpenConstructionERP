@@ -32,6 +32,8 @@ export type { KpiBandProps, KpiBandItem } from './KpiBand';
 
 export { EmptyState } from './EmptyState';
 export type { EmptyStateProps } from './EmptyState';
+export { NoProjectSelected, requestProjectPicker, OPEN_PROJECT_PICKER_EVENT } from './NoProjectSelected';
+export type { NoProjectSelectedProps } from './NoProjectSelected';
 
 export { RecoveryCard } from './RecoveryCard';
 export type { RecoveryCardProps } from './RecoveryCard';

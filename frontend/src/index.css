@@ -2,12 +2,19 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Tables sit on the page's dotted backdrop. Give every table the card surface,
+/* Tables sit on the grey page ground. Give every table the card surface,
    so rows read on solid ground in every module; a bg-* class on a table still
    wins, since a class outranks an element selector. */
 @layer base {
   table {
     background-color: var(--oe-bg-elevated);
+  }
+  /* Figures in tables line up by column: same width for every digit. */
+  td,
+  th,
+  .ag-cell,
+  .ag-header-cell {
+    font-variant-numeric: tabular-nums;
   }
 }
 
@@ -76,20 +83,20 @@
 
   /* Surfaces */
   --oe-bg: #ffffff;
-  --oe-bg-secondary: #f5f5f7;
-  --oe-bg-tertiary: #fbfbfd;
+  --oe-bg-secondary: #f4f5f7;
+  --oe-bg-tertiary: #f9fafb;
   --oe-bg-elevated: #ffffff;
   /* Content wash of the module pages: a step darker than --oe-bg-secondary so the elevated cards read as cards (1.16:1 against #fff, text tokens stay AA on it, tertiary 4.61, quaternary 4.52). */
-  --oe-bg-page: #eeeef2;
+  --oe-bg-page: #f4f5f7;
   --oe-bg-ch: 255 255 255;
-  --oe-bg-secondary-ch: 245 245 247;
-  --oe-bg-tertiary-ch: 251 251 253;
+  --oe-bg-secondary-ch: 244 245 247;
+  --oe-bg-tertiary-ch: 249 250 251;
   --oe-bg-elevated-ch: 255 255 255;
-  --oe-bg-page-ch: 238 238 242;
+  --oe-bg-page-ch: 244 245 247;
 
   /* Borders */
-  --oe-border: #d2d2d7;
-  --oe-border-light: #e8e8ed;
+  --oe-border: #dde1e7;
+  --oe-border-light: #eaecf0;
   --oe-border-focus: var(--oe-blue);
   /* What a border gets when its class names no colour that exists: a bare
      `border`, an alpha-modified token such as `border-border-light/60` (the
@@ -97,7 +104,7 @@
      modifier) or a name the palette never defined such as
      `border-border-medium`. Tailwind's preflight paints all of those with
      gray-200, which is this exact value, so light mode is unchanged. */
-  --oe-border-default: #e5e7eb;
+  --oe-border-default: #e3e6eb;
 
   /* Text — WCAG AA compliant against every light surface we render on.
      Picked 2026-05-25 to clear axe-core color-contrast wherever the
@@ -109,7 +116,7 @@
                             4.71:1 on #e8f2fe, 4.87:1 on #fef2f2 — all pass
        quaternary #696c78 → 5.23:1 on #fff, 4.80:1 on #f5f5f7,
                             4.62:1 on #e8f2fe, 4.78:1 on #fef2f2 — all pass */
-  --oe-text-primary: #1d1d1f;
+  --oe-text-primary: #0e1a2b;
   /* WCAG-AA contrast fix 2026-05-27: was #6e6e73 (Apple-system gray-2)
      which landed at 4.27:1 against `bg-oe-blue-subtle` (#f0f7ff) and
      4.39:1 against `bg-info-bg` (#eff9fe) — both fail AA for normal
@@ -123,9 +130,9 @@
        after:  #5b5e66  6.30:1 on white, 5.75:1 on #f0f7ff (pass),
                          5.78:1 on #eff9fe, 5.86:1 on #ecfdf3,
                          5.91:1 on #fff8ec, 5.83:1 on #fef2f2 */
-  --oe-text-secondary: #5b5e66;
-  --oe-text-tertiary: #666b78;
-  --oe-text-quaternary: #696c78;
+  --oe-text-secondary: #4a5465;
+  --oe-text-tertiary: #5b6476;
+  --oe-text-quaternary: #5f6879;
   --oe-text-inverse: #ffffff;
 
   /* Semantic — WCAG-AA contrast fix 2026-05-27.
@@ -180,22 +187,27 @@
   --oe-error-vivid: #ff3b30;
   --oe-info-vivid: #5ac8fa;
 
-  /* Shadows — Apple uses very subtle, layered shadows */
-  --oe-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --oe-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-  --oe-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
-  --oe-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06);
-  --oe-shadow-xl: 0 24px 80px rgba(0, 0, 0, 0.14), 0 8px 24px rgba(0, 0, 0, 0.08);
+  /* Shadows: panels separate by their hairline border, so resting shadows are
+     barely there; only floating layers (menus, popovers, dialogs) cast one.
+     Tinted with the navy ink rather than pure black. */
+  --oe-shadow-xs: 0 1px 0 rgba(14, 26, 43, 0.04);
+  --oe-shadow-sm: 0 1px 2px rgba(14, 26, 43, 0.06);
+  --oe-shadow-md: 0 4px 12px rgba(14, 26, 43, 0.08), 0 1px 2px rgba(14, 26, 43, 0.06);
+  --oe-shadow-lg: 0 12px 32px rgba(14, 26, 43, 0.12), 0 2px 6px rgba(14, 26, 43, 0.06);
+  --oe-shadow-xl: 0 24px 64px rgba(14, 26, 43, 0.16), 0 4px 12px rgba(14, 26, 43, 0.08);
 
   /* Radius — Apple-current scale (iOS 17+ / macOS Sequoia / WWDC25 Liquid Glass).
      Reduced 2026-05-11 to match styles-lab tighter values:
        xs 4 (unchanged)  sm 8→6   md 12→8   lg 16→10   xl 20→12. */
-  --oe-radius-xs: 4px;
-  --oe-radius-sm: 6px;
-  --oe-radius-md: 8px;
-  --oe-radius-lg: 10px;
-  --oe-radius-xl: 12px;
+  --oe-radius-xs: 3px;
+  --oe-radius-sm: 4px;
+  --oe-radius-md: 6px;
+  --oe-radius-lg: 8px;
+  --oe-radius-xl: 10px;
   --oe-radius-full: 9999px;
+
+  /* CES brand navy: login panel, the AI button, the grand-total rule. */
+  --oe-navy: #0d2968;
 
   /* Spacing scale — 4px base */
   --oe-space-1: 4px;
@@ -216,8 +228,8 @@
     Consolas, monospace;
 
   /* Transitions */
-  --oe-transition-fast: 120ms cubic-bezier(0.25, 0.1, 0.25, 1);
-  --oe-transition-normal: 200ms cubic-bezier(0.25, 0.1, 0.25, 1);
+  --oe-transition-fast: 120ms cubic-bezier(0.2, 0, 0, 1);
+  --oe-transition-normal: 160ms cubic-bezier(0.2, 0, 0, 1);
   --oe-transition-slow: 350ms cubic-bezier(0.25, 0.1, 0.25, 1);
 
   /* Layout */
@@ -255,7 +267,7 @@
   --oe-blue-text: #93c5fd;
   /* Channel triplet - see the light-mode comment. Keep in sync. */
   --oe-blue-ch: 59 130 246;
-  --oe-on-accent: #0f1117;
+  --oe-on-accent: #0b1220;
 
   /* Purple — see the light-mode comment for why this family exists. Same
      shape as the blue pair: the tint becomes a translucent wash so it lifts
@@ -269,21 +281,21 @@
   --oe-purple-ch: 168 85 247;
 
   /* Surfaces — deep blue-gray palette */
-  --oe-bg: #0f1117;
-  --oe-bg-secondary: #161822;
-  --oe-bg-tertiary: #1a1d2b;
-  --oe-bg-elevated: #1e2130;
+  --oe-bg: #0b1220;
+  --oe-bg-secondary: #0f1729;
+  --oe-bg-tertiary: #131c30;
+  --oe-bg-elevated: #172136;
   /* Dark: the page background itself, 1.18:1 against elevated. */
   --oe-bg-page: var(--oe-bg);
-  --oe-bg-ch: 15 17 23;
-  --oe-bg-secondary-ch: 22 24 34;
-  --oe-bg-tertiary-ch: 26 29 43;
-  --oe-bg-elevated-ch: 30 33 48;
-  --oe-bg-page-ch: 15 17 23;
+  --oe-bg-ch: 11 18 32;
+  --oe-bg-secondary-ch: 15 23 41;
+  --oe-bg-tertiary-ch: 19 28 48;
+  --oe-bg-elevated-ch: 23 33 54;
+  --oe-bg-page-ch: 11 18 32;
 
   /* Borders — subtle, low-contrast */
-  --oe-border: #2a2d3e;
-  --oe-border-light: #232638;
+  --oe-border: #25314a;
+  --oe-border-light: #1d2840;
   --oe-border-focus: var(--oe-blue);
   /* Over 300 class uses across the app fall through to the default border
      colour (see the light-mode comment). Left at gray-200 they drew a near
@@ -298,11 +310,11 @@
      surfaces), quaternary #4a4d5e (2.26:1, fail).
      Now: tertiary #9499a8 → 5.61:1 on #1e2130 (worst dark surface).
           quaternary #8b8e9d → 4.91:1 on #1e2130 (just over AA). */
-  --oe-text-primary: #f0f0f5;
-  --oe-text-secondary: #a0a3b5;
-  --oe-text-tertiary: #9499a8;
-  --oe-text-quaternary: #8b8e9d;
-  --oe-text-inverse: #0f1117;
+  --oe-text-primary: #e6ebf2;
+  --oe-text-secondary: #a3adbf;
+  --oe-text-tertiary: #939db0;
+  --oe-text-quaternary: #8b95a8;
+  --oe-text-inverse: #0b1220;
 
   /* Semantic — adjusted for dark backgrounds. WCAG-AA contrast bump
      2026-05-27: against the worst-case lifted surface `#1e2130`
@@ -380,7 +392,7 @@ body {
   color: var(--oe-text-primary);
   background: var(--oe-bg-secondary);
   line-height: 1.47059;
-  letter-spacing: -0.022em;
+  letter-spacing: 0;
 }
 
 [dir='rtl'] {
@@ -798,6 +810,17 @@ h4 {
   background: var(--oe-bg-tertiary, #273344);
 }
 
+/* ── Bill bottom line: a 2px navy rule over the grand total ───────── */
+
+.ag-theme-quartz .ag-row.oe-grand-total-row {
+  border-top: 2px solid var(--oe-navy);
+  font-weight: 600;
+}
+
+.dark .ag-theme-quartz .ag-row.oe-grand-total-row {
+  border-top-color: var(--oe-blue);
+}
+
 /* ── Unpriced position rows (qty>0 but rate=0) ───────────────────────
    Highlights positions that still need a unit rate so users can spot
    incomplete work at a glance. The amber tint is subtle in light mode
@@ -891,58 +914,20 @@ html {
   scroll-behavior: smooth;
 }
 
-/* ── Glass morphism ────────────────────────────────────────────────── */
+/* ── Panels formerly drawn as glass ────────────────────────────────────
+   The class names stay because pages use them; they now paint a solid panel
+   with a hairline border. Translucent blur over a flat ground added nothing
+   but cost and lower text contrast. */
 
-.glass {
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-}
-
+.glass,
 .glass-strong {
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(40px) saturate(200%);
-  -webkit-backdrop-filter: blur(40px) saturate(200%);
-  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: var(--oe-bg-elevated);
+  border: 1px solid var(--oe-border-light);
 }
 
-.dark .glass {
-  background: rgba(15, 17, 23, 0.72);
-  border-color: rgba(255, 255, 255, 0.06);
-}
-
-.dark .glass-strong {
-  background: rgba(15, 17, 23, 0.85);
-  border-color: rgba(255, 255, 255, 0.08);
-}
-
-/* ── Animated gradient text ────────────────────────────────────────── */
-
+/* Formerly an animated two-hue gradient; now plain accent text. */
 .gradient-text {
-  background: linear-gradient(
-    135deg,
-    var(--oe-blue) 0%,
-    #5856d6 25%,
-    var(--oe-blue) 50%,
-    #5856d6 75%,
-    var(--oe-blue) 100%
-  );
-  background-size: 300% 300%;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  animation: gradientText 6s ease-in-out infinite;
-}
-
-@keyframes gradientText {
-  0%,
-  100% {
-    background-position: 0% 50%;
-  }
-  50% {
-    background-position: 100% 50%;
-  }
+  color: var(--oe-blue-text);
 }
 
 /* ── Button shimmer effect ─────────────────────────────────────────── */
@@ -970,9 +955,10 @@ html {
   pointer-events: none;
 }
 
+/* The hover sweep is retired: a button says it is pressable by its fill,
+   not by a moving highlight. */
 .btn-shimmer:hover::after {
-  opacity: 1;
-  animation: btnShimmer 2s ease-in-out infinite;
+  opacity: 0;
 }
 
 @keyframes btnShimmer {
@@ -1913,6 +1899,26 @@ html[data-ai-dock-resizing] * {
    base/hover/active in dark mode, and `-text` and base as text on every
    surface and on the `-subtle` pill; the table is asserted in
    src/shared/lib/__tests__/appearance.test.ts. */
+/* CesCons: the teal of the CES logo (#0197b2), deepened until white text on it
+   and it as text on every surface clear AA. The platform default. */
+html[data-accent='ces'] {
+  --oe-blue: #00768c;
+  --oe-blue-hover: #006a7e;
+  --oe-blue-active: #005e70;
+  --oe-blue-dark: #004a59;
+  --oe-blue-text: #005e70;
+  --oe-blue-subtle: #e7f4f6;
+  --oe-blue-ch: 0 118 140;
+}
+html.dark[data-accent='ces'] {
+  --oe-blue: #2fb4ca;
+  --oe-blue-hover: #4cc3d7;
+  --oe-blue-active: #22a3b8;
+  --oe-blue-dark: #0e5a6a;
+  --oe-blue-text: #7dd3e3;
+  --oe-blue-subtle: rgba(47, 180, 202, 0.15);
+  --oe-blue-ch: 47 180 202;
+}
 html[data-accent='teal'] {
   --oe-blue: #0f766e;
   --oe-blue-hover: #0d6b64;
@@ -2125,6 +2131,7 @@ aside.oe-sidebar .oe-nav-icon {
 }
 aside.oe-sidebar .oe-nav-icon > svg { stroke-width: var(--oe-menu-stroke); }
 aside.oe-sidebar [data-active] .oe-nav-icon > svg { stroke-width: calc(var(--oe-menu-stroke) + 0.25); }
+aside.oe-sidebar [data-active] .oe-nav-icon { --oe-nav-icon-color: var(--oe-blue-text); }
 aside.oe-sidebar .oe-nav-icon > svg.oe-nav-spinner { stroke-width: 2; }
 
 /* Icon colour */

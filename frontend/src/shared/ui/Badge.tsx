@@ -47,8 +47,7 @@ export function Badge({ variant = 'neutral', size = 'md', dot, children, classNa
   return (
     <span
       className={clsx(
-        'inline-flex items-center rounded-full font-medium whitespace-nowrap',
-        'animate-scale-in',
+        'inline-flex items-center rounded-md font-medium whitespace-nowrap',
         'transition-colors duration-fast ease-oe',
         variantStyles[variant],
         sizeStyles[size],

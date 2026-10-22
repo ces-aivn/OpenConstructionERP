@@ -48,7 +48,7 @@ vi.mock('react-i18next', () => ({
 // Helper — set the locale on the store before render. The component
 // reads numberLocale via a selector, so updates take effect on the
 // next render.
-function setLocale(locale: 'en-US' | 'de-DE' | 'ar-SA' | 'ja-JP') {
+function setLocale(locale: 'en-US' | 'de-DE' | 'ar-SA' | 'ja-JP' | 'vi-VN') {
   usePreferencesStore.setState({ numberLocale: locale });
 }
 
@@ -127,6 +127,18 @@ describe('MoneyDisplay - valid currency formatting', () => {
       expect(container.textContent).toBe(expected);
     },
   );
+
+  it('spells the Vietnamese scale words in compact mode instead of T and Tr', () => {
+    setLocale('vi-VN');
+    const symbol = render(<MoneyDisplay amount="2593679470" currency="USD" compact />);
+    expect(symbol.container.textContent).toBe('2,59 tỷ US$');
+    symbol.unmount();
+    const code = render(<MoneyDisplay amount={57_235_310.82} currency="VND" compact showCode />);
+    expect(code.container.textContent).toBe('57,2 triệu VND');
+    code.unmount();
+    const signed = render(<MoneyDisplay amount={1_900_000_000} currency="VND" compact signDisplay="always" />);
+    expect(signed.container.textContent).toBe('+1,9 tỷ ₫');
+  });
 
   it.each([true, false])('keeps compact notation with showCode=%s', (showCode) => {
     const { container } = render(<MoneyDisplay amount="1234567.89" currency="USD" compact showCode={showCode} />);

@@ -33,6 +33,7 @@ import {
 } from './useFloatingChat';
 import { useChatActionStore } from './actions/useChatActions';
 import { useAuthStore } from '@/stores/useAuthStore';
+import { useAiAvailability } from '@/features/ai/useAiAvailability';
 
 export function FloatingChatButton() {
   const { t } = useTranslation();
@@ -50,6 +51,10 @@ export function FloatingChatButton() {
   );
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const accessToken = useAuthStore((s) => s.accessToken);
+  // No AI provider configured: the assistant cannot answer, so it is not
+  // offered at all (administrators are told in Settings > AI). Hidden while
+  // the check runs too, so the button never flashes in and out.
+  const ai = useAiAvailability();
 
   const hidden = useMemo(() => {
     // Require either explicit isAuthenticated OR the presence of a token in
@@ -57,8 +62,9 @@ export function FloatingChatButton() {
     // poke sessionStorage directly only flip the token, not isAuthenticated,
     // until the next React render cycle.
     if (!isAuthenticated && !accessToken) return true;
+    if (ai.state !== 'ready') return true;
     return isFloatingChatHiddenOn(location.pathname);
-  }, [location.pathname, isAuthenticated, accessToken]);
+  }, [location.pathname, isAuthenticated, accessToken, ai.state]);
 
   if (hidden) return null;
 
@@ -92,24 +98,16 @@ export function FloatingChatButton() {
       title={`${label} (${shortcut})`}
       className={[
         'fixed bottom-4 end-4 z-50',
-        'min-h-14 min-w-14 max-w-[calc(100vw-2rem)] rounded-full px-4 py-3',
+        'min-h-11 min-w-11 max-w-[calc(100vw-2rem)] rounded-full px-4 py-2.5',
         isOpen ? 'hidden' : 'flex',
         'items-center justify-center gap-2',
-        'text-white shadow-lg',
-        'bg-gradient-to-br from-oe-blue to-oe-blue-dark',
-        'transition-all duration-200 ease-out',
-        'hover:scale-105 hover:shadow-xl',
+        // Solid CES navy in both themes: the one floating control on the page.
+        'text-white shadow-md bg-[var(--oe-navy)] dark:border dark:border-white/15',
+        'transition-colors duration-150 ease-out hover:bg-[#123581]',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue focus-visible:ring-offset-2',
-        'active:scale-95',
       ].join(' ')}
-      style={{
-        // Fallback for tokens that may not exist in every theme — keep the
-        // button visible even if --oe-blue-dark hasn't been defined yet.
-        background:
-          'linear-gradient(135deg, var(--oe-blue, #2563eb) 0%, var(--oe-blue-dark, #1d4ed8) 100%)',
-      }}
     >
-      <MessageCircle size={24} strokeWidth={2} aria-hidden className="shrink-0" />
+      <MessageCircle size={18} strokeWidth={2} aria-hidden className="shrink-0" />
       <span className="min-w-0 break-words text-start text-sm font-semibold leading-snug">
         {identity}
       </span>

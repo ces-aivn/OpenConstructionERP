@@ -62,9 +62,9 @@ function over(rgba: string, surface: string): [number, number, number] {
 
 const AA = 4.5;
 const WHITE = '#ffffff';
-const INK = '#0f1117';
-const LIGHT_SURFACES = ['#ffffff', '#f5f5f7', '#eeeef2'];
-const DARK_SURFACES = ['#0f1117', '#161822', '#1a1d2b', '#1e2130'];
+const INK = '#0b1220';
+const LIGHT_SURFACES = ['#ffffff', '#f4f5f7', '#f9fafb'];
+const DARK_SURFACES = ['#0b1220', '#0f1729', '#131c30', '#172136'];
 // Blue is the platform's original palette, kept byte-for-byte as it was.
 const ADDED = ACCENTS.filter((a) => a !== 'blue');
 

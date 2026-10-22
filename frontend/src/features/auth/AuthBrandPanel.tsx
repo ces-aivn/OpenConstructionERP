@@ -1,52 +1,49 @@
 import clsx from 'clsx';
 import { useTranslation } from 'react-i18next';
-import { CalendarClock, FileSpreadsheet, FolderOpen } from 'lucide-react';
-import { BrandWordmark, BRAND_LOGO_URL, BRAND_TEAL } from '@/shared/ui';
+import { BRAND_LOGO_URL } from '@/shared/ui';
 
-/** Desktop-only brand column of the sign-in and sign-up pages. */
+/**
+ * Desktop-only brand column of the sign-in and sign-up pages: a solid CES navy
+ * panel with the logo, one claim and the three things the product does.
+ */
 export function AuthBrandPanel({ className }: { className?: string }) {
   const { t } = useTranslation();
   const features = [
-    { icon: FileSpreadsheet, label: t('login.cescons_feat_estimate', { defaultValue: 'Estimates and bills of quantities' }) },
-    { icon: CalendarClock, label: t('login.cescons_feat_schedule', { defaultValue: 'Schedule, cost and progress tracking' }) },
-    { icon: FolderOpen, label: t('login.cescons_feat_documents', { defaultValue: 'Project documents in one place' }) },
+    t('login.cescons_feat_estimate', { defaultValue: 'Estimates and bills of quantities' }),
+    t('login.cescons_feat_schedule', { defaultValue: 'Schedule, cost and progress tracking' }),
+    t('login.cescons_feat_documents', { defaultValue: 'Project documents in one place' }),
   ];
   return (
-    <div className={clsx('hidden lg:flex relative z-10 flex-col justify-center px-14 xl:px-20 py-6 overflow-hidden', className)}>
-      <div
-        className="absolute inset-0 pointer-events-none -z-10"
-        aria-hidden
-        style={{
-          background:
-            'radial-gradient(ellipse 90% 70% at 70% 25%, rgba(1,151,178,0.14), transparent 65%),' +
-            'radial-gradient(ellipse 80% 60% at 25% 85%, rgba(13,41,104,0.10), transparent 65%)',
-        }}
-      />
-      <div className="max-w-[460px] animate-stagger-in">
-        {/* The logo has no dark variant, so it always sits on white. */}
-        <div className="inline-block rounded-2xl bg-white px-5 py-4 shadow-sm">
-          <img src={BRAND_LOGO_URL} alt="CES Global" className="block h-16 w-auto" draggable={false} />
-        </div>
-        <h2 className="mt-8 text-[34px] font-semibold leading-[1.1]">
-          <BrandWordmark />
-        </h2>
-        <p className="mt-3 text-[17px] text-content-secondary leading-[1.6]">
-          {t('login.cescons_tagline', { defaultValue: 'Construction project management for Vietnamese and US businesses.' })}
+    <div
+      className={clsx(
+        'hidden lg:flex relative z-10 flex-col justify-between bg-[var(--oe-navy)] px-14 xl:px-20 py-12 text-white',
+        className,
+      )}
+    >
+      {/* The logo has no light-on-dark variant, so it sits on a white plate. */}
+      <div className="inline-flex self-start rounded-md bg-white px-4 py-3">
+        <img src={BRAND_LOGO_URL} alt="CES Global" className="block h-11 w-auto" draggable={false} />
+      </div>
+
+      <div className="max-w-[460px]">
+        <p className="text-balance text-[30px] font-semibold leading-[1.2] text-white">
+          {t('login.cescons_tagline', {
+            defaultValue: 'Construction project management for Vietnamese and US businesses.',
+          })}
         </p>
-        <ul className="mt-6 space-y-3">
-          {features.map(({ icon: Icon, label }) => (
-            <li key={label} className="flex items-center gap-3 text-[15px] text-content-primary">
-              <span
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
-                style={{ background: 'rgba(1,151,178,0.10)', color: BRAND_TEAL }}
-              >
-                <Icon size={16} strokeWidth={1.9} />
+        <ul className="mt-8 divide-y divide-white/15 border-y border-white/15">
+          {features.map((label, i) => (
+            <li key={label} className="flex items-baseline gap-4 py-3.5 text-[15px] text-white/90">
+              <span className="w-6 shrink-0 font-mono text-xs tabular-nums text-[#7dd3e3]">
+                {String(i + 1).padStart(2, '0')}
               </span>
               {label}
             </li>
           ))}
         </ul>
       </div>
+
+      <p className="text-xs text-white/60">© CES Global</p>
     </div>
   );
 }

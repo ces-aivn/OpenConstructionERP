@@ -32,12 +32,12 @@
     <script id="oe-appearance-boot">
       (function () {
         var allowed = {
-          accent: ['blue', 'teal', 'violet', 'emerald', 'amber', 'graphite', 'crimson'],
+          accent: ['ces', 'blue', 'teal', 'violet', 'emerald', 'amber', 'graphite', 'crimson'],
           font: ['system', 'inter', 'ibm-plex-sans', 'source-sans-3'],
           density: ['comfortable', 'compact'],
           radius: ['standard', 'sharp', 'round']
         };
-        var value = { accent: 'blue', font: 'system', density: 'comfortable', radius: 'standard' };
+        var value = { accent: 'ces', font: 'ibm-plex-sans', density: 'comfortable', radius: 'standard' };
         function layer(key) {
           try {
             var raw = JSON.parse(localStorage.getItem(key) || 'null');
@@ -69,7 +69,7 @@
           icons: ['shown', 'hidden']
         };
         var menu = {
-          view: 'classic', active: 'bar', headers: 'caps', stroke: 'regular',
+          view: 'classic', active: 'bar', headers: 'divider', stroke: 'regular',
           container: 'none', color: 'mono', icons: 'shown'
         };
         function menuLayer(key) {

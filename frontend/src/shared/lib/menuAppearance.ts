@@ -46,11 +46,11 @@ export const MENU_AXIS_VALUES: { [K in MenuAxis]: readonly MenuLook[K][] } = {
 
 export const MENU_AXES = Object.keys(MENU_AXIS_VALUES) as MenuAxis[];
 
-/** The menu as it always looked. */
+/** The default menu: section names in sentence case over a hairline. */
 export const PLATFORM_MENU: MenuLook = {
   view: 'classic',
   active: 'bar',
-  headers: 'caps',
+  headers: 'divider',
   stroke: 'regular',
   container: 'none',
   color: 'mono',

@@ -41,7 +41,10 @@ import { projectsApi, type Project } from '@/features/projects/api';
 import { boqApi, type BOQ } from '@/features/boq/api';
 import { apiGet } from '@/shared/lib/api';
 import { useModuleStore } from '@/stores/useModuleStore';
+import { useAuthStore } from '@/stores/useAuthStore';
 import { getIconOverride, useIconOverridesVersion } from '@/app/layout/menuIcons';
+import { collectionLabel, hitToHref, type UnifiedSearchHit } from '@/features/search/api';
+import { buildPageIndex, scorePage, type PageIndexEntry } from './commandPaletteIndex';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -49,6 +52,8 @@ interface SearchResult {
   id: string;
   type: 'page' | 'project' | 'boq' | 'recent' | 'global';
   labelKey?: string;
+  /** English fallback for `labelKey` until every locale carries it. */
+  defaultLabel?: string;
   label?: string;
   description?: string;
   icon: LucideIcon;
@@ -61,65 +66,49 @@ interface SearchResult {
 }
 
 interface GlobalSearchResult {
-  module: string;
-  type: string;
+  collection: string;
   id: string;
   title: string;
   subtitle: string;
   url: string;
-  score: number;
-}
-
-interface UnifiedSearchHit {
-  id: string;
-  score: number;
-  title: string;
-  snippet: string;
-  text: string;
-  module: string;
-  project_id: string;
-  tenant_id: string;
-  payload: Record<string, unknown>;
-  collection: string;
 }
 
 interface UnifiedSearchResponse {
-  query: string;
-  types: string[];
-  project_id: string | null;
-  total: number;
   hits: UnifiedSearchHit[];
-  facets: Record<string, number>;
 }
 
-function hitToResult(hit: UnifiedSearchHit): GlobalSearchResult {
-  const payload = hit.payload as Record<string, unknown> | undefined;
-  const url =
-    (typeof payload?.url === 'string' && payload.url) ||
-    (hit.module && hit.id ? `/${hit.module}/${hit.id}` : '');
+/** A record hit, routed by the same table the semantic search modal uses so
+ *  both launchers open a record in the same place. A hit with no known
+ *  destination is dropped rather than shown as a row that goes nowhere. */
+function hitToResult(hit: UnifiedSearchHit): GlobalSearchResult | null {
+  const url = hitToHref(hit);
+  if (url === '#') return null;
   return {
-    module: hit.module,
-    type: hit.collection,
+    collection: hit.collection,
     id: hit.id,
-    title: hit.title,
-    subtitle: hit.snippet,
+    title: hit.title || hit.snippet || hit.id,
+    subtitle: hit.snippet && hit.snippet !== hit.title ? hit.snippet : '',
     url,
-    score: hit.score,
   };
 }
 
-/** Map module names from global search API to Lucide icons. */
+/** Icons for record hits, by backend collection. */
 const GLOBAL_SEARCH_ICONS: Record<string, LucideIcon> = {
-  boq: Table2,
-  contacts: Users,
-  documents: FileText,
-  rfi: HelpCircle,
-  tasks: CheckSquare,
-  costs: Database,
-  meetings: CalendarDays,
-  inspections: ClipboardList,
-  ncr: AlertTriangle,
+  oe_boq_positions: Table2,
+  oe_boqs: Table2,
+  oe_contracts: FileText,
+  oe_risks: AlertTriangle,
+  oe_documents: FileText,
+  oe_rfi_rfis: HelpCircle,
+  oe_tasks: CheckSquare,
+  oe_cost_items: Database,
+  oe_submittals_submittals: ClipboardList,
+  oe_change_orders: FileText,
+  oe_correspondence_correspondence: Users,
 };
+
+/** Pages beyond this many are cut from a search, best matches first. */
+const MAX_PAGE_MATCHES = 8;
 
 interface CommandPaletteProps {
   open: boolean;
@@ -127,6 +116,8 @@ interface CommandPaletteProps {
 }
 
 /* ── Static page entries ───────────────────────────────────────────────── */
+// The curated list shown while the query is empty. A search runs against the
+// whole sidebar catalogue (see commandPaletteIndex.ts) plus these entries.
 
 const PAGE_RESULTS: SearchResult[] = [
   { id: 'page-dashboard', type: 'page', labelKey: 'nav.dashboard', icon: LayoutDashboard, path: '/' },
@@ -225,7 +216,11 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
         `/v1/search/?q=${encodeURIComponent(trimmed)}&final_limit=10`,
       )
         .then((data) => {
-          setGlobalResults((data.hits ?? []).map(hitToResult));
+          setGlobalResults(
+            (data.hits ?? [])
+              .map(hitToResult)
+              .filter((r): r is GlobalSearchResult => r !== null),
+          );
         })
         .catch(() => {
           setGlobalResults([]);
@@ -309,14 +304,42 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   }, [open]);
 
   const { isModuleEnabled } = useModuleStore();
+  const userRole = useAuthStore((s) => s.userRole);
+
+  // Drop the pages whose module is switched off (their route is unmounted
+  // with the module, so offering them lands the reader on Not Found) and
+  // the ones the sidebar hides from this role.
+  const pages = useMemo(
+    () => PAGE_RESULTS.filter((page) => !page.moduleKey || isModuleEnabled(page.moduleKey)),
+    [isModuleEnabled],
+  );
+  const searchablePages = useMemo(() => {
+    const known = new Set(pages.map((p) => p.path));
+    const catalogue: SearchResult[] = buildPageIndex()
+      .filter(
+        (entry) =>
+          (!entry.moduleKey || isModuleEnabled(entry.moduleKey)) &&
+          (!entry.adminOnly || userRole === 'admin') &&
+          (!entry.roleGate || (userRole != null && (entry.roleGate as string[]).includes(userRole))) &&
+          !known.has(entry.path),
+      )
+      .map((entry) => ({
+        id: entry.id,
+        type: 'page' as const,
+        labelKey: entry.labelKey,
+        label: undefined,
+        icon: entry.icon,
+        path: entry.path,
+        moduleKey: entry.moduleKey,
+        defaultLabel: entry.defaultLabel,
+      }));
+    return [...pages, ...catalogue];
+  }, [pages, isModuleEnabled, userRole]);
 
   // Build results
   const results = useMemo(() => {
     const lowerQuery = query.toLowerCase().trim();
     const groups: { title: string; items: SearchResult[] }[] = [];
-    // Drop the pages whose module is switched off. Their route is unmounted
-    // with the module, so offering them here lands the reader on Not Found.
-    const pages = PAGE_RESULTS.filter((page) => !page.moduleKey || isModuleEnabled(page.moduleKey));
 
     if (!lowerQuery) {
       // Show recent items when query is empty
@@ -377,11 +400,24 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       return groups;
     }
 
-    // Filter pages
-    const matchingPages = pages.filter((page) => {
-      const label = page.labelKey ? t(page.labelKey).toLowerCase() : '';
-      return label.includes(lowerQuery);
-    });
+    // Rank every screen in the catalogue, then the quick actions, on the
+    // label in the reader's language, the English label and the synonyms.
+    const scored: { item: SearchResult; score: number }[] = [];
+    for (const page of searchablePages) {
+      const labels = page.labelKey
+        ? [
+            t(page.labelKey, { defaultValue: page.defaultLabel ?? page.labelKey }),
+            t(page.labelKey, { lng: 'en', defaultValue: page.defaultLabel ?? page.labelKey }),
+          ]
+        : [page.label ?? ''];
+      const entry: PageIndexEntry = { id: page.id, labelKey: page.labelKey ?? '', path: page.path, icon: page.icon };
+      const score = scorePage(entry, labels, query);
+      if (score > 0) scored.push({ item: page, score });
+    }
+    const matchingPages = scored
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_PAGE_MATCHES)
+      .map(({ item }) => item);
 
     if (matchingPages.length > 0) {
       groups.push({
@@ -443,35 +479,27 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       });
     }
 
-    // Global search results (from backend API)
+    // Record hits from the unified search, grouped by kind of record.
     if (globalResults.length > 0) {
-      // Group by module for cleaner display
-      const moduleGroups = new Map<string, SearchResult[]>();
+      const byCollection = new Map<string, SearchResult[]>();
       for (const gr of globalResults) {
-        const moduleName = gr.module;
-        if (!moduleGroups.has(moduleName)) moduleGroups.set(moduleName, []);
-        moduleGroups.get(moduleName)!.push({
-          id: `global-${gr.type}-${gr.id}`,
+        if (!byCollection.has(gr.collection)) byCollection.set(gr.collection, []);
+        byCollection.get(gr.collection)!.push({
+          id: `global-${gr.collection}-${gr.id}`,
           type: 'global' as const,
           label: gr.title,
           description: gr.subtitle,
-          icon: GLOBAL_SEARCH_ICONS[moduleName] ?? Globe,
+          icon: GLOBAL_SEARCH_ICONS[gr.collection] ?? Globe,
           path: gr.url,
         });
       }
-      for (const [moduleName, items] of moduleGroups) {
-        const moduleLabel = moduleName.charAt(0).toUpperCase() + moduleName.slice(1);
-        groups.push({
-          title: t(`command_palette.global_${moduleName}`, {
-            defaultValue: moduleLabel,
-          }),
-          items,
-        });
+      for (const [collection, items] of byCollection) {
+        groups.push({ title: collectionLabel(t, collection), items });
       }
     }
 
     return groups;
-  }, [query, projects, boqs, globalResults, t, isModuleEnabled]);
+  }, [query, projects, boqs, globalResults, t, pages, searchablePages]);
 
   // Flat list for keyboard navigation
   const flatResults = useMemo(() => results.flatMap((g) => g.items), [results]);
@@ -484,7 +512,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   // Navigate to a result
   const selectResult = useCallback(
     (result: SearchResult) => {
-      const label = result.label ?? (result.labelKey ? t(result.labelKey) : '');
+      const label = result.label ?? (result.labelKey ? t(result.labelKey, { defaultValue: result.defaultLabel }) : '');
       pushRecent({
         id: result.id.replace(/^recent-/, ''),
         label,
@@ -614,7 +642,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                 const idx = flatIndex;
                 // A page row takes the icon the user gave that menu item.
                 const Icon = (item.type === 'page' && getIconOverride(item.path)) || item.icon;
-                const label = item.label ?? (item.labelKey ? t(item.labelKey) : '');
+                const label = item.label ?? (item.labelKey ? t(item.labelKey, { defaultValue: item.defaultLabel }) : '');
 
                 return (
                   <button

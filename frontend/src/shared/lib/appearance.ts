@@ -13,7 +13,7 @@
  * an admin set (cached from GET /api/v1/branding/), then the platform default.
  */
 
-export const ACCENTS = ['blue', 'teal', 'violet', 'emerald', 'amber', 'graphite', 'crimson'] as const;
+export const ACCENTS = ['ces', 'blue', 'teal', 'violet', 'emerald', 'amber', 'graphite', 'crimson'] as const;
 export const FONTS = ['system', 'inter', 'ibm-plex-sans', 'source-sans-3'] as const;
 export const DENSITIES = ['comfortable', 'compact'] as const;
 export const RADII = ['standard', 'sharp', 'round'] as const;
@@ -40,6 +40,14 @@ export const AXIS_VALUES: { [K in AppearanceAxis]: readonly Appearance[K][] } = 
 };
 
 export const PLATFORM_APPEARANCE: Appearance = {
+  accent: 'ces',
+  font: 'ibm-plex-sans',
+  density: 'comfortable',
+  radius: 'standard',
+};
+
+/** The look the platform shipped with before the CesCons style. */
+const CLASSIC_APPEARANCE: Appearance = {
   accent: 'blue',
   font: 'system',
   density: 'comfortable',
@@ -53,6 +61,7 @@ export const WORKSPACE_APPEARANCE_KEY = 'oe_workspace_appearance_v1';
 
 /** Swatch colours for previews: the light-mode accent base from index.css. */
 export const ACCENT_SWATCH: Record<Accent, string> = {
+  ces: '#00768c',
   blue: '#0071e3',
   teal: '#0f766e',
   violet: '#7c3aed',
@@ -78,12 +87,13 @@ export const FONT_STACK: Record<FontChoice, string> = {
 };
 
 export interface AppearancePreset {
-  id: 'classic' | 'studio' | 'engineering' | 'warm' | 'executive';
+  id: 'cescons' | 'classic' | 'studio' | 'engineering' | 'warm' | 'executive';
   value: Appearance;
 }
 
 export const APPEARANCE_PRESETS: readonly AppearancePreset[] = [
-  { id: 'classic', value: PLATFORM_APPEARANCE },
+  { id: 'cescons', value: PLATFORM_APPEARANCE },
+  { id: 'classic', value: CLASSIC_APPEARANCE },
   { id: 'studio', value: { accent: 'violet', font: 'inter', density: 'comfortable', radius: 'round' } },
   { id: 'engineering', value: { accent: 'teal', font: 'ibm-plex-sans', density: 'compact', radius: 'sharp' } },
   { id: 'warm', value: { accent: 'amber', font: 'source-sans-3', density: 'comfortable', radius: 'round' } },

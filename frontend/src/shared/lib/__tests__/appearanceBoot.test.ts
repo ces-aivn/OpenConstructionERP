@@ -59,7 +59,8 @@ describe('index.html appearance boot script', () => {
   it('paints the platform default with nothing stored', () => {
     boot();
     expect(attrs()).toEqual(PLATFORM_APPEARANCE);
-    expect(document.head.querySelector('link[data-oe-font]')).toBeNull();
+    const link = document.head.querySelector<HTMLLinkElement>(`link[data-oe-font="${PLATFORM_APPEARANCE.font}"]`);
+    expect(link?.getAttribute('href')).toBe(fontStylesheetHref(PLATFORM_APPEARANCE.font));
   });
 
   it('follows the workspace default when the user has no choice', () => {

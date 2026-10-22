@@ -76,6 +76,7 @@ import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useThemeStore } from '@/stores/useThemeStore';
 import { aiApi, type AISettings } from '@/features/ai/api';
 import { hasLlmKey } from '@/features/ai-estimator/useAiReadiness';
+import { useAiAvailability } from '@/features/ai/useAiAvailability';
 import { useIsRTL } from '@/shared/hooks/useIsRTL';
 import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { uuid } from '@/shared/lib/browser';
@@ -1475,7 +1476,13 @@ export function FloatingChatPanel() {
   // The full-page chat (/chat) is the same conversation surface, so the dock
   // stays closed there. `isOpen` is left alone: leave /chat and the dock is
   // back exactly as it was.
-  const suppressed = isFloatingChatHiddenOn(location.pathname);
+  // With no AI provider the dock is not offered either: its button is hidden
+  // and Alt+A does nothing, so no one meets example questions that cannot be
+  // answered. While the check is still running the dock behaves as before;
+  // it has its own "add a key" card for that moment.
+  const aiAvailability = useAiAvailability();
+  const suppressed =
+    isFloatingChatHiddenOn(location.pathname) || aiAvailability.state === 'unconfigured';
   const dockOpen = isOpen && !suppressed;
   const geometry = useDockGeometry();
   const overlay = geometry.mode === 'overlay';

@@ -15,6 +15,7 @@ import { useThemeStore } from '@/stores/useThemeStore';
 import { CountryFlag, ModuleInfoButton, PartnerLogoBadge } from '@/shared/ui';
 import { usePartnerPack } from '@/shared/hooks/usePartnerPack';
 import { NotificationBell } from '@/shared/ui/NotificationBell';
+import { OPEN_PROJECT_PICKER_EVENT, type OpenProjectPickerDetail } from '@/shared/ui/NoProjectSelected';
 import { ProcessesButton } from '@/features/processes/ProcessesButton';
 import { fetchProjectList } from '@/shared/lib/projectList';
 import { copyToClipboard } from '@/shared/lib/browser';
@@ -341,6 +342,30 @@ interface HeaderProps {
   onMenuClick?: () => void;
 }
 
+/** Below this header width the search field folds to its icon and the
+ *  co-brand column steps aside, so the project picker and the page title keep
+ *  their words. Tailwind breakpoints read the viewport, and the header can be
+ *  narrow on a wide screen: the AI dock pushes the page aside by up to 720px. */
+export const COMPACT_HEADER_WIDTH_PX = 1024;
+
+/** True while the element is narrower than `threshold`. */
+export function useNarrowerThan(ref: React.RefObject<HTMLElement | null>, threshold: number): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const measure = (width: number) => setNarrow(width > 0 && width < threshold);
+    measure(el.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) measure(entry.contentRect.width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref, threshold]);
+  return narrow;
+}
+
 export function Header({ title, onMenuClick }: HeaderProps) {
   const { t, i18n } = useTranslation();
   // Header mounts at app boot, before lazy-loaded locale chunks arrive.
@@ -377,6 +402,8 @@ export function Header({ title, onMenuClick }: HeaderProps) {
   useIconOverridesVersion();
   const RouteIcon = getRouteIcon(location.pathname);
   const currentLang = getLanguageByCode(i18n.language) ?? { code: 'en', name: 'English (International)', flag: '', country: 'xx' };
+  const headerRef = useRef<HTMLElement>(null);
+  const compact = useNarrowerThan(headerRef, COMPACT_HEADER_WIDTH_PX);
   const openCommandPalette = useCallback(() => {
     // Dispatch Ctrl+K to open the CommandPalette managed by App.tsx
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
@@ -384,6 +411,8 @@ export function Header({ title, onMenuClick }: HeaderProps) {
 
   return (
     <header
+      ref={headerRef}
+      data-compact={compact ? 'true' : undefined}
       className={clsx(
         'sticky z-30',
         'flex h-header items-center justify-between gap-3 px-4 sm:px-6 lg:px-8',
@@ -472,7 +501,10 @@ export function Header({ title, onMenuClick }: HeaderProps) {
           overflowing. Below lg the co-brand still shows in the dashboard
           banner. */}
       <div
-        className="hidden lg:flex flex-1 min-w-[2.5rem] items-center justify-center gap-2 overflow-hidden px-2"
+        className={clsx(
+          'hidden flex-1 items-center justify-center gap-2 overflow-hidden px-2',
+          compact ? 'lg:flex min-w-0' : 'lg:flex min-w-[2.5rem]',
+        )}
         data-testid="header-pack-column"
       >
         {/* min-w-0 on the chip and overflow-hidden on the column: at 125% and
@@ -503,8 +535,9 @@ export function Header({ title, onMenuClick }: HeaderProps) {
         {/* ── Zone 2 (Search) ──────────────────────────────────────── */}
         <button
           onClick={openCommandPalette}
+          data-testid="header-search-field"
           className={clsx(
-            'hidden sm:flex',
+            compact ? 'hidden' : 'hidden sm:flex',
             'h-8 items-center gap-2 rounded-lg px-3',
             // Solid-ish white background so the field doesn't dissolve into
             // the translucent header background; falls back to a dark tint
@@ -526,12 +559,14 @@ export function Header({ title, onMenuClick }: HeaderProps) {
           </kbd>
         </button>
 
-        {/* Mobile search icon — collapses the search bar on tiny screens. */}
+        {/* Search icon — the search bar folded on tiny screens and in a
+            narrow header (the AI dock open beside the page). */}
         <button
           onClick={openCommandPalette}
           aria-label={t('common.search', { defaultValue: 'Search' })}
+          data-testid="header-search-icon"
           className={clsx(
-            'flex sm:hidden',
+            compact ? 'flex' : 'flex sm:hidden',
             'h-8 w-8 items-center justify-center rounded-lg text-content-secondary hover:bg-surface-secondary transition-colors',
           )}
         >
@@ -1503,6 +1538,21 @@ function ProjectSwitcher() {
   const ref = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  // The shared "No project selected" state asks the picker to open. It is
+  // only on screen from the `sm` breakpoint up; below that it does not claim
+  // the request and the caller opens the project list instead.
+  useEffect(() => {
+    const onRequest = (event: Event) => {
+      const el = ref.current;
+      if (!el || el.offsetParent === null) return;
+      const detail = (event as CustomEvent<OpenProjectPickerDetail>).detail;
+      if (detail) detail.handled = true;
+      setOpen(true);
+    };
+    window.addEventListener(OPEN_PROJECT_PICKER_EVENT, onRequest);
+    return () => window.removeEventListener(OPEN_PROJECT_PICKER_EVENT, onRequest);
+  }, []);
+
   // Pre-fetch so the dropdown renders an instant list when the user opens
   // it (no race between open → fetch → render that used to flash
   // "No projects yet" for half a second). The same entry every page's project
@@ -1613,15 +1663,20 @@ function ProjectSwitcher() {
   }, [projects, activeProjectId, clearProject, setActiveProject, isFetching, isError]);
 
   return (
-    <div className="relative hidden sm:block min-w-0" ref={ref} data-testid="header-project-picker">
+    <div
+      // "Select project" is short and is the call to action, so it never
+      // gives up its words; a long project name may truncate, but not below
+      // a readable width.
+      className={clsx('relative hidden sm:block', activeProjectId ? 'min-w-[8.5rem]' : 'shrink-0')}
+      ref={ref}
+      data-testid="header-project-picker"
+    >
       {/* Split-button — visibly the most-used surface in the app. Left half
           opens the active project's detail; right half (chevron) opens
-          the switcher dropdown. Two distinct visual modes:
-            • No project active → dashed pill + pulsing dot + clear CTA
-            • Project active   → solid blue-subtle bg + folder square +
-                                 bold project name
-          Taller h-9 hit-target, always tinted, never blends into the
-          chrome — this is the breadcrumb root, it should anchor the eye. */}
+          the switcher dropdown. It is styled as an ordinary select: a solid
+          hairline box on the card surface. With no project active it shows a
+          teal dot and the "Select Project" prompt; with one active, a folder
+          icon and the project name. h-9 hit-target. */}
       <div
         className={clsx(
           // Audit fix S5 (2026-06-06): cap the pill tighter on lg so the
@@ -1630,9 +1685,8 @@ function ProjectSwitcher() {
           // OC-12: widened lg to 220px so names like "Landshut" stay readable
           // at 125% zoom (180px rendered as ~144px, cutting anything > 10 chars).
           'flex items-stretch rounded-lg border transition-all max-w-[220px] xl:max-w-[280px] overflow-hidden',
-          activeProjectId
-            ? 'bg-oe-blue-subtle border-oe-blue/30 hover:bg-oe-blue/10 hover:border-oe-blue/50 shadow-[0_1px_2px_rgba(0,122,255,0.05)]'
-            : 'border-dashed border-oe-blue/40 bg-oe-blue/[0.04] hover:bg-oe-blue/[0.08] hover:border-oe-blue/60',
+          // A plain select: solid hairline, card surface, no tint either way.
+          'border-border bg-surface-elevated hover:border-content-quaternary',
         )}
       >
         <button
@@ -1648,7 +1702,7 @@ function ProjectSwitcher() {
             // WCAG AA fix 2026-05-27: text-oe-blue-text (#0071e3) on bg-oe-blue-subtle
             // failed 4.35:1; text-oe-blue-text passes at 8.05:1.
             'flex items-center gap-2 pl-1.5 pr-2 h-9 text-[13px] min-w-0',
-            activeProjectId ? 'text-oe-blue-text' : 'text-oe-blue-text/85 hover:text-oe-blue-text',
+            activeProjectId ? 'text-content-primary' : 'text-content-secondary hover:text-content-primary',
           )}
           title={activeProjectId
             ? t('projects.open_current', { defaultValue: 'Open this project' })
@@ -1657,15 +1711,12 @@ function ProjectSwitcher() {
           {/* Leading icon square — colored tile in active mode; pulsing
               dot in CTA mode so the eye is drawn to "act here". */}
           {activeProjectId ? (
-            <span className="flex h-6 w-6 items-center justify-center rounded-md bg-oe-blue/15 shrink-0">
-              <FolderOpen size={13} strokeWidth={2} />
+            <span className="flex h-6 w-6 items-center justify-center shrink-0 text-oe-blue-text">
+              <FolderOpen size={14} strokeWidth={1.75} />
             </span>
           ) : (
             <span aria-hidden className="flex h-6 w-6 items-center justify-center shrink-0">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-2 w-2 rounded-full bg-oe-blue/60 animate-ping" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-oe-blue" />
-              </span>
+              <span className="inline-flex h-2 w-2 rounded-full bg-oe-blue" />
             </span>
           )}
           <span
@@ -1686,9 +1737,7 @@ function ProjectSwitcher() {
             // below 4.5:1. Use oe-blue-dark for the icon color so axe scans
             // pass even though ChevronDown is presentational.
             'flex items-center px-2 border-l transition-colors',
-            activeProjectId
-              ? 'border-oe-blue/20 text-oe-blue-text/70 hover:bg-oe-blue/10 hover:text-oe-blue-text'
-              : 'border-oe-blue/25 border-dashed text-oe-blue-text/60 hover:bg-oe-blue/10 hover:text-oe-blue-text',
+            'border-border-light text-content-tertiary hover:bg-surface-tertiary hover:text-content-primary',
           )}
           title={t('schedule.switch_project', { defaultValue: 'Switch Project' })}
           aria-label={t('schedule.switch_project', { defaultValue: 'Switch Project' })}
