@@ -28,11 +28,13 @@ from app.modules.costmodel.cost_control import (
     LineInput,
     all_method_outcomes,
     automatic_forecast,
+    invoiced_over_accepted,
     method_outcome,
     variance,
     variance_pct,
 )
 from app.modules.costmodel.cost_control_data import ControlData, load_control_data
+from app.modules.costmodel.cost_control_plan import PLAN_SOURCE_BUDGET, ProjectPlan, load_project_plan
 from app.modules.costmodel.cost_control_schemas import (
     AssignRequest,
     AssignResult,
@@ -72,6 +74,10 @@ KEY_OTHER = "other"
 KEY_REMAINING = "remaining"
 # Row key prefix of an account's own amount (the account id follows).
 KEY_ALLOWANCE = "allowance:"
+# Row key of the project plan (budget, else estimate) not broken onto cost lines.
+KEY_PROJECT_BUDGET = "project_budget"
+#: Row kinds holding money on no cost line, whose forecast draws on the project plan.
+_OFF_LINE_KINDS = ("unassigned", "changes_without_contract")
 
 #: Saved forecasts a line's history reads, newest first: ten years of months.
 HISTORY_SNAPSHOT_LIMIT = 120
@@ -272,6 +278,36 @@ class CostControlService:
             for a in accounts
             if a.own_amount != ZERO
         ]
+
+    @staticmethod
+    def _project_plan_row(rows: list[CostControlRow], plan: ProjectPlan) -> CostControlRow | None:
+        """The project plan not on a cost line yet, as a row of its own.
+
+        Its plan is the project plan less what cost lines and allowances
+        already plan. Its forecast is that plan less the money already
+        committed on no cost line (orders and contract lines without a cost
+        line, approved changes on no contract): those commitments are part of
+        the same unallocated scope, so counting both would forecast it twice.
+        Once that money passes the plan the row forecasts nothing more, and the
+        project forecast is the commitment, never less than what is bound.
+        """
+        remaining = plan.amount - sum((r.planned for r in rows), ZERO)
+        if remaining <= CENT:
+            return None
+        absorbed = sum((r.forecast for r in rows if r.kind in _OFF_LINE_KINDS), ZERO)
+        forecast = max(remaining - absorbed, ZERO)
+        figures = (
+            LineFigures(budget=remaining) if plan.source == PLAN_SOURCE_BUDGET else LineFigures(estimate=remaining)
+        )
+        row = _row(key=KEY_PROJECT_BUDGET, kind="project_budget", code="", description="", figures=figures)
+        return row.model_copy(
+            update={
+                "forecast": forecast,
+                "automatic_forecast": forecast,
+                "variance": variance(forecast, remaining),
+                "variance_pct": variance_pct(forecast, remaining),
+            }
+        )
 
     async def _open_overrides(self, project_id: uuid.UUID) -> dict[str, CostForecastOverride]:
         stmt = (
@@ -495,6 +531,26 @@ class CostControlService:
             for r in results
             if not r.passed
         ]
+        # Invoices billed ahead of the work accepted on the same line, and on
+        # the money that sits on no cost line.
+        off_line = LineFigures(
+            certified=data.unassigned_certified,
+            measured=data.unassigned_measured,
+            invoiced=data.unassigned_invoiced,
+        )
+        for key, code, figures in [*((i.key, i.code, i.figures) for i in inputs), (KEY_UNASSIGNED, "", off_line)]:
+            ahead = invoiced_over_accepted(key, code, figures)
+            if ahead is not None:
+                findings.append(
+                    CostControlFinding(
+                        rule_id=ahead.rule_id,
+                        severity="warning",
+                        line_key=ahead.line_key,
+                        code=ahead.code,
+                        amount=ahead.amount,
+                        details=dict(ahead.details),
+                    )
+                )
         findings.sort(key=lambda f: (f.severity != "warning", -abs(f.amount), f.code))
         return findings
 
@@ -507,8 +563,15 @@ class CostControlService:
         line_rows, inputs = await self._cost_line_rows(project_id, data)
         accounts = await self._accounts(project_id)
         line_rows += self._allowance_rows(accounts)
+        # The project plan not yet on cost lines or accounts stands as a row of
+        # its own, so the plan is the project's budget and the forecast covers
+        # the scope nobody has let yet, not only what is already bought.
+        plan = await load_project_plan(self.session, project_id)
+        plan_row = self._project_plan_row(line_rows, plan)
+        if plan_row is not None:
+            line_rows.append(plan_row)
         # The totals are the project's, the same on both axes: the plan lives on
-        # cost lines and on the accounts' own amounts.
+        # cost lines, on the accounts' own amounts and on the project budget.
         totals = _totals(line_rows, data)
         rows = line_rows if axis == AXIS_COST_LINE else self._contract_rows(data, _dec(totals["forecast"]))
         latest = await self._latest_snapshot(project_id)
@@ -524,6 +587,8 @@ class CostControlService:
             findings=await self._findings(project_id, inputs, data, latest, today),
             last_snapshot=_snapshot_summary(latest) if latest is not None else None,
             forecast_method=settings.forecast_method,
+            project_plan=plan.amount,
+            plan_source=plan.source,
         )
 
     # ── Money on no cost line ─────────────────────────────────────────────

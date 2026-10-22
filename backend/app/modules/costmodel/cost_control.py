@@ -333,6 +333,7 @@ FINDING_OVER_PLAN = "cost_control.forecast_over_plan"
 FINDING_PARTLY_AWARDED = "cost_control.partly_awarded"
 FINDING_STALE_SNAPSHOT = "cost_control.snapshot_stale"
 FINDING_PENDING_CHANGES = "cost_control.pending_changes"
+FINDING_INVOICED_OVER_ACCEPTED = "cost_control.invoiced_over_accepted"
 
 FINDING_RULE_IDS: tuple[str, ...] = (
     FINDING_UNASSIGNED,
@@ -368,6 +369,28 @@ class Finding:
     code: str
     amount: Decimal
     details: dict[str, str] = field(default_factory=dict)
+
+
+def invoiced_over_accepted(key: str | None, code: str, figures: LineFigures) -> Finding | None:
+    """Supplier invoices above the work accepted so far, the higher of certified and measured.
+
+    An invoice is a claim for payment; until the work it bills is certified or
+    measured, nothing on the project says it was done. Billing ahead of
+    acceptance is the case a cost controller holds payment on, so it is flagged
+    rather than left to show up as a paid figure later.
+    """
+    accepted = max(figures.certified, figures.measured)
+    over = figures.invoiced - accepted
+    if over <= CENT:
+        return None
+    return Finding(
+        FINDING_INVOICED_OVER_ACCEPTED,
+        "warning",
+        key,
+        code,
+        over,
+        {"invoiced": str(figures.invoiced), "accepted": str(accepted)},
+    )
 
 
 def line_findings(rows: Iterable[LineInput]) -> list[Finding]:

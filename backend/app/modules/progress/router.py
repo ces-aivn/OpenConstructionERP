@@ -31,6 +31,7 @@ from app.modules.progress.schemas import (
     ProgressPlanResponse,
     QuantityVarianceResponse,
     SCurveResponse,
+    TrackablePositionsResponse,
 )
 from app.modules.progress.service import ProgressService
 
@@ -191,6 +192,26 @@ async def get_s_curve(
     """
     await verify_project_access(project_id, user_id, session)
     return await service.get_s_curve(project_id)
+
+
+# --- Positions a reading can be recorded against -----------------------------
+
+
+@router.get("/positions/", response_model=TrackablePositionsResponse)
+async def list_trackable_positions(
+    session: SessionDep,
+    project_id: uuid.UUID = Query(...),
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("progress.read")),
+    service: ProgressService = Depends(_get_service),
+) -> TrackablePositionsResponse:
+    """Every priced leaf BOQ position of the project, measured or not.
+
+    The record-progress dialog picks its position from this list, so a
+    project whose BOQ is priced but not yet measured can still be measured.
+    """
+    await verify_project_access(project_id, user_id, session)
+    return await service.list_trackable_positions(project_id)
 
 
 # --- Quantity variance --------------------------------------------------------

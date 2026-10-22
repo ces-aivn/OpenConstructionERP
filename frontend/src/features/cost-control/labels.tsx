@@ -353,6 +353,15 @@ export function findingTitle(t: TFunction, finding: CostControlFinding): string 
             n: Number(d.days),
           })
         : t('cost_control.finding_never_saved', { defaultValue: 'No forecast saved yet' });
+    case 'cost_control.invoiced_over_accepted':
+      return finding.code
+        ? t('cost_control.finding_invoiced_over_accepted', {
+            defaultValue: '{{code}}: invoiced ahead of the work accepted',
+            code: finding.code,
+          })
+        : t('cost_control.finding_invoiced_over_accepted_off_line', {
+            defaultValue: 'Invoiced ahead of the work accepted, on money with no cost line',
+          });
     default:
       return finding.rule_id;
   }
@@ -384,6 +393,10 @@ export function findingHint(t: TFunction, finding: CostControlFinding): string {
     case 'cost_control.snapshot_stale':
       return t('cost_control.finding_stale_hint', {
         defaultValue: 'Save the forecast once a month so you can see how the cost moved.',
+      });
+    case 'cost_control.invoiced_over_accepted':
+      return t('cost_control.finding_invoiced_over_accepted_hint', {
+        defaultValue: 'Hold the payment until the work is certified or measured, or check the invoice.',
       });
     default:
       return '';

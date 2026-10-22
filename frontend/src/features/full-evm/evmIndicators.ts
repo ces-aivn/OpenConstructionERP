@@ -97,6 +97,28 @@ export function indexBand(value: WireFigure, epsilon: number = INDEX_EPSILON): I
   return 'on_track';
 }
 
+/**
+ * What an index measures, which decides how its band reads.
+ *
+ * SPI is about time (ahead of or behind the programme) and CPI about money
+ * (under or over budget). TCPI is the cost efficiency the remaining work needs
+ * to land on budget, so its good direction is down: above 1.0 is a warning.
+ */
+export type IndexKind = 'schedule' | 'cost' | 'to_complete';
+
+/**
+ * The band of an index turned so that "ahead" always means favourable.
+ *
+ * SPI and CPI are favourable above 1.0 and pass through unchanged; a TCPI band
+ * is mirrored, so a TCPI of 1.3 reads as behind and a TCPI of 0.9 as ahead.
+ */
+export function favourableBand(band: IndexBand, kind: IndexKind): IndexBand {
+  if (kind !== 'to_complete') return band;
+  if (band === 'ahead') return 'behind';
+  if (band === 'behind') return 'ahead';
+  return band;
+}
+
 /** The palette the shared Badge speaks. */
 export type Tone = 'neutral' | 'blue' | 'success' | 'warning' | 'error';
 

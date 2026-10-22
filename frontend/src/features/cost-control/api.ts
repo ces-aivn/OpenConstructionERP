@@ -41,7 +41,12 @@ export type RowKind =
   | 'other'
   | 'remaining'
   /** An account's own amount, planned on the account and not broken down into cost lines yet. */
-  | 'allowance';
+  | 'allowance'
+  /** The project budget (or estimate) no cost line or account plans yet. */
+  | 'project_budget';
+
+/** Where the project plan was read from. */
+export type PlanSource = 'budget' | 'estimate' | 'none';
 
 export const COST_STAGES = [
   'budget',
@@ -157,6 +162,9 @@ export interface CostControlReport {
   findings: CostControlFinding[];
   last_snapshot: SnapshotSummary | null;
   forecast_method: ForecastMethod;
+  /** The project's plan (budget, else estimate), a decimal string. */
+  project_plan?: string;
+  plan_source?: PlanSource;
 }
 
 export interface LineHistoryPoint {

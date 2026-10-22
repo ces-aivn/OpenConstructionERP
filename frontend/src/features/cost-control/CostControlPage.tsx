@@ -353,7 +353,16 @@ export function CostControlPage() {
                 key: 'planned',
                 label: t('cost_control.kpi_planned', { defaultValue: 'Planned' }),
                 value: fmtCurrency(totals.planned, currency),
-                sub: t('cost_control.kpi_planned_sub', { defaultValue: 'Budget, or the estimate where no budget is set' }),
+                sub:
+                  data.plan_source === 'budget'
+                    ? t('cost_control.kpi_planned_sub_budget', { defaultValue: 'The project budget' })
+                    : data.plan_source === 'estimate'
+                      ? t('cost_control.kpi_planned_sub_estimate', {
+                          defaultValue: 'The estimate, markups included (no budget is set)',
+                        })
+                      : t('cost_control.kpi_planned_sub', {
+                          defaultValue: 'Budget, or the estimate where no budget is set',
+                        }),
                 icon: Scale,
               },
               {

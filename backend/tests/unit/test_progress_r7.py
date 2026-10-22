@@ -423,6 +423,11 @@ async def test_leaf_position_uses_own_latest_entry() -> None:
 
     svc._fetch_child_ids = _no_children  # type: ignore[method-assign]
 
+    async def _in_project(project_id: uuid.UUID, pid: uuid.UUID) -> None:
+        return None
+
+    svc._require_project_position = _in_project  # type: ignore[method-assign]
+
     position_id = uuid.uuid4()
     for pct in [30.0, 70.0]:
         await svc.record_entry(

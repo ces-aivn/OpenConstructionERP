@@ -164,13 +164,24 @@ class CumulativeProgressResponse(BaseModel):
 # ── S-curve ───────────────────────────────────────────────────────────────────
 
 
+#: Where a planned S-curve figure came from.
+PLAN_SOURCE_MANUAL = "manual"
+PLAN_SOURCE_SCHEDULE = "schedule"
+PLAN_SOURCE_MIXED = "mixed"
+PLAN_SOURCE_NONE = "none"
+
+
 class SCurvePoint(BaseModel):
     """One point on the S-curve (actual vs planned)."""
 
     period_label: str
     actual_cumulative_pct: float = 0.0
     planned_cumulative_pct: float | None = None
-    """None when no plan entry exists for this period."""
+    """None when neither an entered plan nor the 4D schedule gives a plan for this period."""
+    planned_source: str | None = None
+    """``manual`` (an entered plan point), ``schedule`` (the 4D programme) or None."""
+    actual_recorded: bool = True
+    """False after the last recorded reading: the actual figure there is carried forward."""
 
 
 class SCurveResponse(BaseModel):
@@ -178,6 +189,10 @@ class SCurveResponse(BaseModel):
 
     project_id: UUID
     points: list[SCurvePoint] = Field(default_factory=list)
+    plan_source: str = PLAN_SOURCE_NONE
+    """``manual``, ``schedule``, ``mixed`` or ``none``: where the plan line comes from."""
+    plan_uses_baseline: bool = False
+    """True when the schedule plan reads an active schedule baseline's dates."""
 
 
 # --- Quantity variance (design vs earned quantity) ---------------------------
@@ -224,3 +239,31 @@ class QuantityVarianceResponse(BaseModel):
     project_id: UUID
     positions: list[PositionQuantityVarianceItem] = Field(default_factory=list)
     rollup: QuantityVarianceRollupResponse = Field(default_factory=QuantityVarianceRollupResponse)
+
+
+# --- Positions progress can be recorded against -----------------------------
+
+
+class TrackablePosition(BaseModel):
+    """A priced leaf BOQ position a percent-complete reading can be recorded against.
+
+    Money and quantities are Decimal serialised as strings. ``percent_complete``
+    is the latest recorded reading, None when the position was never measured.
+    """
+
+    boq_position_id: UUID
+    boq_id: UUID
+    boq_name: str = ""
+    ordinal: str | None = None
+    description: str | None = None
+    unit: str | None = None
+    design_quantity: str = "0"
+    total: str = "0"
+    percent_complete: str | None = None
+
+
+class TrackablePositionsResponse(BaseModel):
+    """Every priced leaf position of the project's BOQs, in BOQ order."""
+
+    project_id: UUID
+    positions: list[TrackablePosition] = Field(default_factory=list)

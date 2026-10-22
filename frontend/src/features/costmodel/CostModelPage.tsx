@@ -63,6 +63,10 @@ interface Project {
   description: string;
   classification_standard: string;
   currency: string;
+  /** Free-text building type of the project, read for the cost benchmark. */
+  project_type?: string | null;
+  /** Gross floor area in m², Decimal-as-string. */
+  gross_floor_area?: string | null;
 }
 
 interface BOQ {
@@ -2446,6 +2450,8 @@ function FiveDDashboard({ project }: { project: Project }) {
         <CostBenchmark
           totalBudget={dashboard.total_budget}
           currency={currency}
+          projectType={project.project_type}
+          initialArea={Number(project.gross_floor_area) > 0 ? Number(project.gross_floor_area) : undefined}
         />
       )}
 

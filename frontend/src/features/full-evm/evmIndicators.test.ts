@@ -18,6 +18,7 @@ import {
   INDEX_EPSILON,
   baselineStatusTone,
   canApprove,
+  favourableBand,
   eacMethodWasHonoured,
   eacVariantSpread,
   fractionToPercent,
@@ -100,6 +101,22 @@ describe('indexBand', () => {
     expect(indexTone(indexBand('0'))).toBe('warning');
     expect(indexTone(indexBand('1'))).toBe('blue');
     expect(indexTone(indexBand('1.2'))).toBe('success');
+  });
+});
+
+describe('favourableBand', () => {
+  it('passes the schedule and cost indices through: above 1.0 is good', () => {
+    expect(favourableBand(indexBand('1.2'), 'schedule')).toBe('ahead');
+    expect(favourableBand(indexBand('0.8'), 'cost')).toBe('behind');
+  });
+
+  it('mirrors TCPI, whose good direction is down', () => {
+    // A TCPI of 1.3 means the remaining work must be done 30% cheaper than
+    // planned to land on budget; banding it like a CPI would paint it green.
+    expect(favourableBand(indexBand('1.3'), 'to_complete')).toBe('behind');
+    expect(favourableBand(indexBand('0.9'), 'to_complete')).toBe('ahead');
+    expect(favourableBand(indexBand('1.0'), 'to_complete')).toBe('on_track');
+    expect(favourableBand(indexBand(null), 'to_complete')).toBe('undefined');
   });
 });
 

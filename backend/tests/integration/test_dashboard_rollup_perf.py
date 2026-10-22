@@ -246,8 +246,13 @@ class TestRollupPerformance:
         assert len(result) == N_PROJECTS
 
     @pytest.mark.asyncio
-    async def test_boq_summary_two_queries(self, perf_session) -> None:
-        """compute_boq_summary must issue exactly 2 queries regardless of project count."""
+    async def test_boq_summary_query_count_does_not_grow_with_projects(self, perf_session) -> None:
+        """compute_boq_summary issues a fixed number of queries whatever the project count.
+
+        Two read the bills and their positions; the grand totals (markups
+        included) are read in one batch more: markups, positions, owning
+        projects and their FX tables, one query each for the whole set.
+        """
         from app.modules.dashboard.service import compute_boq_summary
 
         session, projects, _owner_id = perf_session
@@ -258,15 +263,19 @@ class TestRollupPerformance:
 
         try:
             counter.reset()
+            await compute_boq_summary(session, projects[:1])
+            one_project = counter.count
+            counter.reset()
             await compute_boq_summary(session, projects)
-            boq_query_count = counter.count
+            all_projects = counter.count
         finally:
             event.remove(sync_engine, "before_cursor_execute", counter)
 
-        assert boq_query_count == 2, (
-            f"compute_boq_summary issued {boq_query_count} queries — expected 2 "
-            f"(BOQ meta + positions). N+1 regression detected."
+        assert all_projects == one_project, (
+            f"compute_boq_summary issued {all_projects} queries for {len(projects)} projects and "
+            f"{one_project} for one. N+1 regression detected."
         )
+        assert all_projects <= 6, f"compute_boq_summary issued {all_projects} queries, expected at most 6."
 
     @pytest.mark.asyncio
     async def test_schedule_critical_single_query_with_activities(

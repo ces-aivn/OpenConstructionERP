@@ -34,12 +34,22 @@ export interface SCurvePoint {
   period_label: string;
   actual_cumulative_pct: number;
   planned_cumulative_pct: number | null;
+  /** ``manual`` (an entered plan point), ``schedule`` (the 4D programme) or null. */
+  planned_source?: 'manual' | 'schedule' | null;
+  /** False after the last recorded reading: the actual value there is carried forward. */
+  actual_recorded?: boolean;
 }
+
+/** Where the plan line comes from. */
+export type SCurvePlanSource = 'manual' | 'schedule' | 'mixed' | 'none';
 
 /** Actual-vs-planned S-curve for a project. Mirrors backend SCurveResponse. */
 export interface SCurveResponse {
   project_id: string;
   points: SCurvePoint[];
+  plan_source?: SCurvePlanSource;
+  /** True when the schedule plan reads an active schedule baseline's dates. */
+  plan_uses_baseline?: boolean;
 }
 
 /* ── Cumulative (per-period deltas + running cumulative percent) ─────────── */
@@ -163,6 +173,37 @@ export function getQuantityVariance(
 ): Promise<QuantityVarianceResponse> {
   return apiGet<QuantityVarianceResponse>(
     `${BASE}/quantity-variance/?project_id=${encodeURIComponent(projectId)}`,
+  );
+}
+
+/* ── Positions a reading can be recorded against ────────────────────────── */
+
+/**
+ * A priced leaf BOQ position, measured or not. Quantities and money are
+ * Decimal strings; ``percent_complete`` is the latest reading, null when the
+ * position was never measured. Mirrors backend ``TrackablePosition``.
+ */
+export interface TrackablePosition {
+  boq_position_id: string;
+  boq_id: string;
+  boq_name: string;
+  ordinal: string | null;
+  description: string | null;
+  unit: string | null;
+  design_quantity: string;
+  total: string;
+  percent_complete: string | null;
+}
+
+export interface TrackablePositionsResponse {
+  project_id: string;
+  positions: TrackablePosition[];
+}
+
+/** Every priced leaf position of the project's BOQs, in BOQ order. */
+export function getTrackablePositions(projectId: string): Promise<TrackablePositionsResponse> {
+  return apiGet<TrackablePositionsResponse>(
+    `${BASE}/positions/?project_id=${encodeURIComponent(projectId)}`,
   );
 }
 

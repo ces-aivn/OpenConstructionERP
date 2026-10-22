@@ -1488,7 +1488,9 @@ class CostModelService:
     async def generate_budget_from_boq(self, project_id: uuid.UUID, boq_id: uuid.UUID) -> list[BudgetLine]:
         """Auto-generate budget lines from BOQ positions.
 
-        Each BOQ position becomes a budget line with planned_amount = position total.
+        Each BOQ position becomes a budget line with planned_amount = position total,
+        and each markup of the bill other than VAT becomes a line of its own
+        (:meth:`_markup_budget_lines`), so the budget is the bill's total before VAT.
         Existing budget lines for the project are NOT deleted - new lines are appended.
 
         Idempotency (R5 audit, May 2026):
@@ -1555,6 +1557,8 @@ class CostModelService:
             )
             lines.append(line)
 
+        lines.extend(await self._markup_budget_lines(project_id, boq_id, currency))
+
         if not lines:
             logger.info(
                 "generate_budget_from_boq: every BOQ position already wired (project=%s boq=%s); no-op.",
@@ -1582,6 +1586,60 @@ class CostModelService:
             project_id,
         )
         return created
+
+    async def _markup_budget_lines(self, project_id: uuid.UUID, boq_id: uuid.UUID, currency: str) -> list[BudgetLine]:
+        """One budget line per markup of the bill, VAT excepted, not yet budgeted.
+
+        The position lines carry the direct cost; the general conditions,
+        overheads, profit, insurance, bond and contingency on top of it are
+        part of what the bill costs before VAT and so of the budget. Each line
+        is stamped with the markup it came from (``metadata.boq_markup_id``), so
+        generating again adds only markups that have no line yet, and a budget
+        generated before markups were included gains them on the next run. It
+        names no BOQ position, so progress-based earned value, which is per
+        position, is not double counted. The amounts are those of the bill's
+        own markup cascade (``finance.boq_budget``).
+        """
+        from sqlalchemy import select  # noqa: PLC0415
+
+        from app.modules.finance.boq_budget import bill_markups  # noqa: PLC0415
+
+        try:
+            markups = await bill_markups(self.session, boq_id)
+        except Exception:
+            logger.exception("Markups of BOQ %s could not be priced; no markup budget lines", boq_id)
+            return []
+        if not markups:
+            return []
+        rows = (
+            await self.session.execute(
+                select(BudgetLine.metadata_).where(
+                    BudgetLine.project_id == project_id,
+                    BudgetLine.boq_position_id.is_(None),
+                )
+            )
+        ).scalars()
+        budgeted = {str(md.get("boq_markup_id")) for md in rows if isinstance(md, dict) and md.get("boq_markup_id")}
+        out: list[BudgetLine] = []
+        for markup in markups:
+            if str(markup.markup_id) in budgeted:
+                continue
+            amount = format(markup.amount, "f")
+            out.append(
+                BudgetLine(
+                    project_id=project_id,
+                    boq_position_id=None,
+                    category=markup.category,
+                    description=(markup.name or markup.category)[:500],
+                    planned_amount=amount,
+                    committed_amount="0",
+                    actual_amount="0",
+                    forecast_amount=amount,
+                    currency=currency,
+                    metadata_={"boq_id": str(boq_id), "boq_markup_id": str(markup.markup_id), "source": "boq_markup"},
+                )
+            )
+        return out
 
     async def generate_cash_flow_from_schedule(self, project_id: uuid.UUID) -> list[CashFlow]:
         """Generate cash flow entries by spreading budget line amounts across their schedule.

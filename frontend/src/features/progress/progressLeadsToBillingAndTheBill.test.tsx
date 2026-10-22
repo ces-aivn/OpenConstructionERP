@@ -52,6 +52,7 @@ vi.mock('./api', () => ({
   getProgressCumulative: () =>
     Promise.resolve({ project_id: 'proj-1', boq_position_id: null, periods: [], current_cumulative_pct: 40 }),
   getProgressSCurve: () => Promise.resolve({ project_id: 'proj-1', points: [] }),
+  getTrackablePositions: () => Promise.resolve({ project_id: 'proj-1', positions: [] }),
   getQuantityVariance: () =>
     Promise.resolve({
       project_id: 'proj-1',

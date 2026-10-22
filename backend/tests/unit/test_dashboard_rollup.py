@@ -229,6 +229,48 @@ class TestBOQSummaryAggregate:
         assert len(result["by_project"]) == 1
 
     @pytest.mark.asyncio
+    async def test_total_value_includes_the_markups_of_the_bill(self, session: AsyncSession) -> None:
+        from app.modules.boq.models import BOQ, BOQMarkup, Position
+        from app.modules.dashboard.service import compute_boq_summary
+
+        uid = await _make_user(session)
+        project = await _make_project(session, uid)
+        boq = BOQ(id=uuid.uuid4(), project_id=project.id, name="Tender", status="draft")
+        session.add(boq)
+        await session.flush()
+        session.add(
+            Position(
+                boq_id=boq.id,
+                ordinal="01",
+                description="Concrete",
+                unit="m3",
+                quantity="10",
+                unit_rate="100",
+                total="1000",
+            )
+        )
+        session.add(
+            BOQMarkup(
+                boq_id=boq.id,
+                name="Overhead and profit",
+                markup_type="percentage",
+                percentage="15",
+                apply_to="direct_cost",
+                sort_order=0,
+                is_active=True,
+            )
+        )
+        await session.commit()
+
+        result = await compute_boq_summary(session, [project])
+
+        assert Decimal(result["by_project"][0]["total_value"]) == Decimal("1150.00")
+        assert Decimal(result["by_project"][0]["direct_cost"]) == Decimal("1000.00")
+        assert Decimal(result["by_currency"][0]["total_value"]) == Decimal("1150.00")
+        assert Decimal(result["by_currency"][0]["direct_cost"]) == Decimal("1000.00")
+        assert Decimal(result["last_boq"]["grand_total"]) == Decimal("1150.00")
+
+    @pytest.mark.asyncio
     async def test_active_boq_count_excludes_archived(self, session: AsyncSession) -> None:
         from app.modules.boq.models import BOQ
         from app.modules.dashboard.service import compute_boq_summary

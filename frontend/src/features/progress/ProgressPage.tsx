@@ -51,8 +51,10 @@ import {
   getProgressCumulative,
   getProgressSCurve,
   getQuantityVariance,
+  getTrackablePositions,
   type PositionQuantityVarianceItem,
   type SCurvePoint,
+  type SCurvePlanSource,
 } from './api';
 import { RecordProgressDialog } from './RecordProgressDialog';
 import { getNumberLocale } from '@/stores/usePreferencesStore';
@@ -139,7 +141,15 @@ function SectionState({
 
 /* ── S-curve chart (dependency-free inline SVG) ─────────────────────────── */
 
-function SCurveChart({ points }: { points: SCurvePoint[] }) {
+function SCurveChart({
+  points,
+  planSource = 'none',
+  planUsesBaseline = false,
+}: {
+  points: SCurvePoint[];
+  planSource?: SCurvePlanSource;
+  planUsesBaseline?: boolean;
+}) {
   const { t } = useTranslation();
 
   const W = 760;
@@ -160,14 +170,29 @@ function SCurveChart({ points }: { points: SCurvePoint[] }) {
   const gridYs = [0, 25, 50, 75, 100];
   const bottom = padT + innerH;
 
-  const actualPoints = points.map((p, i) => `${xAt(i)},${yAt(p.actual_cumulative_pct)}`).join(' ');
+  // The actual line ends at the last recorded reading. Periods after it are on
+  // the axis for the plan; drawing the carried-forward value through them would
+  // present a forecast as a measurement.
+  const recorded = points
+    .map((p, i) => ({ p, i }))
+    .filter((e) => e.p.actual_recorded !== false);
+  const lastRecorded = recorded.length > 0 ? recorded[recorded.length - 1]!.i : 0;
+  const actualPoints = recorded.map((e) => `${xAt(e.i)},${yAt(e.p.actual_cumulative_pct)}`).join(' ');
   const planned = points
     .map((p, i) => ({ p, i }))
     .filter((e) => e.p.planned_cumulative_pct != null);
   const plannedPoints = planned
     .map((e) => `${xAt(e.i)},${yAt(e.p.planned_cumulative_pct as number)}`)
     .join(' ');
-  const areaPoints = `${padL},${bottom} ${actualPoints} ${xAt(n - 1)},${bottom}`;
+  const areaPoints = `${xAt(recorded[0]?.i ?? 0)},${bottom} ${actualPoints} ${xAt(lastRecorded)},${bottom}`;
+  const plannedLabel =
+    planSource === 'schedule'
+      ? planUsesBaseline
+        ? t('progress.series_planned_baseline', { defaultValue: 'Planned (4D schedule baseline)' })
+        : t('progress.series_planned_schedule', { defaultValue: 'Planned (4D schedule)' })
+      : planSource === 'mixed'
+        ? t('progress.series_planned_mixed', { defaultValue: 'Planned (entered, else 4D schedule)' })
+        : t('progress.series_planned', { defaultValue: 'Planned' });
 
   // Cap the count of x-axis labels so dense period sets stay legible.
   const maxLabels = 7;
@@ -191,13 +216,13 @@ function SCurveChart({ points }: { points: SCurvePoint[] }) {
             <svg width="20" height="8" aria-hidden="true">
               <line x1="0" y1="4" x2="20" y2="4" stroke="currentColor" className="text-content-tertiary" strokeWidth="2" strokeDasharray="4 3" />
             </svg>
-            {t('progress.series_planned', { defaultValue: 'Planned' })}
+            {plannedLabel}
           </span>
         )}
         {planned.length === 0 && (
           <span className="text-content-tertiary">
-            {t('progress.series_no_plan', {
-              defaultValue: 'No plan entered for these periods',
+            {t('progress.series_no_plan_or_schedule', {
+              defaultValue: 'No plan for these periods: enter one, or build the 4D schedule to draw it',
             })}
           </span>
         )}
@@ -240,7 +265,7 @@ function SCurveChart({ points }: { points: SCurvePoint[] }) {
           ))}
 
           {/* Area under the actual line */}
-          {n >= 2 && (
+          {recorded.length >= 2 && (
             <polygon points={areaPoints} fill="currentColor" className="text-oe-blue" fillOpacity={0.08} />
           )}
 
@@ -259,7 +284,7 @@ function SCurveChart({ points }: { points: SCurvePoint[] }) {
           )}
 
           {/* Actual line (solid) */}
-          {n >= 2 && (
+          {recorded.length >= 2 && (
             <polyline
               points={actualPoints}
               fill="none"
@@ -272,7 +297,7 @@ function SCurveChart({ points }: { points: SCurvePoint[] }) {
           )}
 
           {/* Markers */}
-          {points.map((p, i) => (
+          {recorded.map(({ p, i }) => (
             <circle
               key={`actual-${i}`}
               cx={xAt(i)}
@@ -411,6 +436,13 @@ export function ProgressPage() {
     retry: false,
     staleTime: 30_000,
   });
+  const positionsQ = useQuery({
+    queryKey: ['progress', 'positions', projectId],
+    queryFn: () => getTrackablePositions(projectId),
+    enabled: !!projectId,
+    retry: false,
+    staleTime: 60_000,
+  });
   const varianceQ = useQuery({
     queryKey: ['progress', 'quantity-variance', projectId],
     queryFn: () => getQuantityVariance(projectId),
@@ -517,7 +549,8 @@ export function ProgressPage() {
           open={recordOpen}
           onClose={() => setRecordOpen(false)}
           projectId={projectId}
-          positions={variance?.positions ?? []}
+          positions={positionsQ.data?.positions ?? []}
+          positionsLoading={positionsQ.isLoading}
         />
       )}
 
@@ -604,7 +637,13 @@ export function ProgressPage() {
                   onClick: () => setRecordOpen(true),
                 }}
               >
-                {sCurve && <SCurveChart points={sCurve.points} />}
+                {sCurve && (
+                  <SCurveChart
+                    points={sCurve.points}
+                    planSource={sCurve.plan_source}
+                    planUsesBaseline={sCurve.plan_uses_baseline}
+                  />
+                )}
               </SectionState>
             </Card>
 

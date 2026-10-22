@@ -21,6 +21,8 @@ interface CostBenchmarkProps {
   currency: string;
   /** Project area in m², if already known from project metadata. */
   initialArea?: number;
+  /** The project's own type, as typed on the project (free text, any language). */
+  projectType?: string | null;
 }
 
 /* ── Benchmark data per project type (EUR/m²) ─────────────────────────── */
@@ -49,6 +51,47 @@ const PROJECT_TYPE_OPTIONS: ReadonlyArray<{
 ];
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
+
+/** Words, English and Vietnamese, that name each building type in a project's type. */
+const PROJECT_TYPE_WORDS: ReadonlyArray<[ProjectType, readonly string[]]> = [
+  ['hospital', ['hospital', 'clinic', 'medical', 'healthcare', 'health care', 'benh vien', 'phong kham', 'y te']],
+  ['education', ['school', 'education', 'university', 'college', 'campus', 'truong', 'giao duc', 'dai hoc']],
+  ['office', ['office', 'van phong', 'tru so']],
+  ['retail', ['retail', 'shop', 'store', 'mall', 'commercial', 'thuong mai', 'cua hang', 'sieu thi']],
+  ['industrial', ['industrial', 'factory', 'warehouse', 'plant', 'logistics', 'nha xuong', 'nha may', 'cong nghiep', 'kho']],
+  ['residential', ['residential', 'housing', 'apartment', 'condo', 'house', 'villa', 'nha o', 'chung cu', 'can ho', 'biet thu', 'nha pho']],
+];
+
+/** Lower case without diacritics, so "Bệnh viện" reads like "benh vien". */
+function plainWords(text: string): string {
+  return ` ${text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'd')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()} `;
+}
+
+/**
+ * The benchmark building type a project's own type names, or '' when it names
+ * none. The project type is free text, so it is read by its words; a stadium
+ * or a bridge matches nothing here and is left for the user to choose rather
+ * than being compared with the wrong band.
+ */
+export function benchmarkTypeFor(projectType: string | null | undefined): ProjectType | '' {
+  const words = plainWords(projectType ?? '');
+  if (!words.trim()) return '';
+  for (const [type, names] of PROJECT_TYPE_WORDS) {
+    if (names.some((name) => words.includes(` ${name} `))) return type;
+  }
+  return '';
+}
+
+/** A number for an editable field: at most two decimals, no grouping. */
+function fieldNumber(value: number): string {
+  return String(Math.round(value * 100) / 100);
+}
 
 function formatCurrencyValue(amount: number, currency: string): string {
   const safe = /^[A-Z]{3}$/.test(currency) ? currency : 'EUR';
@@ -219,26 +262,34 @@ const RangeIndicator = memo(function RangeIndicator({
 
 /* ── Main Component ───────────────────────────────────────────────────── */
 
-export const CostBenchmark = memo(function CostBenchmark({ totalBudget, currency, initialArea }: CostBenchmarkProps) {
+export const CostBenchmark = memo(function CostBenchmark({
+  totalBudget,
+  currency,
+  initialArea,
+  projectType: projectKind,
+}: CostBenchmarkProps) {
   const { t } = useTranslation();
   const q = useDisplayQuantity();
-  const [area, setArea] = useState<string>(initialArea ? String(initialArea) : '');
-  const [projectType, setProjectType] = useState<ProjectType>('residential');
 
   // Issue #270 - the benchmark figures are all "currency per m2" RATES. For an
-  // imperial user we relabel them per-ft2 and divide by the area factor so the
-  // verdict stays consistent (a cheaper-per-ft2 number reads the same way as a
-  // cheaper-per-m2 one). The area INPUT below stays metric/editable (m2): we do
-  // not convert it, so its echoed value is also left metric. metric => factor 1
-  // and unit "m2", i.e. byte-identical output to before.
+  // imperial user they read per ft2: the rate is divided by the area factor and
+  // the area is typed in ft2 too, so the cost per unit is the budget over the
+  // area the user entered, in the unit they entered it. Metric => factor 1.
   const rateUnit = q.unitFor('m²');
   const rateFactor = q.convert(1, 'm²').value; // 1 (metric) / 10.7639 (imperial)
   const fmtRate = (rate: number) => formatCurrencyValue(rate / rateFactor, currency);
+
+  const [area, setArea] = useState<string>(initialArea ? fieldNumber(initialArea * rateFactor) : '');
+  // The project's own type when it names one; otherwise nothing is assumed and
+  // no verdict is given until a type is chosen.
+  const [projectType, setProjectType] = useState<ProjectType | ''>(() => benchmarkTypeFor(projectKind));
 
   // projectTypeOptions defined at module level as PROJECT_TYPE_OPTIONS - avoids re-allocation on every render
 
   const areaNum = parseFloat(area);
   const hasValidArea = !isNaN(areaNum) && areaNum > 0;
+  // The typed area in m², which the benchmark bands are set in.
+  const areaM2 = hasValidArea ? areaNum / rateFactor : 0;
 
   // Benchmark ranges are expressed in EUR/m². If the project uses a different
   // (valid) currency, the pass/fail verdict would be meaningless, so we hide it.
@@ -246,14 +297,14 @@ export const CostBenchmark = memo(function CostBenchmark({ totalBudget, currency
   const currencyMismatch = isValidCurrency && currency !== 'EUR';
 
   const benchmark = useMemo(() => {
-    if (!hasValidArea) return null;
+    if (!hasValidArea || !projectType) return null;
 
-    const costPerM2 = totalBudget / areaNum;
+    const costPerM2 = totalBudget / areaM2;
     const range = BENCHMARK_RANGES[projectType];
     const status = getBenchmarkStatus(costPerM2, range);
 
     return { costPerM2, range, status };
-  }, [totalBudget, areaNum, hasValidArea, projectType]);
+  }, [totalBudget, areaM2, hasValidArea, projectType]);
 
   const statusLabel = useMemo(() => {
     if (!benchmark) return '';
@@ -282,7 +333,7 @@ export const CostBenchmark = memo(function CostBenchmark({ totalBudget, currency
                 htmlFor="benchmark-area"
                 className="block text-xs font-medium text-content-secondary mb-1.5"
               >
-                {t('costmodel.benchmark_project_area', { defaultValue: 'Project Area (m\u00B2)' })}
+                {t('costmodel.benchmark_project_area_unit', { defaultValue: 'Project Area ({{unit}})', unit: rateUnit })}
               </label>
               <input
                 id="benchmark-area"
@@ -309,9 +360,12 @@ export const CostBenchmark = memo(function CostBenchmark({ totalBudget, currency
               <select
                 id="benchmark-type"
                 value={projectType}
-                onChange={(e) => setProjectType(e.target.value as ProjectType)}
+                onChange={(e) => setProjectType(e.target.value as ProjectType | '')}
                 className="w-full rounded-lg border border-border bg-surface-primary px-3 py-2 text-sm text-content-primary focus:border-oe-blue focus:outline-none focus:ring-1 focus:ring-oe-blue"
               >
+                <option value="">
+                  {t('costmodel.benchmark_type_choose', { defaultValue: 'Choose a building type' })}
+                </option>
                 {PROJECT_TYPE_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {t(opt.labelKey, { defaultValue: opt.defaultLabel })}
@@ -380,13 +434,11 @@ export const CostBenchmark = memo(function CostBenchmark({ totalBudget, currency
                     {formatCurrencyValue(totalBudget, currency)}
                   </div>
                   <div className="mt-1 text-2xs text-content-tertiary">
-                    {/* ABSOLUTE area, but left metric on purpose: it echoes the
-                        m2 value the user typed into the (non-converted, editable)
-                        area input above, so relabelling it to ft2 here would
-                        contradict the number they entered. */}
-                    {t('costmodel.benchmark_area_value', {
-                      defaultValue: '{{area}} m\u00B2',
+                    {/* The area as the user typed it, in the unit they typed it in. */}
+                    {t('costmodel.benchmark_area_value_unit', {
+                      defaultValue: '{{area}} {{unit}}',
                       area: areaNum.toLocaleString(getNumberLocale()),
+                      unit: rateUnit,
                     })}
                   </div>
                 </div>
@@ -420,10 +472,15 @@ export const CostBenchmark = memo(function CostBenchmark({ totalBudget, currency
                 <Ruler size={20} />
               </div>
               <p className="text-sm text-content-secondary">
-                {t('costmodel.benchmark_enter_area', {
-                  defaultValue:
-                    'Enter the project area to see the cost per m\u00B2 benchmark comparison',
-                })}
+                {hasValidArea
+                  ? t('costmodel.benchmark_choose_type', {
+                      defaultValue: 'Choose the building type to compare the cost per {{unit}} with its benchmark range',
+                      unit: rateUnit,
+                    })
+                  : t('costmodel.benchmark_enter_area_unit', {
+                      defaultValue: 'Enter the project area to see the cost per {{unit}} benchmark comparison',
+                      unit: rateUnit,
+                    })}
               </p>
             </div>
           )}

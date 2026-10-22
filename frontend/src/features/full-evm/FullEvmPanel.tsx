@@ -76,11 +76,13 @@ import {
 } from './api';
 import {
   type IndexBand,
+  type IndexKind,
   type Tone,
   baselineStatusTone,
   canApprove,
   eacMethodWasHonoured,
   eacVariantSpread,
+  favourableBand,
   fractionToPercent,
   indexBand,
   indexTone,
@@ -119,37 +121,47 @@ function Figure({ value, currency }: { value: string | null | undefined; currenc
   );
 }
 
-function bandLabel(band: IndexBand, t: (k: string, o?: Record<string, unknown>) => string): string {
-  switch (band) {
-    case 'ahead':
-      return t('full_evm.band_ahead', { defaultValue: 'ahead' });
-    case 'on_track':
-      return t('full_evm.band_on_track', { defaultValue: 'on track' });
-    case 'behind':
-      return t('full_evm.band_behind', { defaultValue: 'behind' });
-    case 'undefined':
-      return t('full_evm.band_undefined', { defaultValue: 'no reading' });
+function bandLabel(
+  band: IndexBand,
+  kind: IndexKind,
+  t: (k: string, o?: Record<string, unknown>) => string,
+): string {
+  if (band === 'undefined') return t('full_evm.band_undefined', { defaultValue: 'no reading' });
+  if (kind === 'cost') {
+    if (band === 'ahead') return t('full_evm.band_under_budget', { defaultValue: 'under budget' });
+    if (band === 'behind') return t('full_evm.band_over_budget', { defaultValue: 'over budget' });
+    return t('full_evm.band_on_budget', { defaultValue: 'on budget' });
   }
+  if (kind === 'to_complete') {
+    if (band === 'ahead') return t('full_evm.band_budget_achievable', { defaultValue: 'budget achievable' });
+    if (band === 'behind') return t('full_evm.band_needs_savings', { defaultValue: 'needs cost savings' });
+    return t('full_evm.band_on_budget', { defaultValue: 'on budget' });
+  }
+  if (band === 'ahead') return t('full_evm.band_ahead', { defaultValue: 'ahead' });
+  if (band === 'behind') return t('full_evm.band_behind', { defaultValue: 'behind' });
+  return t('full_evm.band_on_track', { defaultValue: 'on track' });
 }
 
 /** One indicator: the figure the register published, banded but not recomputed. */
 function IndexTile({
   label,
   value,
+  kind,
   hint,
 }: {
   label: string;
   value: string | null | undefined;
+  kind: IndexKind;
   hint?: string;
 }) {
   const { t } = useTranslation();
-  const band = indexBand(value);
+  const band = favourableBand(indexBand(value), kind);
   return (
     <div className="rounded-md border border-border bg-surface-primary p-2">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[11px] uppercase tracking-wide text-content-tertiary">{label}</span>
         <Badge variant={indexTone(band) as Tone} size="sm">
-          {bandLabel(band, t)}
+          {bandLabel(band, kind, t)}
         </Badge>
       </div>
       <div className="mt-0.5 text-sm text-content-primary">
@@ -411,8 +423,8 @@ function MeasureCard({ measure, currency }: { measure: Measure; currency: string
       </div>
 
       <div className="grid gap-2 sm:grid-cols-4">
-        <IndexTile label="SPI" value={measure.spi} />
-        <IndexTile label="CPI" value={measure.cpi} />
+        <IndexTile label="SPI" value={measure.spi} kind="schedule" />
+        <IndexTile label="CPI" value={measure.cpi} kind="cost" />
         <MoneyTile
           label="SV"
           value={measure.sv}
@@ -1195,7 +1207,7 @@ export function FullEvmPanel() {
                             currency={selected.currency}
                             tone={varianceTone(forecast.vac) as Tone}
                           />
-                          <IndexTile label="TCPI" value={forecast.tcpi} />
+                          <IndexTile label="TCPI" value={forecast.tcpi} kind="to_complete" />
                         </div>
                         {low !== null && high !== null && (
                           <p className="mt-1 text-content-tertiary">

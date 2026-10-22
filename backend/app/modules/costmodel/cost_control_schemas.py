@@ -25,7 +25,16 @@ OptionalMoney = Annotated[Decimal | None, PlainSerializer(_serialise_money, retu
 #: Rows that can be put on a cost line from cost control (see costmodel.inheritance_service).
 VectorKind = Literal["contract_line", "po_item", "contract", "change_order_item", "invoice_line"]
 
-RowKind = Literal["cost_line", "contract", "unassigned", "changes_without_contract", "other", "remaining", "allowance"]
+RowKind = Literal[
+    "cost_line",
+    "contract",
+    "unassigned",
+    "changes_without_contract",
+    "other",
+    "remaining",
+    "allowance",
+    "project_budget",
+]
 
 #: A project's forecast method, or a line's.
 ForecastMethod = Literal["best_available", "maximum", "evm_cpi", "manual"]
@@ -153,6 +162,10 @@ class CostControlReport(BaseModel):
     findings: list[CostControlFinding] = Field(default_factory=list)
     last_snapshot: SnapshotSummary | None = None
     forecast_method: str = "best_available"
+    #: The project's plan (budget, else estimate) the report is measured against.
+    project_plan: Money = Decimal("0")
+    #: Where the project plan was read from: ``budget``, ``estimate`` or ``none``.
+    plan_source: str = "none"
 
 
 class SnapshotCreateRequest(BaseModel):

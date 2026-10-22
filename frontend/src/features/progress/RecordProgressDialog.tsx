@@ -19,8 +19,10 @@
  * headline, which is deliberate and is stated on screen rather than left for
  * the user to discover by watching a number not change.
  *
- * Positions come from the quantity-variance payload the page has already
- * fetched, so opening this costs no extra request.
+ * Positions are every priced leaf of the project's BOQs, measured or not,
+ * so a priced bill can take its first reading. (They used to come from the
+ * quantity-variance report, which lists only positions already measured, so
+ * a project with a priced but unmeasured BOQ could never measure one.)
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -30,7 +32,7 @@ import { Search } from 'lucide-react';
 
 import { Button, Input, WideModal } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
-import { createProgressEntry, type PositionQuantityVarianceItem } from './api';
+import { createProgressEntry, type TrackablePosition } from './api';
 
 /** Current month as ``YYYY-MM``: the period label most entries want. */
 function currentPeriodLabel(): string {
@@ -42,8 +44,10 @@ export interface RecordProgressDialogProps {
   open: boolean;
   onClose: () => void;
   projectId: string;
-  /** Tracked positions, already loaded by the page. Empty is a valid state. */
-  positions: PositionQuantityVarianceItem[];
+  /** Priced positions, loaded by the page. Empty is a valid state. */
+  positions: TrackablePosition[];
+  /** True while the positions are still loading, so the picker does not claim there are none. */
+  positionsLoading?: boolean;
 }
 
 export function RecordProgressDialog({
@@ -51,6 +55,7 @@ export function RecordProgressDialog({
   onClose,
   projectId,
   positions,
+  positionsLoading = false,
 }: RecordProgressDialogProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -81,7 +86,7 @@ export function RecordProgressDialog({
     const q = search.trim().toLowerCase();
     if (!q) return positions;
     return positions.filter((p) =>
-      `${p.ordinal ?? ''} ${p.description ?? ''}`.toLowerCase().includes(q),
+      `${p.ordinal ?? ''} ${p.description ?? ''} ${p.boq_name}`.toLowerCase().includes(q),
     );
   }, [positions, search]);
 
@@ -103,12 +108,13 @@ export function RecordProgressDialog({
         percent_complete: percentValue,
         notes: notes.trim() || null,
       });
-      // Every panel on the page reads these three, so all three have to go
-      // stale together or the S-curve and the KPI row disagree on screen.
+      // Every panel on the page reads these, so they go stale together or the
+      // S-curve, the KPI row and the position picker disagree on screen.
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['progress', 's-curve', projectId] }),
         queryClient.invalidateQueries({ queryKey: ['progress', 'cumulative', projectId] }),
         queryClient.invalidateQueries({ queryKey: ['progress', 'quantity-variance', projectId] }),
+        queryClient.invalidateQueries({ queryKey: ['progress', 'positions', projectId] }),
       ]);
       addToast({
         type: 'success',
@@ -186,7 +192,7 @@ export function RecordProgressDialog({
                     'How far one line item has got. Position readings are what the project percentage is rolled up from, weighted by design quantity, so a position nobody has measured counts as zero rather than being left out.',
                 })}
           </p>
-          {positions.length === 0 && (
+          {positions.length === 0 && !positionsLoading && (
             <p className="text-2xs text-content-tertiary">
               {t('progress.record_no_positions', {
                 defaultValue:
@@ -247,11 +253,15 @@ export function RecordProgressDialog({
                       {p.description ??
                         t('progress.record_position_untitled', { defaultValue: 'Untitled position' })}
                     </span>
-                    {p.unit && (
-                      <span className="ml-auto shrink-0 text-2xs text-content-tertiary">
-                        {p.unit}
-                      </span>
-                    )}
+                    <span className="ml-auto shrink-0 text-2xs text-content-tertiary">
+                      {p.percent_complete != null
+                        ? t('progress.record_position_current', {
+                            defaultValue: '{{percent}}% now',
+                            percent: String(Number(p.percent_complete)),
+                          })
+                        : t('progress.record_position_unmeasured', { defaultValue: 'not measured' })}
+                      {p.unit ? ` · ${p.unit}` : ''}
+                    </span>
                   </button>
                 ))
               )}

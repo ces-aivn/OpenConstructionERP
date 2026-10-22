@@ -59,7 +59,17 @@ from app.modules.progress.quantity_variance import (
     to_decimal,
 )
 from app.modules.progress.repository import ProgressRepository
+from app.modules.progress.schedule_plan import (
+    label_granularity,
+    load_schedule_programme,
+    period_end,
+    period_labels_between,
+)
 from app.modules.progress.schemas import (
+    PLAN_SOURCE_MANUAL,
+    PLAN_SOURCE_MIXED,
+    PLAN_SOURCE_NONE,
+    PLAN_SOURCE_SCHEDULE,
     CumulativeProgressResponse,
     PeriodProgress,
     PositionProgressSummary,
@@ -70,6 +80,8 @@ from app.modules.progress.schemas import (
     QuantityVarianceRollupResponse,
     SCurvePoint,
     SCurveResponse,
+    TrackablePosition,
+    TrackablePositionsResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -248,6 +260,9 @@ class ProgressService:
 
         # Geo validation
         _validate_geo(data.geo_lat, data.geo_lon)
+
+        if data.boq_position_id is not None:
+            await self._require_project_position(data.project_id, data.boq_position_id)
 
         entry = ProgressEntry(
             project_id=data.project_id,
@@ -718,6 +733,91 @@ class ProgressService:
             logger.debug("Could not fetch BOQ positions for project %s", project_id)
             return {}
 
+    # ── Positions a reading can be recorded against ───────────────────────
+
+    async def list_trackable_positions(self, project_id: uuid.UUID) -> TrackablePositionsResponse:
+        """Every priced leaf position of the project's BOQs, measured or not.
+
+        A position is priced when its total, or its quantity times its unit
+        rate, is above zero; a parent restates its children and never carries
+        a reading of its own, so only leaves are offered. Each row carries the
+        latest recorded percent, None for a position nobody has measured yet.
+        """
+        from sqlalchemy import select as sa_select
+
+        from app.modules.boq.models import BOQ, Position
+
+        rows = (
+            await self.session.execute(
+                sa_select(
+                    Position.id,
+                    Position.parent_id,
+                    Position.boq_id,
+                    BOQ.name,
+                    Position.ordinal,
+                    Position.description,
+                    Position.unit,
+                    Position.quantity,
+                    Position.unit_rate,
+                    Position.total,
+                )
+                .join(BOQ, Position.boq_id == BOQ.id)
+                .where(BOQ.project_id == project_id)
+                .order_by(BOQ.name.asc(), BOQ.id.asc(), Position.sort_order.asc(), Position.ordinal.asc())
+            )
+        ).all()
+        parent_ids = {row.parent_id for row in rows if row.parent_id is not None}
+        priced = [
+            row
+            for row in rows
+            if row.id not in parent_ids
+            and (to_decimal(row.total) > 0 or (to_decimal(row.quantity) > 0 and to_decimal(row.unit_rate) > 0))
+        ]
+        latest = await self.repo.latest_pct_for_positions(project_id, [row.id for row in priced]) if priced else {}
+        positions = []
+        for row in priced:
+            total = to_decimal(row.total)
+            if total <= 0:
+                total = to_decimal(row.quantity) * to_decimal(row.unit_rate)
+            pct = latest.get(row.id)
+            positions.append(
+                TrackablePosition(
+                    boq_position_id=row.id,
+                    boq_id=row.boq_id,
+                    boq_name=row.name or "",
+                    ordinal=row.ordinal,
+                    description=row.description,
+                    unit=row.unit,
+                    design_quantity=str(to_decimal(row.quantity)),
+                    total=str(total),
+                    percent_complete=None if pct is None else str(to_decimal(pct)),
+                )
+            )
+        return TrackablePositionsResponse(project_id=project_id, positions=positions)
+
+    async def _require_project_position(self, project_id: uuid.UUID, boq_position_id: uuid.UUID) -> None:
+        """Refuse a reading against a position that is not in one of the project's BOQs."""
+        from sqlalchemy import select as sa_select
+
+        from app.modules.boq.models import BOQ, Position
+
+        found = (
+            await self.session.execute(
+                sa_select(Position.id)
+                .join(BOQ, Position.boq_id == BOQ.id)
+                .where(Position.id == boq_position_id, BOQ.project_id == project_id)
+            )
+        ).first()
+        if found is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "code": "progress.position_not_in_project",
+                    "field": "boq_position_id",
+                    "message": "The BOQ position does not belong to this project.",
+                },
+            )
+
     # ── S-curve ───────────────────────────────────────────────────────────
 
     async def get_s_curve(self, project_id: uuid.UUID) -> SCurveResponse:
@@ -730,37 +830,81 @@ class ProgressService:
         3. Merge on period_label; gaps in either series are filled with None
            (planned) or carry-forward (actual).
 
+        The plan of a period is the point somebody entered for it, else the
+        planned completion the 4D schedule gives at the period's last day (see
+        :mod:`app.modules.progress.schedule_plan`). When the project has a
+        schedule, its periods from the first planned start to the last planned
+        finish join the axis, so the plan line covers the whole programme and
+        not only the periods somebody already measured. Periods after the last
+        recorded reading carry ``actual_recorded=False``: their actual figure
+        is the carried-forward value, not a measurement.
+
         Args:
             project_id: Project to chart.
 
         Returns:
-            One point per period present in either series.
+            One point per period present in any series.
         """
         # Actual data
         actual_rows = await self._project_pct_by_period(project_id)
         actual_by_period: dict[str, float] = {label: round(pct, 3) for label, pct in actual_rows}
 
-        # Planned data
+        # Planned data entered by hand
         plan_rows = await self.repo.list_plan(project_id)
         planned_by_period: dict[str, float] = {p.period_label: round(float(p.planned_pct), 3) for p in plan_rows}
 
+        # Planned data from the 4D schedule
+        programme = await load_schedule_programme(self.session, project_id)
+        schedule_periods: list[str] = []
+        span = programme.span()
+        granularity = label_granularity(sorted(set(actual_by_period) | set(planned_by_period)))
+        if span is not None and granularity is not None:
+            schedule_periods = period_labels_between(span[0], span[1], granularity)
+
         # Union of all periods, sorted
-        all_periods = sorted(set(actual_by_period) | set(planned_by_period))
+        all_periods = sorted(set(actual_by_period) | set(planned_by_period) | set(schedule_periods))
+        last_actual = max(actual_by_period) if actual_by_period else None
 
         points: list[SCurvePoint] = []
         actual_cum = 0.0
+        sources: set[str] = set()
         for period in all_periods:
             if period in actual_by_period:
                 actual_cum = actual_by_period[period]
+            planned: float | None = planned_by_period.get(period)
+            source: str | None = PLAN_SOURCE_MANUAL if planned is not None else None
+            if planned is None and not programme.empty:
+                end = period_end(period)
+                pct = programme.planned_pct(end) if end is not None else None
+                if pct is not None:
+                    planned = round(float(pct), 3)
+                    source = PLAN_SOURCE_SCHEDULE
+            if source is not None:
+                sources.add(source)
             points.append(
                 SCurvePoint(
                     period_label=period,
                     actual_cumulative_pct=round(actual_cum, 3),
-                    planned_cumulative_pct=planned_by_period.get(period),
+                    planned_cumulative_pct=planned,
+                    planned_source=source,
+                    actual_recorded=last_actual is not None and period <= last_actual,
                 )
             )
 
-        return SCurveResponse(project_id=project_id, points=points)
+        if sources == {PLAN_SOURCE_MANUAL}:
+            plan_source = PLAN_SOURCE_MANUAL
+        elif sources == {PLAN_SOURCE_SCHEDULE}:
+            plan_source = PLAN_SOURCE_SCHEDULE
+        elif sources:
+            plan_source = PLAN_SOURCE_MIXED
+        else:
+            plan_source = PLAN_SOURCE_NONE
+        return SCurveResponse(
+            project_id=project_id,
+            points=points,
+            plan_source=plan_source,
+            plan_uses_baseline=plan_source != PLAN_SOURCE_MANUAL and programme.uses_baseline,
+        )
 
     # ── Plan management ───────────────────────────────────────────────────
 

@@ -30,6 +30,8 @@ function rowName(t: ReturnType<typeof useTranslation>['t'], kind: string, code: 
   if (kind === 'unassigned') return t('cost_control.row_unassigned', { defaultValue: 'Not on any cost line' });
   if (kind === 'changes_without_contract')
     return t('cost_control.row_loose_changes', { defaultValue: 'Approved changes not on a contract' });
+  if (kind === 'project_budget')
+    return t('cost_control.row_project_plan', { defaultValue: 'Project plan not on a cost line yet' });
   return `${code} ${description}`.trim();
 }
 

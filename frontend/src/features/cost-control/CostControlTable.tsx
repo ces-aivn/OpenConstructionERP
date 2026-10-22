@@ -93,6 +93,14 @@ export function CostControlTable({
         return t('cost_control.row_allowance', {
           defaultValue: 'Allowance on the account, not broken down yet',
         });
+      case 'project_budget':
+        return row.forecast_source === 'estimate'
+          ? t('cost_control.row_project_estimate', {
+              defaultValue: 'Project estimate not on a cost line yet (scope still to be let)',
+            })
+          : t('cost_control.row_project_budget', {
+              defaultValue: 'Project budget not on a cost line yet (scope still to be let)',
+            });
       default:
         return row.description;
     }
