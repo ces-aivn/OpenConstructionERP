@@ -1,0 +1,41 @@
+# Thin VN/US image: the published upstream release with this fork's frontend
+# build and changed backend files laid over it.
+#
+# Building Dockerfile.unified needs ~14 GB of memory for the frontend stage.
+# This file skips that: build the frontend on a machine that has the memory,
+# then build this image anywhere.
+#
+#   (cd frontend && NODE_OPTIONS=--max-old-space-size=12288 npx vite build)
+#
+# The repo's .dockerignore drops frontend/dist, so build from a staging
+# directory holding only what this file copies, in the same layout:
+#   <ctx>/frontend/dist/, <ctx>/backend/app/core/i18n_data.py, <ctx>/backend/app/main.py
+#   docker build -f Dockerfile.overlay --build-arg BASE_TAG=18.8.0 \
+#     -t openconstructionerp-vnus:18.8.0 <ctx>
+#
+# BASE_TAG must be the upstream release this branch is based on, or the
+# backend files below will not match the rest of the installed package.
+ARG BASE_TAG=18.8.0
+FROM ghcr.io/datadrivenconstruction/openconstructionerp:${BASE_TAG}
+
+ARG SITE=/usr/local/lib/python3.12/site-packages/app
+
+USER root
+
+# The UI is served from the package (app/_frontend_dist, see app/cli_static.py);
+# /app/frontend/dist and /app/backend/app/_frontend_dist are kept in step.
+RUN rm -rf ${SITE}/_frontend_dist /app/frontend/dist /app/backend/app/_frontend_dist
+COPY frontend/dist/ ${SITE}/_frontend_dist/
+COPY frontend/dist/ /app/frontend/dist/
+COPY frontend/dist/ /app/backend/app/_frontend_dist/
+
+# Backend files changed on this branch.
+COPY backend/app/core/i18n_data.py ${SITE}/core/i18n_data.py
+COPY backend/app/core/i18n_data.py /app/backend/app/core/i18n_data.py
+COPY backend/app/main.py ${SITE}/main.py
+COPY backend/app/main.py /app/backend/app/main.py
+
+RUN python -m compileall -q ${SITE}/core/i18n_data.py ${SITE}/main.py \
+ && chown -R oe:oe ${SITE}/_frontend_dist /app/frontend/dist /app/backend/app/_frontend_dist
+
+USER oe
