@@ -32,7 +32,7 @@ import {
 } from 'lucide-react';
 import { Card, CardContent, Skeleton } from '@/shared/ui';
 import { useDashboardRollupContext } from '../context/DashboardRollupContext';
-import { getNumberLocale } from '@/stores/usePreferencesStore';
+import { getFallbackCurrency, getNumberLocale } from '@/stores/usePreferencesStore';
 
 interface ProjectRef {
   id: string;
@@ -60,7 +60,7 @@ export function OperationsSnapshotCard({ projects }: { projects?: ProjectRef[] }
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { isLoading, byWidget } = useDashboardRollupContext();
-  const fallbackCurrency = projects?.[0]?.currency ?? 'EUR';
+  const fallbackCurrency = projects?.[0]?.currency ?? getFallbackCurrency();
 
   const dash = '—';
   const iconCls = 'text-content-tertiary';

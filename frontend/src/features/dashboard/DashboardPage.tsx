@@ -62,7 +62,7 @@ import {
   useDashboardRollupContext,
 } from './context/DashboardRollupContext';
 import { useDashboardRollup } from './hooks/useDashboardRollup';
-import { getNumberLocale } from '@/stores/usePreferencesStore';
+import { getFallbackCurrency, getNumberLocale } from '@/stores/usePreferencesStore';
 
 // Static Tailwind class strings (dynamic `lg:col-span-${n}` would be purged).
 const DASH_SPAN_CLASS: Record<number, string> = {
@@ -380,7 +380,7 @@ function KpiRibbon({
   // Fallback currency for the rare case the rollup has no per-currency
   // buckets yet (no priced BOQs) \u2014 only used to label a zero figure.
   const fallbackCurrency =
-    currencyTotals[0]?.currency ?? projects?.[0]?.currency ?? 'EUR';
+    currencyTotals[0]?.currency ?? projects?.[0]?.currency ?? getFallbackCurrency();
 
   // Compact currency formatter using Intl.NumberFormat \u2014 handles every ISO
   // 4217 code natively (BRL, INR, JPY, etc.). For values \u2265 1M we use the
@@ -1788,7 +1788,7 @@ function DashboardPageInner() {
     // Fallback: group the per-project rows by their own currency.
     const sums = new Map<string, number>();
     for (const row of scopedBoqSummary.by_project) {
-      const cur = row.currency || 'EUR';
+      const cur = row.currency || getFallbackCurrency();
       sums.set(cur, (sums.get(cur) ?? 0) + (Number(row.total_value) || 0));
     }
     const byCurrency: CurrencyTotal[] = Array.from(sums.entries())
@@ -2420,11 +2420,6 @@ function ProjectsList({ projects }: { projects?: ProjectSummary[] }) {
                 <FolderPlus size={16} strokeWidth={1.75} />
                 {t('dashboard.empty.cta_create', { defaultValue: 'Create project' })}
               </Button>
-              <p className="text-xs text-content-tertiary">
-                {t('dashboard.empty.demo_hint', {
-                  defaultValue: 'Or load a demo project from Settings → Demo data',
-                })}
-              </p>
             </div>
           }
         />
@@ -2507,7 +2502,7 @@ function AnalyticsSection({ projects }: { projects: ProjectSummary[] }) {
     } else {
       const sums = new Map<string, number>();
       for (const row of boqSummary.by_project) {
-        const cur = row.currency || 'EUR';
+        const cur = row.currency || getFallbackCurrency();
         sums.set(cur, (sums.get(cur) ?? 0) + (Number(row.total_value) || 0));
       }
       byCurrency = Array.from(sums.entries())
@@ -2526,7 +2521,7 @@ function AnalyticsSection({ projects }: { projects: ProjectSummary[] }) {
       const prev = valueByName.get(row.project_name);
       valueByName.set(row.project_name, {
         value: (prev?.value ?? 0) + v,
-        currency: prev?.currency ?? row.currency ?? 'EUR',
+        currency: prev?.currency ?? row.currency ?? getFallbackCurrency(),
       });
     }
     const projectValues: { name: string; value: number; currency: string }[] = Array.from(
@@ -2617,7 +2612,7 @@ function AnalyticsSection({ projects }: { projects: ProjectSummary[] }) {
             </div>
             {stats.byCurrency.length === 0 ? (
               <div className="mt-1 text-xl font-bold tabular-nums text-content-primary">
-                {fmtCompact(0, projects[0]?.currency ?? 'EUR')}
+                {fmtCompact(0, projects[0]?.currency ?? getFallbackCurrency())}
               </div>
             ) : stats.multiCurrency ? (
               <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
@@ -2634,7 +2629,7 @@ function AnalyticsSection({ projects }: { projects: ProjectSummary[] }) {
               <div className="mt-1 text-xl font-bold tabular-nums text-content-primary">
                 {fmtCompact(
                   Number(stats.byCurrency[0]?.total_value) || 0,
-                  stats.byCurrency[0]?.currency ?? 'EUR',
+                  stats.byCurrency[0]?.currency ?? getFallbackCurrency(),
                 )}
               </div>
             )}

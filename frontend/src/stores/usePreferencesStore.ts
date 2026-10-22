@@ -197,6 +197,12 @@ export function getNumberLocale(): string {
   return resolveNumberLocale(usePreferencesStore.getState().numberLocale);
 }
 
+/** The currency to show a money figure in when no project supplies one, such
+ *  as an empty dashboard: the user's own default, never a hard-coded euro. */
+export function getFallbackCurrency(): string {
+  return usePreferencesStore.getState().defaultCurrency || usePreferencesStore.getState().currency;
+}
+
 /**
  * `resolveNumberLocale` bound to all three of the things it depends on.
  *

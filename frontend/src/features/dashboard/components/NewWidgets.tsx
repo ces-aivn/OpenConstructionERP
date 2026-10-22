@@ -42,7 +42,7 @@ import {
 } from 'lucide-react';
 import { Card, CardContent, Button, Skeleton, Badge } from '@/shared/ui';
 import { useDashboardRollupContext } from '../context/DashboardRollupContext';
-import { getNumberLocale } from '@/stores/usePreferencesStore';
+import { getFallbackCurrency, getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Types ────────────────────────────────────────────────────────────── */
 
@@ -162,7 +162,7 @@ export function BOQSummaryWidget({ projects }: { projects?: ProjectRef[] }) {
     );
   }
 
-  const currency = projects?.[0]?.currency ?? 'EUR';
+  const currency = projects?.[0]?.currency ?? getFallbackCurrency();
   const pctMissingQty =
     payload.position_count > 0
       ? Math.round((payload.positions_missing_quantity / payload.position_count) * 100)
@@ -432,7 +432,7 @@ export function BudgetVarianceWidget({ projects }: { projects?: ProjectRef[] }) 
   const { isLoading, byWidget } = useDashboardRollupContext();
   const payload = byWidget('budget_variance');
 
-  const fallbackCurrency = projects?.[0]?.currency ?? 'EUR';
+  const fallbackCurrency = projects?.[0]?.currency ?? getFallbackCurrency();
 
   const title = t('dashboard.layout.w_budget', { defaultValue: 'Budget Variance' });
   const subtitle = t('dashboard.budget_subtitle', { defaultValue: 'Planned vs actual across budgets' });
@@ -496,7 +496,7 @@ export function ChangeOrdersWidget({ projects }: { projects?: ProjectRef[] }) {
   const { isLoading, byWidget } = useDashboardRollupContext();
   const payload = byWidget('change_orders');
 
-  const fallbackCurrency = projects?.[0]?.currency ?? 'EUR';
+  const fallbackCurrency = projects?.[0]?.currency ?? getFallbackCurrency();
 
   const title = t('dashboard.layout.w_changeorders', { defaultValue: 'Change Orders' });
   const subtitle = t('dashboard.change_orders_subtitle', { defaultValue: 'Open change orders and impact' });
