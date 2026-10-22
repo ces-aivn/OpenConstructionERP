@@ -15,10 +15,11 @@ is ``None`` for an admin, meaning every project, as everywhere in finance.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
@@ -26,10 +27,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.modules.finance.ageing import open_balance
+from app.modules.finance.errors import finance_error
 from app.modules.finance.payment_run_models import ACTIVE_PAYMENT_RUN_STATUSES, PaymentRun, PaymentRunItem
 from app.modules.finance.payment_runs import RunIssue, RunLine, check_run, has_errors, propose
 from app.modules.finance.schemas import PaymentCreate
 from app.modules.finance.service import FinanceService
+from app.modules.finance.settlement import round_money
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +49,59 @@ def _issue_dicts(issues: Iterable[RunIssue]) -> list[dict[str, str | None]]:
             "message": i.message,
             "item_id": i.item_id,
             "invoice_id": i.invoice_id,
+            "params": dict(i.params),
         }
         for i in issues
     ]
+
+
+#: One to three digits, a comma, exactly three digits: ``1,500`` reads as one
+#: thousand five hundred to one reader and one and a half to another.
+_AMBIGUOUS_COMMA = re.compile(r"[+-]?\d{1,3},\d{3}")
+
+
+def parse_run_amount(raw: str, currency_code: str | None = None) -> Decimal:
+    """The amount typed for one item of a run, rounded to the currency, or a coded refusal.
+
+    A comma decimal separator is accepted (``20000000,50``), the way a
+    Vietnamese or German keyboard types it; thousands separators are not,
+    because ``1.000`` is a thousand to one reader and one to another. For the
+    same reason a lone comma with one to three digits before it and exactly
+    three after (``20,000``) is refused as ambiguous rather than read as 20.00;
+    ``20000000,505`` cannot be a thousands group and stays a decimal.
+    """
+    text = str(raw or "").strip().replace(" ", "")
+    if text.count(",") == 1 and "." not in text:
+        if _AMBIGUOUS_COMMA.fullmatch(text):
+            raise finance_error(
+                "payment_amount_ambiguous",
+                (
+                    f"{raw!r} could be a thousands separator or a decimal comma; "
+                    "type the amount without thousands separators."
+                ),
+                field="amount",
+                amount=str(raw or ""),
+            )
+        text = text.replace(",", ".")
+    try:
+        parsed = Decimal(text)
+    except (InvalidOperation, ValueError):
+        raise finance_error(
+            "payment_amount_invalid",
+            f"{raw!r} is not an amount.",
+            field="amount",
+            amount=str(raw or ""),
+        ) from None
+    if not parsed.is_finite():
+        raise finance_error("payment_amount_invalid", f"{raw!r} is not an amount.", field="amount", amount=str(raw))
+    if parsed <= 0:
+        raise finance_error(
+            "payment_amount_not_positive",
+            "The amount to pay must be more than zero.",
+            field="amount",
+            amount=format(parsed, "f"),
+        )
+    return round_money(parsed, currency_code)
 
 
 class PaymentRunService:
@@ -195,21 +248,33 @@ class PaymentRunService:
                 return item
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment run item not found")
 
-    async def update_item(self, run: PaymentRun, item_id: uuid.UUID, amount: Decimal, actor_id: str | None) -> None:
-        """Pay a different amount on one invoice of a draft run, never more than is open."""
+    async def update_item(self, run: PaymentRun, item_id: uuid.UUID, amount: str, actor_id: str | None) -> None:
+        """Pay a different amount on one invoice of a draft run: more than zero, never more than is open.
+
+        ``amount`` is the text the person typed. It is read here rather than by
+        the request schema so a refusal carries a code and the field, and the
+        screen can say it in the reader's language.
+        """
         self._require_status(run, "draft")
         item = self._item(run, item_id)
+        parsed = parse_run_amount(amount, run.currency_code)
         found = await self.finance.load_ageing_invoices(invoice_ids=[item.invoice_id])
         if not found:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
         invoice = found[0]
         open_due = open_balance(invoice, as_of=run.payment_date).due
-        if amount > open_due:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=f"Invoice {invoice.invoice_number}: {amount} is more than the {open_due} still open on it.",
+        if parsed > open_due:
+            raise finance_error(
+                "payment_amount_over_open",
+                f"Invoice {invoice.invoice_number}: {parsed} is more than the {open_due} still open on it.",
+                field="amount",
+                invoice=invoice.invoice_number,
+                amount=format(parsed, "f"),
+                open=format(open_due, "f"),
+                currency=run.currency_code,
             )
-        item.amount = amount
+        item.amount = parsed
+        amount = format(parsed, "f")
         await self.session.flush()
         await self._audit(run, "item_changed", actor_id, {"invoice_id": str(item.invoice_id), "amount": str(amount)})
 
@@ -223,7 +288,13 @@ class PaymentRunService:
 
     # ── checks and transitions ─────────────────────────────────────────────
 
-    async def check(self, run: PaymentRun, *, approver: str | None = None) -> list[RunIssue]:
+    async def check(
+        self,
+        run: PaymentRun,
+        *,
+        approver: str | None = None,
+        executor: str | None = None,
+    ) -> list[RunIssue]:
         """Every reason not to pay the run as it stands now."""
         invoice_ids = [item.invoice_id for item in run.items]
         invoices = await self.finance.load_ageing_invoices(invoice_ids=invoice_ids) if invoice_ids else []
@@ -246,6 +317,7 @@ class PaymentRunService:
             taken_elsewhere=await self._taken(exclude_run_id=run.id),
             created_by=run.created_by,
             approver=approver,
+            executor=executor,
         )
         issues.extend(await self._release_issues(run))
         return issues
@@ -282,6 +354,10 @@ class PaymentRunService:
                 },
             )
 
+    async def check_execute(self, run: PaymentRun, actor_id: str | None) -> list[RunIssue]:
+        """The checks run before the payments are recorded, by ``actor_id``."""
+        return await self.check(run, executor=str(actor_id) if actor_id else None)
+
     async def approve(self, run: PaymentRun, actor_id: str | None) -> list[RunIssue]:
         """Approve a draft run once nothing blocks it; returns the warnings."""
         self._require_status(run, "draft")
@@ -303,7 +379,7 @@ class PaymentRunService:
         the same transition as paying it by hand.
         """
         self._require_status(run, "approved")
-        issues = await self.check(run)
+        issues = await self.check_execute(run, actor_id)
         self._refuse(run, issues, "paid")
         settled: list[uuid.UUID] = []
         for item in run.items:

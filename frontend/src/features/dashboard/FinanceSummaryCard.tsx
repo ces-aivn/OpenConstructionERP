@@ -80,12 +80,9 @@ export function FinanceSummaryCard() {
       <Card>
         <CardHeader title={t('dashboard.finance_summary', { defaultValue: 'Finance summary' })} />
         <CardContent>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3" aria-busy="true">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-px overflow-hidden rounded-lg border border-border-light bg-border-light" aria-busy="true">
             {[0, 1].map((i) => (
-              <div
-                key={i}
-                className="rounded-xl border border-border-light bg-surface-elevated/90 p-3"
-              >
+              <div key={i} className="bg-surface-elevated px-4 py-3">
                 <div className="h-3 w-20 rounded bg-surface-secondary animate-pulse" />
                 <div className="mt-2 h-5 w-24 rounded bg-surface-secondary animate-pulse" />
               </div>
@@ -101,7 +98,7 @@ export function FinanceSummaryCard() {
       <CardHeader
         title={
           <span className="inline-flex items-center gap-2">
-            <Wallet size={16} className="text-oe-blue" strokeWidth={1.75} />
+            <Wallet size={16} className="text-content-tertiary" strokeWidth={1.75} />
             {t('dashboard.finance_summary', { defaultValue: 'Finance summary' })}
           </span>
         }
@@ -117,25 +114,25 @@ export function FinanceSummaryCard() {
         }
       />
       <CardContent>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-px overflow-hidden rounded-lg border border-border-light bg-border-light">
           {/* Open change-order impact */}
           <button
             type="button"
             onClick={() => navigate('/changeorders')}
-            className="group rounded-xl border border-border-light bg-surface-elevated/90 p-3 text-left shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/30"
+            className="group bg-surface-elevated px-4 py-3 text-left transition-colors duration-normal ease-oe hover:bg-surface-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-oe-blue/30"
           >
-            <div className="flex items-center gap-1.5 text-2xs font-medium uppercase tracking-wider text-content-tertiary">
-              <FileEdit size={12} className="text-violet-500" />
+            <div className="flex items-center gap-1.5 text-xs font-medium text-content-secondary">
+              <FileEdit size={13} className="text-content-tertiary" />
               {t('dashboard.finance_change_orders', { defaultValue: 'Open change orders' })}
             </div>
-            <div className="mt-1 text-base font-bold text-content-primary">
+            <div className="mt-1.5 text-base font-semibold text-content-primary">
               <MoneyChips
                 chips={coChips}
                 emptyLabel={t('dashboard.finance_no_change_orders', { defaultValue: 'None open' })}
               />
             </div>
             {(changeOrders?.open_count ?? 0) > 0 && (
-              <div className="mt-0.5 text-2xs text-content-tertiary">
+              <div className="mt-1 text-xs text-content-tertiary">
                 {t('dashboard.finance_change_orders_count', {
                   defaultValue: '{{count}} pending',
                   count: changeOrders?.open_count ?? 0,
@@ -152,30 +149,25 @@ export function FinanceSummaryCard() {
                 ? navigate(`/projects/${worstOverBudget.project_id}`)
                 : navigate('/finance')
             }
-            className={[
-              'group rounded-xl border p-3 text-left shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/30',
-              overBudgetCount > 0
-                ? 'border-amber-300/60 bg-amber-50 dark:bg-amber-900/10'
-                : 'border-border-light bg-surface-elevated/90',
-            ].join(' ')}
+            className="group bg-surface-elevated px-4 py-3 text-left transition-colors duration-normal ease-oe hover:bg-surface-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-oe-blue/30"
           >
-            <div className="flex items-center gap-1.5 text-2xs font-medium uppercase tracking-wider text-content-tertiary">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-content-secondary">
               <AlertTriangle
-                size={12}
-                className={overBudgetCount > 0 ? 'text-amber-500' : 'text-content-quaternary'}
+                size={13}
+                className={overBudgetCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-content-tertiary'}
               />
               {t('dashboard.finance_budget_warnings', { defaultValue: 'Budget warnings' })}
             </div>
             <div
               className={[
-                'mt-1 text-xl font-bold tabular-nums',
-                overBudgetCount > 0 ? 'text-amber-600' : 'text-content-primary',
+                'mt-1.5 text-xl font-semibold tabular-nums leading-none',
+                overBudgetCount > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-content-primary',
               ].join(' ')}
             >
               {overBudgetCount}
             </div>
             {worstOverBudget && (
-              <div className="mt-0.5 truncate text-2xs text-content-tertiary">
+              <div className="mt-1 truncate text-xs text-content-tertiary">
                 {t('dashboard.finance_worst_over', {
                   defaultValue: '{{name}} +{{pct}}%',
                   name: worstOverBudget.project_name,

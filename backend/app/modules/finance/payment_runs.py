@@ -26,7 +26,7 @@ from __future__ import annotations
 import csv
 import io
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from app.modules.finance.ageing import POSTED_STATUSES, AgeingInvoice, OpenBalance, open_balance
@@ -60,13 +60,19 @@ class RunLine:
 
 @dataclass(frozen=True)
 class RunIssue:
-    """A finding on a run or on one of its items."""
+    """A finding on a run or on one of its items.
+
+    ``code`` is stable and ``params`` holds what its sentence names, so the
+    screen words the finding in the reader's language; ``message`` is the
+    English wording for a client that does not know the code.
+    """
 
     severity: str
     code: str
     message: str
     item_id: str | None = None
     invoice_id: str | None = None
+    params: dict[str, str] = field(default_factory=dict)
 
 
 def is_payable(invoice: AgeingInvoice) -> bool:
@@ -125,14 +131,16 @@ def check_run(
     taken_elsewhere: Iterable[str] = (),
     created_by: str | None = None,
     approver: str | None = None,
+    executor: str | None = None,
 ) -> list[RunIssue]:
     """Every reason not to pay this run as it stands.
 
     ``invoices`` maps an invoice id to its current state (with payments), and
     ``taken_elsewhere`` names invoices in another active run. ``approver`` is
-    the person about to approve; when it is the person who drew the run up the
-    result carries a warning, because paying on one person's say-so is the
-    control an accounting team most often asks a system to show.
+    the person about to approve and ``executor`` the person about to record
+    the payments. Either being the person who drew the run up is an error:
+    four eyes, as on a change order. Paying on one person's say-so is the
+    control an accounting team most often asks a system to enforce.
     """
     issues: list[RunIssue] = []
     if not lines:
@@ -141,8 +149,17 @@ def check_run(
     for line in lines:
         ref = line.invoice_number or line.invoice_id
 
-        def issue(code: str, message: str, severity: str = ERROR, _line: RunLine = line) -> None:
-            issues.append(RunIssue(severity, code, message, item_id=_line.item_id, invoice_id=_line.invoice_id))
+        def issue(code: str, message: str, severity: str = ERROR, _line: RunLine = line, **params: object) -> None:
+            issues.append(
+                RunIssue(
+                    severity,
+                    code,
+                    message,
+                    item_id=_line.item_id,
+                    invoice_id=_line.invoice_id,
+                    params={"invoice": ref, **{k: str(v) for k, v in params.items()}},
+                )
+            )
 
         if line.amount <= _ZERO:
             issue("amount_not_positive", f"Invoice {ref}: the amount to pay must be more than zero.")
@@ -156,12 +173,18 @@ def check_run(
             issue("not_a_supplier_invoice", f"Invoice {ref} is not a supplier invoice.")
             continue
         if invoice.status not in POSTED_STATUSES:
-            issue("invoice_not_payable", f"Invoice {ref} is {invoice.status}, so it cannot be paid in a run.")
+            issue(
+                "invoice_not_payable",
+                f"Invoice {ref} is {invoice.status}, so it cannot be paid in a run.",
+                status=invoice.status,
+            )
             continue
         if (invoice.currency_code or "") != currency_code:
             issue(
                 "currency_mismatch",
                 f"Invoice {ref} is in {invoice.currency_code or 'no currency'}, the run pays in {currency_code}.",
+                invoice_currency=invoice.currency_code or "",
+                run_currency=currency_code,
             )
             continue
         balance: OpenBalance = open_balance(invoice, as_of=payment_date)
@@ -169,13 +192,24 @@ def check_run(
             issue(
                 "amount_over_open",
                 f"Invoice {ref}: {line.amount} is more than the {balance.due} still open on it.",
+                amount=line.amount,
+                open=balance.due,
+                currency=currency_code,
             )
-    if created_by and approver and created_by == approver:
+    if created_by and approver and str(created_by) == str(approver):
         issues.append(
             RunIssue(
-                WARNING,
+                ERROR,
                 "same_person",
-                "The person approving this run also drew it up.",
+                "The person who drew up this run cannot approve it; another person has to (four-eyes principle).",
+            )
+        )
+    if created_by and executor and str(created_by) == str(executor):
+        issues.append(
+            RunIssue(
+                ERROR,
+                "same_person_execute",
+                "The person who drew up this run cannot record its payments; another person has to (four-eyes principle).",
             )
         )
     return issues

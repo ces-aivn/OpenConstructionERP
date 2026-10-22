@@ -207,6 +207,66 @@ async def test_generate_budget_stamps_position_native_currency(monkeypatch: pyte
     assert by_position[p_plain.id].currency == "EUR"
 
 
+def _with_markups(
+    monkeypatch: pytest.MonkeyPatch, service: CostModelService, markups: list, budgeted: list[dict] | None = None
+) -> None:
+    """Price the bill's markups as given and report ``budgeted`` as markup lines already on the budget."""
+    import app.modules.finance.boq_budget as boq_budget
+
+    async def _bill_markups(_session: object, _boq_id: uuid.UUID) -> list:
+        return list(markups)
+
+    monkeypatch.setattr(boq_budget, "bill_markups", _bill_markups)
+
+    rows = list(budgeted or [])
+
+    class _Result:
+        def scalars(self) -> list[dict]:
+            return rows
+
+    async def _execute(_stmt: object) -> _Result:
+        return _Result()
+
+    service.session.execute = _execute  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_generate_budget_adds_a_line_per_markup_so_the_budget_is_the_bill_before_vat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.finance.boq_budget import BillMarkup
+
+    p1 = _position("1000")
+    service, _repo = _make_service(monkeypatch, positions=[p1])
+    overhead = BillMarkup(markup_id=uuid.uuid4(), name="Overhead 10%", category="overhead", amount=Decimal("100"))
+    profit = BillMarkup(markup_id=uuid.uuid4(), name="Profit 5%", category="profit", amount=Decimal("55"))
+    _with_markups(monkeypatch, service, [overhead, profit])
+
+    created = await service.generate_budget_from_boq(_PROJECT_ID, _BOQ_ID)
+
+    assert sum(Decimal(line.planned_amount) for line in created) == Decimal("1155")
+    markup_lines = [line for line in created if line.boq_position_id is None]
+    assert {line.category for line in markup_lines} == {"overhead", "profit"}
+    assert {line.metadata_["boq_markup_id"] for line in markup_lines} == {
+        str(overhead.markup_id),
+        str(profit.markup_id),
+    }
+    assert all(line.currency == "EUR" for line in markup_lines)
+
+
+@pytest.mark.asyncio
+async def test_generate_budget_does_not_add_a_markup_that_is_already_budgeted(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.modules.finance.boq_budget import BillMarkup
+
+    p1 = _position("1000")
+    service, repo = _make_service(monkeypatch, positions=[p1])
+    repo.existing = {p1.id}
+    overhead = BillMarkup(markup_id=uuid.uuid4(), name="Overhead", category="overhead", amount=Decimal("100"))
+    _with_markups(monkeypatch, service, [overhead], budgeted=[{"boq_markup_id": str(overhead.markup_id)}])
+
+    assert await service.generate_budget_from_boq(_PROJECT_ID, _BOQ_ID) == []
+
+
 # ── Blocker 2: progress -> earned value ───────────────────────────────────
 
 
@@ -299,6 +359,11 @@ async def test_record_entry_triggers_earned_value_sync(monkeypatch: pytest.Monke
             return entry
 
     progress_service.repo = _FakeProgressRepo()
+
+    async def _in_project(project_id: uuid.UUID, boq_position_id: uuid.UUID) -> None:
+        return None
+
+    progress_service._require_project_position = _in_project  # type: ignore[method-assign]
 
     position_id = uuid.uuid4()
     data = ProgressEntryCreate(

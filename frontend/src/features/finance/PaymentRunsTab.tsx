@@ -1,6 +1,7 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -9,7 +10,8 @@ import clsx from 'clsx';
 import { Badge, Button, Card, ConfirmDialog, EmptyState, RecoveryCard, SkeletonTable } from '@/shared/ui';
 import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
-import { ApiError } from '@/shared/lib/api';
+import { ApiError, extractErrorMessageFromBody } from '@/shared/lib/api';
+import { formatCurrency } from '@/shared/lib/money';
 import { todayLocalISO } from '@/shared/lib/dates';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { useToastStore } from '@/stores/useToastStore';
@@ -28,6 +30,9 @@ function isForbidden(err: unknown): boolean {
 
 function errorText(err: unknown): string {
   if (err instanceof ApiError) {
+    // A coded refusal is worded in the reader's language (api_errors.<code>).
+    const worded = extractErrorMessageFromBody(err.body);
+    if (worded) return worded;
     const detail = (err.body as { detail?: unknown } | undefined)?.detail;
     if (typeof detail === 'string') return detail;
     if (detail && typeof detail === 'object' && typeof (detail as { message?: unknown }).message === 'string') {
@@ -57,8 +62,72 @@ function statusVariant(status: PaymentRunStatus): 'neutral' | 'blue' | 'success'
   return 'neutral';
 }
 
+/**
+ * A finding in the reader's language, filled from the figures the server sent
+ * with it. A code this build has no sentence for falls back to the server's
+ * English message rather than to nothing.
+ */
+export function runIssueText(t: TFunction, issue: PaymentRunIssue): string {
+  // A server that sends no figures with its findings gets its own sentence shown.
+  if (!issue.params) return issue.message;
+  const p = issue.params;
+  const invoice = p.invoice ?? '';
+  switch (issue.code) {
+    case 'empty_run':
+      return t('finance.payrun_issue_empty_run', { defaultValue: 'The run has no invoices to pay.' });
+    case 'amount_not_positive':
+      return t('finance.payrun_issue_amount_not_positive', {
+        defaultValue: 'Invoice {{invoice}}: the amount to pay must be more than zero.',
+        invoice,
+      });
+    case 'invoice_missing':
+      return t('finance.payrun_issue_invoice_missing', { defaultValue: 'Invoice {{invoice}} no longer exists.', invoice });
+    case 'in_another_run':
+      return t('finance.payrun_issue_in_another_run', {
+        defaultValue: 'Invoice {{invoice}} is also in another payment run that is not yet paid.',
+        invoice,
+      });
+    case 'not_a_supplier_invoice':
+      return t('finance.payrun_issue_not_a_supplier_invoice', {
+        defaultValue: 'Invoice {{invoice}} is not a supplier invoice.',
+        invoice,
+      });
+    case 'invoice_not_payable':
+      return t('finance.payrun_issue_invoice_not_payable', {
+        defaultValue: 'Invoice {{invoice}} is {{status}}, so it cannot be paid in a run.',
+        invoice,
+        status: t(`finance.status_${p.status ?? ''}`, { defaultValue: p.status ?? '' }),
+      });
+    case 'currency_mismatch':
+      return t('finance.payrun_issue_currency_mismatch', {
+        defaultValue: 'Invoice {{invoice}} is in {{invoiceCurrency}}, the run pays in {{runCurrency}}.',
+        invoice,
+        invoiceCurrency: p.invoice_currency || '-',
+        runCurrency: p.run_currency ?? '',
+      });
+    case 'amount_over_open':
+      return t('finance.payrun_issue_amount_over_open', {
+        defaultValue: 'Invoice {{invoice}}: {{amount}} is more than the {{open}} still open on it.',
+        invoice,
+        amount: formatCurrency(p.amount ?? '0', p.currency),
+        open: formatCurrency(p.open ?? '0', p.currency),
+      });
+    case 'same_person':
+      return t('finance.payrun_issue_same_person', {
+        defaultValue: 'You drew up this run, so another person has to approve it (four-eyes principle).',
+      });
+    case 'same_person_execute':
+      return t('finance.payrun_issue_same_person_execute', {
+        defaultValue: 'You drew up this run, so another person has to record its payments (four-eyes principle).',
+      });
+    default:
+      return issue.message;
+  }
+}
+
 /** Findings of a run: errors first, each naming its invoice. */
 function IssueList({ issues }: { issues: PaymentRunIssue[] }) {
+  const { t } = useTranslation();
   if (issues.length === 0) return null;
   const ordered = [...issues].sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'error' ? -1 : 1));
   return (
@@ -78,7 +147,7 @@ function IssueList({ issues }: { issues: PaymentRunIssue[] }) {
           ) : (
             <AlertTriangle size={15} className="mt-0.5 shrink-0" />
           )}
-          <span>{issue.message}</span>
+          <span>{runIssueText(t, issue)}</span>
         </li>
       ))}
     </ul>
@@ -123,6 +192,9 @@ function RunDetail({ runId }: { runId: string }) {
   const addToast = useToastStore((s) => s.addToast);
   const { confirm, ...confirmProps } = useConfirm();
   const [refused, setRefused] = useState<PaymentRunIssue[] | null>(null);
+  // Bumped when an amount is refused, so the amount fields show the stored
+  // figures again instead of the refused entry.
+  const [amountResets, setAmountResets] = useState(0);
 
   const runQ = useQuery({ queryKey: [...RUNS_KEY, runId], queryFn: () => paymentRunsApi.get(runId) });
 
@@ -143,7 +215,8 @@ function RunDetail({ runId }: { runId: string }) {
     onSuccess: settle,
     onError: (err) => {
       fail(err);
-      runQ.refetch();
+      setAmountResets((n) => n + 1);
+      void runQ.refetch();
     },
   });
   const removeItem = useMutation({
@@ -254,6 +327,7 @@ function RunDetail({ runId }: { runId: string }) {
                 <td className="px-3 py-2 text-right">
                   {draft ? (
                     <AmountCell
+                      key={`${item.id}-${amountResets}`}
                       value={item.amount}
                       disabled={busy}
                       label={t('finance.payrun_amount_for', {
@@ -345,6 +419,7 @@ function RunDetail({ runId }: { runId: string }) {
                   defaultValue: 'Nothing is paid, and its invoices can go into another run.',
                 }),
                 confirmLabel: t('finance.payrun_cancel', { defaultValue: 'Cancel run' }),
+                variant: 'warning',
               });
               if (ok) cancel.mutate();
             }}
@@ -353,7 +428,9 @@ function RunDetail({ runId }: { runId: string }) {
           </Button>
         )}
       </div>
-      <ConfirmDialog {...confirmProps} />
+      {/* On the page body: the card is a transformed box, which would hold a
+          fixed-position dialog inside it and cut it off at the card's edges. */}
+      {createPortal(<ConfirmDialog {...confirmProps} />, document.body)}
     </Card>
   );
 }

@@ -34,6 +34,7 @@ import io
 import logging
 import uuid
 from collections.abc import Iterable
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -129,11 +130,13 @@ from app.modules.finance.schemas import (
     RecordClaimPaymentRequest,
     RetentionLedgerResponse,
     RetentionRollupResponse,
+    SettleInvoiceRequest,
     StatementLineResponse,
     TrialBalanceResponse,
     TrialBalanceRow,
 )
-from app.modules.finance.service import FinanceService
+from app.modules.finance.service import FinanceService, invoice_settlement
+from app.modules.finance.settlement import InvoiceSettlement
 from app.modules.finance.variance import budget_variance
 
 router = APIRouter(tags=["finance"])
@@ -198,10 +201,21 @@ async def _fetch_counterparty_names(session: AsyncSession, contact_ids: Iterable
     return {str(c.id): _contact_display_name(c) for c in rows}
 
 
-def _invoice_to_response(invoice: Invoice, names: dict[str, str]) -> InvoiceResponse:
+def _invoice_to_response(
+    invoice: Invoice,
+    names: dict[str, str],
+    position: InvoiceSettlement | None = None,
+) -> InvoiceResponse:
     resp = InvoiceResponse.model_validate(invoice)
     if invoice.contact_id:
         resp.counterparty_name = names.get(invoice.contact_id)
+    # Paid, open and the payment status from the invoice's own payments, so
+    # every screen reads one answer to "how much is still owed on this".
+    position = position or invoice_settlement(invoice)
+    resp.amount_paid = format(position.paid, "f")
+    resp.amount_withheld = format(position.withheld, "f")
+    resp.amount_open = format(position.open, "f")
+    resp.payment_status = position.payment_status
     return resp
 
 
@@ -2889,6 +2903,37 @@ async def pay_invoice(
     )
     names = await _fetch_counterparty_names(session, [invoice.contact_id])
     return _invoice_to_response(invoice, names)
+
+
+@router.post(
+    "/{invoice_id}/settle/",
+    response_model=InvoiceResponse,
+    summary="Mark invoice as paid for the amount still open",
+    description="Record one payment for what is still open on an approved invoice (never its full total "
+    "after a partial payment), holding back the retention not yet withheld, then mark it paid. One "
+    "transaction. MANAGER-only. Idempotent per invoice: a retry finds the payment already made.",
+)
+async def settle_invoice(
+    invoice_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    data: SettleInvoiceRequest | None = None,
+    _perm: None = Depends(RequirePermission("finance.pay")),
+    service: FinanceService = Depends(_get_service),
+) -> InvoiceResponse:
+    """Settle the open amount of an invoice and mark it paid."""
+    allowed, _ = approval_limiter.is_allowed(str(user_id))
+    if not allowed:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Rate limit exceeded. Try again later.")
+    await _require_invoice_access(session, invoice_id, user_id)
+    payment_date = (data.payment_date if data else None) or date.today().isoformat()
+    invoice = await service.settle_invoice(
+        invoice_id,
+        payment_date=payment_date,
+        actor_id=str(user_id) if user_id else None,
+    )
+    names = await _fetch_counterparty_names(session, [invoice.contact_id])
+    return _invoice_to_response(invoice, names, await service.settlement_for(invoice))
 
 
 # ── GAAP general ledger + financial reporting (task #77) ────────────────────

@@ -118,6 +118,7 @@ async def _to_responses(
                         message=x.message,
                         item_id=x.item_id,
                         invoice_id=x.invoice_id,
+                        params=dict(x.params),
                     )
                     for x in (issues or {}).get(run.id, [])
                 ],
@@ -127,11 +128,26 @@ async def _to_responses(
 
 
 async def _one(
-    session: SessionDep, service: PaymentRunService, run: PaymentRun, issues: list[RunIssue] | None = None
+    session: SessionDep,
+    service: PaymentRunService,
+    run: PaymentRun,
+    issues: list[RunIssue] | None = None,
+    viewer: str | None = None,
 ) -> PaymentRunResponse:
-    """A run with its findings: the given ones, or a fresh check while it can still change."""
+    """A run with its findings: the given ones, or a fresh check while it can still change.
+
+    The fresh check is made for ``viewer`` as the next actor (the approver of a
+    draft, the person recording an approved run's payments), so the person who
+    drew the run up sees before clicking that someone else has to take the next step.
+    """
     if issues is None:
-        issues = await service.check(run) if run.status in ("draft", "approved") else []
+        actor = str(viewer) if viewer else None
+        if run.status == "draft":
+            issues = await service.check(run, approver=actor)
+        elif run.status == "approved":
+            issues = await service.check(run, executor=actor)
+        else:
+            issues = []
     (resp,) = await _to_responses(session, [run], {run.id: issues})
     return resp
 
@@ -186,7 +202,7 @@ async def create_payment_run(
         project_ids=await accessible_project_ids(session, user_id),
         actor_id=user_id,
     )
-    return await _one(session, service, run)
+    return await _one(session, service, run, viewer=user_id)
 
 
 @payment_run_router.get("/{run_id}", response_model=PaymentRunResponse, summary="Get a payment run")
@@ -197,7 +213,7 @@ async def get_payment_run(
     _perm: None = Depends(RequirePermission("finance.read")),
 ) -> PaymentRunResponse:
     service, run = await _load(session, run_id, user_id)
-    return await _one(session, service, run)
+    return await _one(session, service, run, viewer=user_id)
 
 
 @payment_run_router.patch(
@@ -212,8 +228,8 @@ async def update_payment_run_item(
     _perm: None = Depends(RequirePermission("finance.record_payment")),
 ) -> PaymentRunResponse:
     service, run = await _load(session, run_id, user_id)
-    await service.update_item(run, item_id, Decimal(data.amount), user_id)
-    return await _one(session, service, run)
+    await service.update_item(run, item_id, data.amount, user_id)
+    return await _one(session, service, run, viewer=user_id)
 
 
 @payment_run_router.delete(
@@ -228,7 +244,7 @@ async def remove_payment_run_item(
 ) -> PaymentRunResponse:
     service, run = await _load(session, run_id, user_id)
     await service.remove_item(run, item_id, user_id)
-    return await _one(session, service, run)
+    return await _one(session, service, run, viewer=user_id)
 
 
 @payment_run_router.post("/{run_id}/approve/", response_model=PaymentRunResponse, summary="Approve a payment run")

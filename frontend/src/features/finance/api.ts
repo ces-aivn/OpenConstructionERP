@@ -586,6 +586,8 @@ export interface PaymentRunIssue {
   message: string;
   item_id: string | null;
   invoice_id: string | null;
+  /** The figures the finding's sentence names (invoice, amount, open, currency, status...). */
+  params?: Record<string, string>;
 }
 
 export interface PaymentRunItem {

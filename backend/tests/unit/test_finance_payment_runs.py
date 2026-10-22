@@ -147,12 +147,42 @@ def test_a_zero_amount_blocks() -> None:
     assert "amount_not_positive" in codes(issues)
 
 
-def test_approving_your_own_run_is_a_warning_not_a_block() -> None:
+def test_approving_your_own_run_is_blocked() -> None:
     issues = check_run(
         [line()], currency_code="CAD", payment_date=PAY_ON, invoices={"i1": inv()}, created_by="u1", approver="u1"
     )
     assert codes(issues) == {"same_person"}
-    assert not has_errors(issues)
+    assert has_errors(issues)
+
+
+def test_recording_the_payments_of_your_own_run_is_blocked() -> None:
+    issues = check_run(
+        [line()], currency_code="CAD", payment_date=PAY_ON, invoices={"i1": inv()}, created_by="u1", executor="u1"
+    )
+    assert codes(issues) == {"same_person_execute"}
+    assert has_errors(issues)
+
+
+def test_another_person_may_approve_and_record() -> None:
+    issues = check_run(
+        [line()],
+        currency_code="CAD",
+        payment_date=PAY_ON,
+        invoices={"i1": inv()},
+        created_by="u1",
+        approver="u2",
+        executor="u3",
+    )
+    assert issues == []
+
+
+def test_an_over_open_finding_carries_what_its_sentence_names() -> None:
+    (issue,) = check_run([line(amount="999999")], currency_code="CAD", payment_date=PAY_ON, invoices={"i1": inv()})
+    assert issue.code == "amount_over_open"
+    assert issue.params["amount"] == "999999"
+    assert issue.params["currency"] == "CAD"
+    assert issue.params["invoice"]
+    assert "open" in issue.params
 
 
 def test_findings_name_the_item_they_belong_to() -> None:

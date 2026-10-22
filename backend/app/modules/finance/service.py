@@ -29,6 +29,7 @@ from app.modules.finance.ageing import (
     AgeingReport,
     build_ageing,
 )
+from app.modules.finance.errors import finance_error
 from app.modules.finance.models import (
     EVM_SNAPSHOT_SOURCE_SCHEDULE_PROGRESS,
     EVMSnapshot,
@@ -70,6 +71,13 @@ from app.modules.finance.schemas import (
     LedgerEntryCreate,
     PaymentCreate,
     RecordClaimPaymentRequest,
+)
+from app.modules.finance.settlement import (
+    InvoiceSettlement,
+    SettlementPayment,
+    in_invoice_currency,
+    settle,
+    to_decimal,
 )
 
 logger = logging.getLogger(__name__)
@@ -468,6 +476,67 @@ def _q2(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def invoice_settlement(invoice: Any, payments: Iterable[Any] | None = None) -> InvoiceSettlement:
+    """The settled and open position of an invoice row, from its payments.
+
+    ``payments`` defaults to the invoice's loaded ``payments`` relationship;
+    pass them explicitly when they were read separately.
+    """
+    rows = invoice.payments if payments is None else payments
+    return settle(
+        total=getattr(invoice, "amount_total", 0),
+        status=getattr(invoice, "status", "") or "",
+        currency_code=getattr(invoice, "currency_code", "") or "",
+        payments=[
+            SettlementPayment(
+                amount=getattr(p, "amount", 0),
+                withholding=getattr(p, "withholding_amount", 0),
+                is_refund=bool(getattr(p, "is_refund", False)),
+                currency_code=getattr(p, "currency_code", "") or "",
+                exchange_rate=getattr(p, "exchange_rate_snapshot", None),
+            )
+            for p in rows or ()
+        ],
+        retention=getattr(invoice, "retention_amount", 0),
+    )
+
+
+def _iso_day(value: object) -> date | None:
+    text = str(value or "").strip()[:10]
+    try:
+        return date.fromisoformat(text) if text else None
+    except ValueError:
+        return None
+
+
+def _refuse_due_before_issue(invoice_date: object, due_date: object) -> None:
+    """Refuse a due date before the invoice date: such an invoice is overdue the day it is entered."""
+    issued = _iso_day(invoice_date)
+    due = _iso_day(due_date)
+    if issued is not None and due is not None and due < issued:
+        raise finance_error(
+            "invoice_due_before_issue",
+            f"The due date {due.isoformat()} is before the invoice date {issued.isoformat()}.",
+            field="due_date",
+            due_date=due.isoformat(),
+            invoice_date=issued.isoformat(),
+        )
+
+
+def _refuse_retention_over_total(retention: object, total: object) -> None:
+    """Refuse a retention larger than the invoice it is held back from."""
+    held = to_decimal(retention)
+    gross = to_decimal(total)
+    if held > gross:
+        raise finance_error(
+            "invoice_retention_exceeds_total",
+            f"The retention {format(held, 'f')} is more than the invoice total {format(gross, 'f')}.",
+            field="retention_amount",
+            retention=format(held, "f"),
+            total=format(gross, "f"),
+        )
+
+
 def compute_payment_withholding(
     gross: object,
     *,
@@ -830,6 +899,7 @@ class FinanceService:
                 )
         else:
             invoice_number = await self.invoices.next_invoice_number(data.project_id, data.invoice_direction)
+        _refuse_due_before_issue(data.invoice_date, data.due_date)
 
         # A total the caller asserted is kept and checked; one it left out is
         # derived. Silently replacing an asserted total is what hid #466: the
@@ -848,6 +918,7 @@ class FinanceService:
             if asserted_total is not None
             else _compute_invoice_total(data.amount_subtotal, data.tax_amount)
         )
+        _refuse_retention_over_total(data.retention_amount, computed_total)
 
         if data.purchase_order_id is not None:
             await self._check_po_link(
@@ -1018,6 +1089,11 @@ class FinanceService:
         fields = data.model_dump(exclude_unset=True, exclude={"line_items"})
         if "metadata" in fields:
             fields["metadata_"] = fields.pop("metadata")
+        if "invoice_date" in fields or "due_date" in fields:
+            _refuse_due_before_issue(
+                fields.get("invoice_date", invoice.invoice_date),
+                fields.get("due_date", invoice.due_date),
+            )
 
         # Validate status transition if status is being changed
         if "status" in fields and fields["status"] is not None:
@@ -1077,6 +1153,11 @@ class FinanceService:
         # comes without a total still has to leave the invoice adding up.
         if asserted_total is None and ("amount_subtotal" in fields or "tax_amount" in fields):
             fields["amount_total"] = _compute_invoice_total(new_subtotal, new_tax)
+        if "retention_amount" in fields or "amount_total" in fields:
+            _refuse_retention_over_total(
+                fields.get("retention_amount", getattr(invoice, "retention_amount", "0")),
+                fields.get("amount_total", getattr(invoice, "amount_total", "0")),
+            )
 
         # Linking (or relinking) to an order is allowed at any status: it moves
         # no money, it only says which commitment the money belongs to.
@@ -1212,6 +1293,76 @@ class FinanceService:
         except ImportError:  # pragma: no cover - procurement is optional for finance
             return
         await check_payment_release(self.session, po_id, invoice_ref=getattr(invoice, "invoice_number", "") or "")
+        await self._check_three_way_match(invoice, po_id)
+
+    async def match_against_receipts(self, invoice: Invoice, po_id: uuid.UUID | None = None) -> list[dict[str, str]]:
+        """What a supplier invoice bills ahead of the goods received on its order.
+
+        The three-way match of invoice, order and goods receipts, by quantity
+        per order line: every invoice on the order counts, this one included,
+        against what confirmed goods receipts brought in. An invoice entered as
+        one sum, with no line naming an order line, is weighed by value at the
+        order's rates instead. Silent until the order has a confirmed receipt,
+        so an order for services or one whose deliveries are not booked here is
+        never held up. The arithmetic is procurement's own
+        (``procurement.validators``), the same the invoice form warns with.
+
+        Returns one ``{code, line, invoiced, received}`` per mismatch, empty
+        when the invoice is covered or names no order.
+        """
+        if getattr(invoice, "invoice_direction", None) != "payable":
+            return []
+        po_id = po_id or invoice_po_link(getattr(invoice, "purchase_order_id", None), invoice.metadata_)
+        if po_id is None:
+            return []
+        try:
+            from app.modules.procurement.service import ProcurementService
+            from app.modules.procurement.validators import (
+                check_invoice_quantity_received,
+                check_invoice_value_received,
+            )
+        except ImportError:  # pragma: no cover - procurement is optional for finance
+            return []
+        payload = await ProcurementService(self.session).invoice_match_payload(
+            po_id,
+            invoice_net=invoice.amount_subtotal,
+            lines=[{"description": li.description, "quantity": str(li.quantity)} for li in invoice.line_items or []],
+            exclude_invoice_id=invoice.id,
+            invoice_ref=invoice.invoice_number,
+        )
+        out: list[dict[str, str]] = []
+        for finding in check_invoice_quantity_received(payload):
+            out.append({"code": "invoice_exceeds_goods_received", **finding.params})
+        for finding in check_invoice_value_received(payload):
+            out.append(
+                {"code": "invoice_value_exceeds_goods_received", "line": finding.params.get("po", ""), **finding.params}
+            )
+        return out
+
+    async def _check_three_way_match(self, invoice: Invoice, po_id: uuid.UUID) -> None:
+        """Refuse to release a supplier invoice that bills more than was received.
+
+        An invoice for 200 panels when 150 have been received waits until the
+        rest is received or the invoice is corrected; releasing it would pay for
+        goods that are not on site.
+        """
+        mismatches = await self.match_against_receipts(invoice, po_id)
+        if not mismatches:
+            return
+        first = mismatches[0]
+        raise finance_error(
+            first["code"],
+            (
+                f"Invoice {invoice.invoice_number} bills {first.get('invoiced', '')} on {first.get('line', '')}, "
+                f"but only {first.get('received', '')} has been received. Record the goods receipt or correct the "
+                "invoice before releasing it."
+            ),
+            field="line_items",
+            invoice=invoice.invoice_number,
+            line=first.get("line", ""),
+            invoiced=first.get("invoiced", ""),
+            received=first.get("received", ""),
+        )
 
     async def approve_invoice(
         self,
@@ -1779,6 +1930,180 @@ class FinanceService:
 
     # ── Payments ─────────────────────────────────────────────────────────────
 
+    # ── Open amounts (what is still owed per invoice and per project) ─────────
+
+    async def invoice_settlements(
+        self,
+        *,
+        project_id: uuid.UUID | None = None,
+        project_ids: set[uuid.UUID] | None = None,
+        invoice_ids: list[uuid.UUID] | None = None,
+        direction: str | None = None,
+    ) -> dict[uuid.UUID, InvoiceSettlement]:
+        """The settled and open position of every invoice in scope, keyed by invoice id.
+
+        ``open`` is the invoice total less what its payments settled (cash and
+        the retainage they held back), never below zero, and zero for a paid,
+        cancelled or credit-noted invoice; see :mod:`app.modules.finance.settlement`.
+        Read fresh from the database, so a payment written earlier in the same
+        transaction counts. ``project_ids`` is an accessible-projects scope; an
+        empty set reads nothing.
+        """
+        rows = await self.invoices.settlement_rows(
+            project_id=project_id, project_ids=project_ids, invoice_ids=invoice_ids, direction=direction
+        )
+        return {
+            row["id"]: settle(
+                total=row["amount_total"],
+                status=row["status"],
+                currency_code=row["currency_code"],
+                payments=[SettlementPayment(*pay) for pay in row["payments"]],
+                retention=row["retention_amount"],
+            )
+            for row in rows
+        }
+
+    async def open_amounts_by_project(
+        self,
+        *,
+        project_id: uuid.UUID | None = None,
+        project_ids: set[uuid.UUID] | None = None,
+        direction: str = "payable",
+    ) -> dict[uuid.UUID, dict[str, Decimal]]:
+        """What is still open per project and currency: ``{project_id: {currency: amount}}``.
+
+        The sum over the project's invoices of the given ``direction``
+        (``payable`` by default, the supplier invoices) of each invoice's open
+        amount, i.e. invoice total minus the payments allocated to it. Drafts
+        count, as on the finance dashboard; settled invoices contribute
+        nothing. Currencies are never blended. A project with nothing open is
+        absent from the result.
+        """
+        rows = await self.invoices.settlement_rows(project_id=project_id, project_ids=project_ids, direction=direction)
+        out: dict[uuid.UUID, dict[str, Decimal]] = {}
+        for row in rows:
+            position = settle(
+                total=row["amount_total"],
+                status=row["status"],
+                currency_code=row["currency_code"],
+                payments=[SettlementPayment(*pay) for pay in row["payments"]],
+                retention=row["retention_amount"],
+            )
+            if position.open <= 0:
+                continue
+            per_currency = out.setdefault(row["project_id"], {})
+            code = row["currency_code"]
+            per_currency[code] = per_currency.get(code, Decimal("0")) + position.open
+        return out
+
+    async def settlement_for(self, invoice: Invoice) -> InvoiceSettlement:
+        """The settled and open position of one invoice, from its payments read fresh.
+
+        Read through the payments repository rather than the invoice's loaded
+        ``payments`` collection, which does not see a payment written earlier
+        in the same session.
+        """
+        payments: list[Any] = []
+        while True:
+            page, total = await self.payments_repo.list(invoice_id=invoice.id, limit=500, offset=len(payments))
+            payments.extend(page)
+            if not page or len(payments) >= total:
+                break
+        return invoice_settlement(invoice, payments=payments)
+
+    async def _refuse_beyond_open(
+        self,
+        invoice: Invoice,
+        gross: Decimal,
+        *,
+        position: InvoiceSettlement | None = None,
+    ) -> None:
+        """Refuse a payment that would settle more than is left on the invoice.
+
+        Measured against the arithmetic (total less what is settled), not the
+        status, so the cash of an invoice closed as paid without a payment row
+        can still be recorded afterwards, up to its total and no further.
+        """
+        position = position or await self.settlement_for(invoice)
+        remaining = max(position.total - position.settled, Decimal("0"))
+        if gross <= 0:
+            raise finance_error(
+                "payment_amount_not_positive",
+                "The amount to pay must be more than zero.",
+                field="amount",
+            )
+        if gross > remaining:
+            raise finance_error(
+                "payment_amount_over_open",
+                (
+                    f"Invoice {invoice.invoice_number}: {gross} is more than the {remaining} "
+                    f"{position.currency_code} still open on it."
+                ).strip(),
+                field="amount",
+                invoice=invoice.invoice_number,
+                amount=format(gross, "f"),
+                open=format(remaining, "f"),
+                currency=position.currency_code,
+            )
+
+    async def settle_invoice(
+        self,
+        invoice_id: uuid.UUID,
+        *,
+        payment_date: str,
+        actor_id: str | None = None,
+    ) -> Invoice:
+        """Mark an invoice paid: record a payment for what is still open, then close it.
+
+        The payment is the open amount only, never the invoice total: after a
+        partial payment of 20,000,000 on a 54,750,109.50 invoice it records
+        34,750,109.50. Retention the invoice schedules and no payment has held
+        back yet is held back on this payment. An invoice already settled in
+        full by its payments records nothing more. Keyed on the invoice, so a
+        retried request finds the payment already made instead of paying twice.
+        One transaction: the payment and the status move together or not at all.
+        """
+        invoice = await self.get_invoice(invoice_id)
+        if invoice.status not in ("approved", "sent"):
+            raise finance_error(
+                "invoice_not_payable",
+                f"Invoice {invoice.invoice_number} is {invoice.status}; approve it before marking it paid.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                field="status",
+                invoice=invoice.invoice_number,
+                status=invoice.status,
+            )
+        await self._check_payment_release(invoice)
+        position = await self.settlement_for(invoice)
+        if position.open > 0:
+            invoice_number = invoice.invoice_number
+            try:
+                await self.record_payment_with_withholding(
+                    invoice_id,
+                    RecordClaimPaymentRequest(
+                        payment_date=payment_date,
+                        amount=format(position.cash_to_settle, "f"),
+                        withholding_amount=format(position.retention_to_withhold, "f"),
+                        currency_code=invoice.currency_code or "",
+                        reference=invoice_number,
+                        idempotency_key=f"markpaid:{invoice_id}",
+                    ),
+                    actor_id=actor_id,
+                )
+            except IntegrityError as exc:
+                # A second click (or a second tab) settling the same invoice at
+                # the same moment: both found no payment yet, and the unique
+                # idempotency key let only the first one write it.
+                await self.session.rollback()
+                raise finance_error(
+                    "invoice_settle_in_progress",
+                    f"Invoice {invoice_number} is already being marked paid; reload it to see the payment.",
+                    status_code=status.HTTP_409_CONFLICT,
+                    field="status",
+                    invoice=invoice_number,
+                ) from exc
+        return await self.pay_invoice(invoice_id, actor_id=actor_id, reason="Marked paid for the amount still open")
+
     async def create_payment(
         self,
         data: PaymentCreate,
@@ -1792,7 +2117,8 @@ class FinanceService:
            return that row without writing a duplicate.
         2. Currency normalization: if the payment currency differs from the
            invoice currency, an explicit FX rate (exchange_rate_snapshot != "1")
-           must be provided - prevents silent silent currency confusion.
+           must be provided - prevents silent currency confusion. The payment
+           then counts at ``amount x rate`` in the invoice currency.
         3. Refund guard: total refunds cannot exceed total forward payments
            (net_paid >= 0).
         4. Withholding: this path records cash only. A payment that holds back
@@ -1829,27 +2155,49 @@ class FinanceService:
             )
 
         # ── 2. Currency normalization ─────────────────────────────────────────
+        # A payment in another currency counts against the invoice at its own
+        # rate (units of the invoice currency per one unit of the payment
+        # currency), in the open amount, the refund guard and the over-payment
+        # check alike. The default rate of 1 between two currencies is no rate.
         inv_currency = getattr(invoice, "currency_code", "") or ""
         pay_currency = data.currency_code or ""
         fx_rate = _safe_decimal(data.exchange_rate_snapshot, Decimal("1"))
-        if inv_currency and pay_currency and inv_currency != pay_currency:
-            if fx_rate == Decimal("1"):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        f"Payment currency '{pay_currency}' differs from invoice "
-                        f"currency '{inv_currency}' - supply an explicit "
-                        f"exchange_rate_snapshot != '1'."
-                    ),
-                )
+        if inv_currency and pay_currency and inv_currency != pay_currency and fx_rate == Decimal("1"):
+            raise finance_error(
+                "payment_exchange_rate_missing",
+                (
+                    f"Payment currency {pay_currency} differs from invoice currency {inv_currency}; "
+                    f"supply exchange_rate_snapshot, the {inv_currency} amount of one {pay_currency}."
+                ),
+                field="exchange_rate_snapshot",
+                payment_currency=pay_currency,
+                invoice_currency=inv_currency,
+            )
+
+        def _in_invoice_currency(value: object, currency: str | None, rate: object) -> Decimal:
+            return in_invoice_currency(
+                value, payment_currency=currency, exchange_rate=rate, invoice_currency=inv_currency
+            )
+
+        amount_in_invoice_currency = _in_invoice_currency(data.amount, pay_currency, fx_rate)
 
         # ── 3. Refund guard ───────────────────────────────────────────────────
         if data.is_refund:
             all_payments, _ = await self.payments_repo.list(invoice_id=data.invoice_id)
-            total_forward = sum(_safe_decimal(p.amount) for p in all_payments if not getattr(p, "is_refund", False))
-            total_refunds = sum(_safe_decimal(p.amount) for p in all_payments if getattr(p, "is_refund", False))
-            refund_amount = _safe_decimal(data.amount)
-            if total_forward - total_refunds - refund_amount < Decimal("0"):
+            in_invoice = [
+                (
+                    bool(getattr(p, "is_refund", False)),
+                    _in_invoice_currency(
+                        getattr(p, "amount", 0),
+                        getattr(p, "currency_code", None),
+                        getattr(p, "exchange_rate_snapshot", None),
+                    ),
+                )
+                for p in all_payments
+            ]
+            total_forward = sum((amount for refund, amount in in_invoice if not refund), Decimal("0"))
+            total_refunds = sum((amount for refund, amount in in_invoice if refund), Decimal("0"))
+            if total_forward - total_refunds - amount_in_invoice_currency < Decimal("0"):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=(
@@ -1858,6 +2206,8 @@ class FinanceService:
                         f"Net paid cannot go negative."
                     ),
                 )
+        else:
+            await self._refuse_beyond_open(invoice, amount_in_invoice_currency)
 
         payment = Payment(
             invoice_id=data.invoice_id,
@@ -2430,20 +2780,28 @@ class FinanceService:
                 ),
             )
 
-        inv_total = _safe_decimal(invoice.amount_total)
-        inv_retention = _safe_decimal(invoice.retention_amount)
+        # What earlier payments left open, and the retention they have not
+        # held back yet. A second payment must not hold the retention back
+        # again, and "settle the rest" must not mean "pay the whole total".
+        position = await self.settlement_for(invoice)
 
         # Resolve the gross being settled. When amount is given it is the cash
         # the caller intends to pay; gross = cash + withholding. When amount is
-        # omitted we settle the whole invoice (gross = amount_total).
+        # omitted we settle what is still open on the invoice.
         explicit_withholding = _safe_decimal(data.withholding_amount) if data.withholding_amount is not None else None
+        withheld = explicit_withholding if explicit_withholding is not None else position.retention_to_withhold
         if data.amount is not None:
-            cash_in = _safe_decimal(data.amount)
-            withheld = explicit_withholding if explicit_withholding is not None else inv_retention
-            gross = cash_in + withheld
+            gross = _safe_decimal(data.amount) + withheld
         else:
-            gross = inv_total
-            withheld = explicit_withholding if explicit_withholding is not None else inv_retention
+            gross = position.open
+            if gross <= 0:
+                raise finance_error(
+                    "invoice_nothing_open",
+                    f"Nothing is open on invoice {invoice.invoice_number}; there is no payment to record.",
+                    field="amount",
+                    invoice=invoice.invoice_number,
+                )
+        await self._refuse_beyond_open(invoice, gross, position=position)
 
         amount_to_pay, withholding = compute_payment_withholding(gross, withholding_amount=withheld)
 
@@ -2632,7 +2990,12 @@ class FinanceService:
         calls it directly, so whichever runs first, the other finds the bill's
         share already there.
 
-        Amounts are net of VAT, as a bill is, in the project currency.
+        Amounts are the bill's total before VAT, in the project currency: the
+        direct cost of the leaves plus every markup except VAT
+        (:mod:`app.modules.finance.boq_budget`), the markups spread over the WBS
+        rows in proportion to their direct cost. Re-seeding a bill seeded at
+        direct cost only (before markups were included) moves its rows up by
+        the markups, through the per-bill marker.
 
         Args:
             project_id: Project the bill belongs to.
@@ -2684,12 +3047,28 @@ class FinanceService:
 
         currency_code = await self._project_currency(project_id)
         marker = f"from_boq:{boq_id}"
+        # The markups (general conditions, overheads, profit, contingency...)
+        # are part of the bill's price before VAT and so of its budget. They
+        # are spread over the WBS rows in proportion to direct cost, so each
+        # row carries its share and the rows add up to the bill's net total.
+        from app.modules.finance.boq_budget import bill_markups, spread
+
+        try:
+            markups = await bill_markups(self.session, boq_id)
+        except Exception:
+            # A markup stack that cannot be priced must not cost the bill its
+            # budget; the direct cost is still seeded and the gap is logged.
+            logger.exception("Markups of BOQ %s could not be priced; budget seeded at direct cost", boq_id)
+            markups = []
+        markup_total = sum((m.amount for m in markups), Decimal("0"))
+        markup_share = spread(by_wbs, markup_total, currency_code)
         touched: list[ProjectBudget] = []
         # Create the rows in WBS order. The positions come back in whatever
         # order the table holds them, and the row created first is the one a
         # cost naming no WBS falls back to, so an unordered walk put that cost
         # on a different line from one machine or one bill edit to the next.
-        for wbs_id, amount in sorted(by_wbs.items(), key=lambda kv: (kv[0] is not None, kv[0] or "")):
+        for wbs_id, direct in sorted(by_wbs.items(), key=lambda kv: (kv[0] is not None, kv[0] or "")):
+            amount = direct + markup_share.get(wbs_id, Decimal("0"))
             stmt = select(ProjectBudget).where(
                 ProjectBudget.project_id == project_id,
                 ProjectBudget.category == "estimate",
@@ -2704,13 +3083,18 @@ class FinanceService:
                     currency_code=currency_code,
                     original_budget=amount,
                     revised_budget=amount,
-                    metadata_={marker: str(amount), "budget_sync": "1"},
+                    metadata_={
+                        marker: str(amount),
+                        f"{marker}:markups": str(markup_share.get(wbs_id, Decimal("0"))),
+                        "budget_sync": "1",
+                    },
                 )
                 self.session.add(budget)
             else:
                 md = dict(budget.metadata_ or {})
                 previous = _safe_decimal(md.get(marker))
                 md[marker] = str(amount)
+                md[f"{marker}:markups"] = str(markup_share.get(wbs_id, Decimal("0")))
                 delta = amount - previous
                 budget.original_budget = _safe_decimal(budget.original_budget) + delta
                 budget.revised_budget = _safe_decimal(budget.revised_budget) + delta
@@ -2986,14 +3370,20 @@ class FinanceService:
             original = _budget_base(budget_agg["original_by_currency"])
             derived_bac = revised or original
             derived_ac = _budget_base(budget_agg["actual_by_currency"])
-            derived_committed = _budget_base(budget_agg["committed_by_currency"])
-            # PV approximation: planned spend up to snapshot date is the
-            # revised baseline (matches dashboard behaviour where plan
-            # equals revised budget). EV approximation: committed work
-            # represents earned value progress when no schedule timeline
-            # is present.
-            derived_pv = derived_bac
-            derived_ev = derived_committed if derived_committed > zero else derived_ac
+            # PV = BAC x planned % at the snapshot date (4D schedule baseline),
+            # EV = BAC x % complete (physical progress). Neither is a cost
+            # figure: commitments and the full budget are not progress.
+            from app.modules.full_evm.progress_baseline import derive_pv_ev
+
+            derived = await derive_pv_ev(
+                self.session,
+                data.project_id,
+                bac=derived_bac,
+                as_of=data.snapshot_date,
+                currency=base_ccy,
+            )
+            derived_pv, derived_ev = derived.pv, derived.ev
+            data = data.model_copy(update={"metadata": {**(data.metadata or {}), **derived.metadata()}})
             if bac == zero:
                 bac = derived_bac
             if ac == zero:
@@ -3650,8 +4040,16 @@ class FinanceService:
         budget_consumed_pct = total_actual / total_budget_revised * 100 if total_budget_revised > 0 else Decimal("0")
         committed_pct = total_outturn / total_budget_revised * 100 if total_budget_revised > 0 else Decimal("0")
 
-        # Budget warning level
-        if committed_pct >= 95:
+        # What is left to spend is the budget less the outturn: the open
+        # commitments and what has been incurred beyond them. Subtracting spend
+        # alone reported money already on order as free.
+        budget_base = total_budget_revised if total_budget_revised > 0 else total_budget_original
+        total_remaining = budget_base - total_outturn
+        budget_overrun = total_outturn > budget_base
+
+        # Budget warning level. Commitments against no budget at all are an
+        # overrun too, not a 0 % that reads as normal.
+        if committed_pct >= 95 or (budget_base <= 0 and total_outturn > 0):
             warning_level = "critical"
         elif committed_pct >= 80:
             warning_level = "caution"
@@ -3681,6 +4079,8 @@ class FinanceService:
             total_paid=round(total_paid, 2),
             total_over_commitment=round(total_over_commitment, 2),
             total_variance=round(total_variance, 2),
+            total_remaining=round(total_remaining, 2),
+            budget_overrun=budget_overrun,
             budget_consumed_pct=round(budget_consumed_pct, 1),
             budget_warning_level=warning_level,
             total_payments=round(total_payments, 2),

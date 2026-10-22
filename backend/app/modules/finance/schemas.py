@@ -313,6 +313,16 @@ class InvoiceResponse(BaseModel):
     line_items: list[InvoiceLineItemResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+    # What the payments settled and what is still open, from
+    # ``finance.settlement``: ``amount_paid`` is net cash, ``amount_withheld``
+    # the retainage those payments held back, ``amount_open`` the total less
+    # both (zero once the invoice is paid, cancelled or credit-noted).
+    # ``payment_status`` is ``unpaid``, ``partially_paid`` or ``paid``; the
+    # lifecycle ``status`` is unchanged by a partial payment.
+    amount_paid: str = "0"
+    amount_withheld: str = "0"
+    amount_open: str = "0"
+    payment_status: str = "unpaid"
 
     _coerce_decimal = field_validator(
         "amount_subtotal",
@@ -481,6 +491,13 @@ class RecordClaimPaymentRequest(BaseModel):
     @classmethod
     def _check_positive_rate(cls, v: str) -> str:
         return _validate_positive_decimal(v, "exchange_rate_snapshot")
+
+
+class SettleInvoiceRequest(BaseModel):
+    """Body for ``POST /{invoice_id}/settle/``: mark paid for what is still open."""
+
+    # The day the remaining payment is made; today when omitted.
+    payment_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$", max_length=20)
 
 
 # ── Budget ───────────────────────────────────────────────────────────────────
@@ -746,6 +763,14 @@ class FinanceDashboardResponse(BaseModel):
     # below zero, so this is where that excess is shown.
     total_over_commitment: Decimal = Decimal("0")
     total_variance: Decimal = Decimal("0")
+    # Budget still free to spend: the revised budget (the original when no
+    # revision exists) less what is committed and less what has been
+    # incurred beyond the commitments (committed plus actual is the outturn).
+    # Negative when the commitments already exceed the budget.
+    total_remaining: Decimal = Decimal("0")
+    # True when committed plus actual exceed the budget, including a project
+    # that has commitments and no budget at all.
+    budget_overrun: bool = False
     budget_consumed_pct: float = 0.0
     budget_warning_level: str = "normal"  # "normal" | "caution" | "critical"
     total_payments: Decimal = Decimal("0")

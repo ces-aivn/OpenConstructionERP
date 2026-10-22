@@ -653,6 +653,165 @@ async def test_create_payment_missing_invoice_raises_404() -> None:
     assert exc_info.value.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_a_payment_beyond_what_is_open_is_refused_with_a_code() -> None:
+    from fastapi import HTTPException
+
+    service = _make_service()
+    invoice = await service.create_invoice(
+        InvoiceCreate(
+            project_id=uuid.uuid4(),
+            invoice_direction="payable",
+            invoice_date="2026-04-01",
+            currency_code="USD",
+            amount_subtotal="1000.00",
+            tax_amount="0",
+        )
+    )
+    await service.create_payment(
+        PaymentCreate(invoice_id=invoice.id, payment_date="2026-04-05", amount="600.00", currency_code="USD")
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await service.create_payment(
+            PaymentCreate(invoice_id=invoice.id, payment_date="2026-04-06", amount="400.01", currency_code="USD")
+        )
+    detail = exc_info.value.detail
+    assert exc_info.value.status_code == 422
+    assert detail["code"] == "payment_amount_over_open"
+    assert detail["field"] == "amount"
+    assert detail["params"]["open"] == "400.00"
+
+    position = await service.settlement_for(invoice)
+    assert position.open == Decimal("400.00")
+    assert position.payment_status == "partially_paid"
+
+
+@pytest.mark.asyncio
+async def test_a_due_date_before_the_invoice_date_is_refused() -> None:
+    from fastapi import HTTPException
+
+    service = _make_service()
+    with pytest.raises(HTTPException) as exc_info:
+        await service.create_invoice(
+            InvoiceCreate(
+                project_id=uuid.uuid4(),
+                invoice_direction="payable",
+                invoice_date="2026-04-10",
+                due_date="2026-04-01",
+                amount_subtotal="10",
+                tax_amount="0",
+            )
+        )
+    assert exc_info.value.detail["code"] == "invoice_due_before_issue"
+    assert exc_info.value.detail["field"] == "due_date"
+
+
+@pytest.mark.asyncio
+async def test_a_retention_larger_than_the_invoice_is_refused() -> None:
+    from fastapi import HTTPException
+
+    service = _make_service()
+    with pytest.raises(HTTPException) as exc_info:
+        await service.create_invoice(
+            InvoiceCreate(
+                project_id=uuid.uuid4(),
+                invoice_direction="payable",
+                invoice_date="2026-04-01",
+                amount_subtotal="100",
+                tax_amount="10",
+                retention_amount="111",
+            )
+        )
+    assert exc_info.value.detail["code"] == "invoice_retention_exceeds_total"
+    assert exc_info.value.detail["field"] == "retention_amount"
+    kept = await service.create_invoice(
+        InvoiceCreate(
+            project_id=uuid.uuid4(),
+            invoice_direction="payable",
+            invoice_date="2026-04-01",
+            amount_subtotal="100",
+            tax_amount="10",
+            retention_amount="5.50",
+        )
+    )
+    assert kept.retention_amount == "5.50"
+
+
+@pytest.mark.asyncio
+async def test_moving_the_invoice_date_past_its_due_date_is_refused() -> None:
+    from fastapi import HTTPException
+
+    from app.modules.finance.schemas import InvoiceUpdate
+
+    service = _make_service()
+    invoice = await service.create_invoice(
+        InvoiceCreate(
+            project_id=uuid.uuid4(),
+            invoice_direction="payable",
+            invoice_date="2026-04-01",
+            due_date="2026-04-30",
+            amount_subtotal="10",
+            tax_amount="0",
+        )
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await service.update_invoice(invoice.id, InvoiceUpdate(invoice_date="2026-05-15"))
+    assert exc_info.value.detail["code"] == "invoice_due_before_issue"
+
+
+def _match_payload(*, invoiced: str, received: str) -> dict[str, Any]:
+    return {
+        "has_receipts": True,
+        "lines": [
+            {
+                "label": "Glass panel 1.2 x 2.4",
+                "unit": "pcs",
+                "invoiced": invoiced,
+                "invoiced_before": "0",
+                "received": received,
+                "ordered": "200",
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("invoiced", "received", "blocked"), [("200", "150", True), ("150", "150", False)])
+async def test_a_supplier_invoice_billing_more_than_was_received_is_not_released(
+    monkeypatch: pytest.MonkeyPatch, invoiced: str, received: str, blocked: bool
+) -> None:
+    from fastapi import HTTPException
+
+    from app.modules.procurement.service import ProcurementService
+
+    async def _payload(self: Any, po_id: uuid.UUID, **_kwargs: Any) -> dict[str, Any]:
+        return _match_payload(invoiced=invoiced, received=received)
+
+    monkeypatch.setattr(ProcurementService, "invoice_match_payload", _payload)
+    service = _make_service()
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        invoice_direction="payable",
+        invoice_number="FT-INV-2026-0147",
+        purchase_order_id=uuid.uuid4(),
+        metadata_={},
+        amount_subtotal="0",
+        line_items=[SimpleNamespace(description="Glass panel", quantity=invoiced)],
+    )
+    if not blocked:
+        assert await service.match_against_receipts(invoice) == []
+        await service._check_three_way_match(invoice, invoice.purchase_order_id)
+        return
+    with pytest.raises(HTTPException) as exc_info:
+        await service._check_three_way_match(invoice, invoice.purchase_order_id)
+    detail = exc_info.value.detail
+    assert exc_info.value.status_code == 422
+    assert detail["code"] == "invoice_exceeds_goods_received"
+    assert detail["field"] == "line_items"
+    assert detail["params"]["invoiced"] == "200 pcs"
+    assert detail["params"]["received"] == "150 pcs"
+
+
 # ── Budgets ───────────────────────────────────────────────────────────────
 
 
@@ -854,6 +1013,9 @@ async def test_get_dashboard_returns_invoices_and_budgets(monkeypatch: pytest.Mo
     assert Decimal(str(dashboard["total_invoiced"])) == Decimal("12000")
     assert Decimal(str(dashboard["total_paid"])) == Decimal("15000")
     assert Decimal(str(dashboard["total_actual"])) == Decimal("12000")
+    # What is left is the revised budget less the outturn (spent plus on order), not less spend alone.
+    assert Decimal(str(dashboard["total_remaining"])) == Decimal("40000")
+    assert dashboard["budget_overrun"] is False
 
 
 # ── BUG-346: budget rows get each paid amount on ONE line, per bucket ──

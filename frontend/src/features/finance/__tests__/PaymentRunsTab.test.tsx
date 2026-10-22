@@ -223,6 +223,70 @@ describe('PaymentRunsTab', () => {
     expect(await screen.findByText('Invoice AP-0042 is cancelled, so it cannot be paid in a run.')).toBeInTheDocument();
   });
 
+  it('words a finding in the reader language from the figures sent with it', async () => {
+    const run = makeRun({
+      issues: [
+        {
+          severity: 'error',
+          code: 'amount_over_open',
+          message: 'SERVER ENGLISH',
+          item_id: 'item-b',
+          invoice_id: 'inv-b',
+          params: { invoice: 'AP-0043', amount: '300.00', open: '120.00', currency: 'CAD' },
+        },
+      ],
+    });
+    mocks.list.mockResolvedValue({ items: [run], total: 1 });
+    mocks.get.mockResolvedValue(run);
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: /PAY-0001/ }));
+    const issues = await screen.findByTestId('payrun-issues');
+    expect(issues.textContent).toMatch(/Invoice AP-0043: .*300\.00 is more than the .*120\.00 still open on it\./);
+    expect(issues.textContent).not.toContain('SERVER ENGLISH');
+  });
+
+  it('will not let the person who drew up a run approve it', async () => {
+    const run = makeRun({
+      issues: [{ severity: 'error', code: 'same_person', message: 'x', item_id: null, invoice_id: null, params: {} }],
+    });
+    mocks.list.mockResolvedValue({ items: [run], total: 1 });
+    mocks.get.mockResolvedValue(run);
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: /PAY-0001/ }));
+    expect(await screen.findByText(/another person has to approve it/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve run' })).toBeDisabled();
+  });
+
+  it('puts the stored amount back when an edited amount is refused', async () => {
+    const run = makeRun();
+    mocks.list.mockResolvedValue({ items: [run], total: 1 });
+    mocks.get.mockResolvedValue(run);
+    mocks.updateItem.mockRejectedValue(
+      new ApiError(422, 'Unprocessable', {
+        detail: { code: 'payment_amount_over_open', message: 'Too much.', field: 'amount', params: { open: '1000.00' } },
+      }),
+    );
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: /PAY-0001/ }));
+    const input = await screen.findByLabelText('Amount to pay on AP-0042');
+    fireEvent.change(input, { target: { value: '5000' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(mocks.updateItem).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByLabelText('Amount to pay on AP-0042')).toHaveValue('1000.00'));
+  });
+
+  it('opens the confirmation on the page, not inside the run card that would cut it off', async () => {
+    const run = makeRun({ status: 'approved' });
+    mocks.list.mockResolvedValue({ items: [run], total: 1 });
+    mocks.get.mockResolvedValue(run);
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: /PAY-0001/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Record payments' }));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(screen.getByTestId('payrun-detail').contains(dialog)).toBe(false);
+    expect(document.body.contains(dialog)).toBe(true);
+  });
+
   it('says finance access is missing instead of an empty list', async () => {
     mocks.list.mockRejectedValue(new ApiError(403, 'Forbidden', { detail: 'forbidden' }));
     renderTab();

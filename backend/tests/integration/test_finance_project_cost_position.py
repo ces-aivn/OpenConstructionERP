@@ -258,7 +258,10 @@ async def _order(client: AsyncClient, h: dict[str, str], project_id: uuid.UUID, 
             headers=h,
         )
     )
-    await _ok(await client.post(f"{API}/procurement/{po['id']}/approve/", headers=h))
+    # Four eyes: the person who raised the order cannot approve it, so a
+    # second administrator (no value ceiling) signs it off.
+    _, approver = await _login(client)
+    await _ok(await client.post(f"{API}/procurement/{po['id']}/approve/", headers=approver))
     return po
 
 

@@ -115,7 +115,8 @@ describe('Finance cost position cards', () => {
     ['invoiced', 'Invoiced', '72000', 'Net of VAT'],
     ['paid', 'Paid', '78500', 'Incl. VAT'],
     ['unpaid', 'Unpaid supplier invoices', '2500', 'Incl. VAT'],
-    ['remaining', 'Remaining Budget', '331500', 'Net of VAT'],
+    // Budget less actual and still committed: 400000 - 68500 - 172000.
+    ['remaining', 'Remaining Budget', '159500', 'Net of VAT'],
   ])('shows %s from its own field, labelled, with its basis', (key, label, whole, basis) => {
     harness.dashboard = SCENARIO;
     renderCards();
@@ -124,6 +125,19 @@ describe('Finance cost position cards', () => {
     expect(within(card).getByText(label)).toBeInTheDocument();
     expect(card.textContent).toMatch(amount(whole));
     expect(within(card).getByText(basis)).toBeInTheDocument();
+  }, 120000);
+
+  it('takes the remaining budget from the server and warns when the outturn passes the budget', () => {
+    harness.dashboard = { ...SCENARIO, total_remaining: '-12000.00', budget_overrun: true };
+    renderCards();
+    expect(screen.getByTestId('finance-card-remaining').textContent).toMatch(amount('12000'));
+    expect(screen.getByTestId('finance-budget-overrun-notice').textContent).toMatch(amount('12000'));
+  }, 120000);
+
+  it('raises no overrun warning while money is left', () => {
+    harness.dashboard = { ...SCENARIO, total_remaining: '159500.00', budget_overrun: false };
+    renderCards();
+    expect(screen.queryByTestId('finance-budget-overrun-notice')).not.toBeInTheDocument();
   }, 120000);
 
   it('no longer calls the unpaid balance "Total Invoiced"', () => {

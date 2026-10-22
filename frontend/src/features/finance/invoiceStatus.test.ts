@@ -9,6 +9,12 @@ import { describe, it, expect } from 'vitest';
 const PAGE_SOURCE = 'src/features/finance/FinancePage.tsx';
 import {
   canMarkPaid,
+  editorLinesFromOrder,
+  invoiceFormProblems,
+  invoiceOpenAmount,
+  invoiceSettledAmount,
+  isPartiallyPaid,
+  markPaidSplit,
   invoiceStatusOptions,
   isReceivable,
   INVOICE_SELF_SERVICE_TRANSITIONS,
@@ -236,3 +242,89 @@ describe('invoice status dropdown options', () => {
     expect(invoiceStatusOptions('draft')).toEqual(['draft', 'pending', 'cancelled']);
   });
 });
+
+describe('what is paid and open on an invoice', () => {
+  const partial = {
+    status: 'approved',
+    amount: 54750109.5,
+    amount_paid: '20000000.00',
+    amount_open: '34750109.50',
+    payment_status: 'partially_paid' as const,
+  };
+
+  it('reads a part payment as paid in part and open for the rest', () => {
+    expect(invoiceSettledAmount(partial)).toBe(20000000);
+    expect(invoiceOpenAmount(partial)).toBe(34750109.5);
+    expect(isPartiallyPaid(partial)).toBe(true);
+  });
+
+  it('counts an invoice closed as paid without payment rows at its total, with nothing open', () => {
+    const closed = { status: 'paid', amount: 1000, amount_paid: '0', amount_open: '0', payment_status: 'paid' as const };
+    expect(invoiceSettledAmount(closed)).toBe(1000);
+    expect(invoiceOpenAmount(closed)).toBe(0);
+    expect(isPartiallyPaid(closed)).toBe(false);
+  });
+
+  it('falls back to the total of an open invoice when the server sends no settlement', () => {
+    expect(invoiceOpenAmount({ status: 'approved', amount: 500 })).toBe(500);
+    expect(invoiceOpenAmount({ status: 'cancelled', amount: 500 })).toBe(0);
+    expect(invoiceSettledAmount({ status: 'approved', amount: 500 })).toBe(0);
+  });
+});
+
+describe('markPaidSplit', () => {
+  it('pays the open amount less the retention still to withhold', () => {
+    const inv = { status: 'approved', amount: 100000, amount_open: '100000', retention_amount: '5000' };
+    expect(markPaidSplit(inv)).toEqual({ cash: 95000, withheld: 5000 });
+  });
+
+  it('withholds only the retention not held back by earlier payments', () => {
+    const inv = {
+      status: 'approved',
+      amount: 100000,
+      amount_paid: '38000',
+      amount_withheld: '2000',
+      amount_open: '60000',
+      retention_amount: '5000',
+      payment_status: 'partially_paid' as const,
+    };
+    expect(markPaidSplit(inv)).toEqual({ cash: 57000, withheld: 3000 });
+  });
+
+  it('never withholds more than is open', () => {
+    const inv = { status: 'approved', amount: 100000, amount_paid: '98000', amount_open: '2000', retention_amount: '5000' };
+    expect(markPaidSplit(inv)).toEqual({ cash: 0, withheld: 2000 });
+  });
+
+  it('pays everything open in cash when the invoice has no retention', () => {
+    expect(markPaidSplit({ status: 'approved', amount: 1000, amount_open: '1000' })).toEqual({ cash: 1000, withheld: 0 });
+  });
+});
+
+describe('invoiceFormProblems', () => {
+  const base = { invoice_date: '2026-10-22', due_date: '', retention_amount: '', total: 1000 };
+
+  it('refuses a due date before the invoice date', () => {
+    expect(invoiceFormProblems({ ...base, due_date: '2026-10-01' })).toEqual({ due_date: 'before_issue' });
+    expect(invoiceFormProblems({ ...base, due_date: '2026-10-22' })).toEqual({});
+  });
+
+  it('refuses a retention that is not an amount, is negative or is more than the total', () => {
+    expect(invoiceFormProblems({ ...base, retention_amount: 'abc' })).toEqual({ retention_amount: 'invalid' });
+    expect(invoiceFormProblems({ ...base, retention_amount: '-5' })).toEqual({ retention_amount: 'invalid' });
+    expect(invoiceFormProblems({ ...base, retention_amount: '1000.01' })).toEqual({ retention_amount: 'over_total' });
+    expect(invoiceFormProblems({ ...base, retention_amount: '50.5' })).toEqual({});
+  });
+});
+
+describe('editorLinesFromOrder', () => {
+  it('prices each copied line at quantity times rate and keeps its budget link', () => {
+    const [line] = editorLinesFromOrder(
+      [{ description: 'Glass panel', quantity: '150', unit: 'pcs', unit_rate: '250.50', wbs_id: 'w1', cost_category: 'material', cost_line_id: 'cl1' }],
+      '10',
+    );
+    expect(line).toMatchObject({ description: 'Glass panel', quantity: '150', unit: 'pcs', unit_rate: '250.50', amount: '37575.00', vat_rate: '10' });
+    expect(line?.keep).toEqual({ wbs_id: 'w1', cost_category: 'material', cost_line_id: 'cl1' });
+  });
+});
+

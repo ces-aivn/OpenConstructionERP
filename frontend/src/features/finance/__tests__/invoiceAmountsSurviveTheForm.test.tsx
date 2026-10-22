@@ -376,8 +376,8 @@ describe('editing a stored invoice', () => {
   });
 });
 
-describe('Mark Paid writes the payment before it closes the invoice', () => {
-  it('records the open balance under a stable key, then pays', async () => {
+describe('Mark Paid settles what is still open on the server', () => {
+  it('asks the server to pay the open balance and close the invoice in one request', async () => {
     useAuthStore.setState({ userRole: 'admin' });
     harness.invoices = [
       {
@@ -386,6 +386,9 @@ describe('Mark Paid writes the payment before it closes the invoice', () => {
         invoice_direction: 'payable',
         invoice_date: '2026-09-01',
         amount_total: '1000.00',
+        amount_paid: '400.00',
+        amount_open: '600.00',
+        payment_status: 'partially_paid',
         currency_code: 'EUR',
         status: 'approved',
         line_items: [],
@@ -395,16 +398,10 @@ describe('Mark Paid writes the payment before it closes the invoice', () => {
     const user = userEvent.setup();
     renderTab();
 
+    expect(screen.getAllByText('Partially paid').length).toBeGreaterThan(0);
     await user.click(screen.getAllByRole('button', { name: /^mark paid$/i })[0] as HTMLElement);
 
-    await waitFor(() => expect(harness.posted.map((p) => p.url)).toEqual([
-      '/v1/finance/invoices/inv-9/record-payment/',
-      '/v1/finance/inv-9/pay/',
-    ]));
-    expect(harness.posted[0]?.body).toMatchObject({
-      amount: '600.00',
-      currency_code: 'EUR',
-      idempotency_key: 'markpaid:inv-9',
-    });
+    await waitFor(() => expect(harness.posted.map((p) => p.url)).toEqual(['/v1/finance/inv-9/settle/']));
+    expect(harness.posted[0]?.body).toEqual({ payment_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) });
   });
 });

@@ -72,6 +72,7 @@ import { InvoicePurchaseOrderField } from './InvoicePurchaseOrderField';
 import { useContractLineOptions } from './contractLineOptions';
 import { InvoiceLinesEditor } from './InvoiceLinesEditor';
 import {
+  editLine,
   editorLinesFromInvoice,
   invoiceTotals as linesTotals,
   linesToPayload,
@@ -82,6 +83,8 @@ import {
 } from './invoiceLines';
 import { invalidateFinanceFigures } from './financeQueryKeys';
 import { settleAndMarkPaid } from './markInvoicePaid';
+import { paymentDecimalInput } from './paymentDecimalInput';
+import type { OrderLineToBill } from './InvoicePurchaseOrderField';
 import { budgetCategoryLabel, wbsLabel, type WbsNode } from './budgetLabels';
 import { ContingencyBudgetNote } from '@/features/risk/ContingencyBudgetNote';
 import { useToastStore } from '@/stores/useToastStore';
@@ -106,6 +109,8 @@ import { financeGuide } from './financeGuide';
 import { DEFAULT_FINANCE_TAB, isFinanceTab, type FinanceTab } from './financeTabs';
 import { UnlinkedTwinBanner } from '@/features/subcontractors/UnlinkedTwinBanner';
 import { fmtList, fmtPercent, fmtFixed, fmtNumberForInput } from '@/shared/lib/formatters';
+import { formatCurrency } from '@/shared/lib/money';
+import { todayLocalISO } from '@/shared/lib/dates';
 import { matchesSearch } from '@/shared/lib/highlightMatch';
 
 // English fallbacks for the computed `finance.payment_status_*` keys. The default used to be
@@ -192,6 +197,12 @@ interface Invoice {
   amount_total?: string | null;
   // Retainage held back from payment, Decimal-as-string.
   retention_amount?: string | null;
+  // Server-computed settlement (InvoiceResponse): cash paid, retainage
+  // withheld, what is still open, and unpaid / partially_paid / paid.
+  amount_paid?: string | null;
+  amount_withheld?: string | null;
+  amount_open?: string | null;
+  payment_status?: 'unpaid' | 'partially_paid' | 'paid' | null;
   contact_id?: string | null;
   // The purchase order a payable invoice bills, when one was picked.
   purchase_order_id?: string | null;
@@ -417,6 +428,90 @@ export function canMarkPaid(status: string | null | undefined): boolean {
   return MARK_PAID_FROM.includes(status ?? '');
 }
 
+type SettlementView = Pick<Invoice, 'status' | 'amount' | 'amount_paid' | 'amount_open' | 'payment_status'>;
+
+const CLOSED_INVOICE_STATUSES = ['paid', 'cancelled', 'credit_note_issued'];
+
+function finiteNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Cash paid on an invoice, as the server settled it (part payments included).
+ * An invoice closed as paid without payment rows (closed before payments were
+ * recorded with it) counts at its total.
+ */
+export function invoiceSettledAmount(inv: SettlementView): number {
+  const paid = finiteNumber(inv.amount_paid);
+  if (inv.status === 'paid' && !paid) return Number(inv.amount ?? 0);
+  return paid ?? 0;
+}
+
+/** What is still open on an invoice: the server's figure, or the total of an open invoice from an older server. */
+export function invoiceOpenAmount(inv: SettlementView): number {
+  const open = finiteNumber(inv.amount_open);
+  if (open !== null) return open;
+  return CLOSED_INVOICE_STATUSES.includes(inv.status) ? 0 : Number(inv.amount ?? 0);
+}
+
+/**
+ * How marking an invoice paid splits what is open: the cash paid out and the
+ * retention held back, as the server's settle step books them. Retention the
+ * invoice schedules and no payment has withheld yet is held back on this
+ * payment, never more than what is open; the rest is paid in cash. Amounts
+ * are rounded to cents so a float remainder never shows as a stray amount.
+ */
+export function markPaidSplit(
+  inv: SettlementView & Pick<Invoice, 'retention_amount' | 'amount_withheld'>,
+): { cash: number; withheld: number } {
+  const open = invoiceOpenAmount(inv);
+  const retention = finiteNumber(inv.retention_amount) ?? 0;
+  const alreadyWithheld = Math.max(finiteNumber(inv.amount_withheld) ?? 0, 0);
+  const toWithhold = Math.min(Math.max(retention - alreadyWithheld, 0), Math.max(open, 0));
+  const withheld = Math.round(toWithhold * 100) / 100;
+  return { cash: Math.round((open - withheld) * 100) / 100, withheld };
+}
+
+/** True when part of the invoice is paid and part is still open. */
+export function isPartiallyPaid(inv: SettlementView): boolean {
+  return inv.payment_status === 'partially_paid' && !CLOSED_INVOICE_STATUSES.includes(inv.status);
+}
+
+/**
+ * What is wrong with the dates and the retention of an invoice being entered,
+ * the same rules the server refuses with: a due date before the invoice date
+ * (the invoice would be overdue the day it is entered), and a retention that
+ * is not an amount or is more than the invoice total.
+ */
+export function invoiceFormProblems(form: {
+  invoice_date: string;
+  due_date: string;
+  retention_amount: string;
+  total: number;
+}): { due_date?: 'before_issue'; retention_amount?: 'invalid' | 'over_total' } {
+  const out: { due_date?: 'before_issue'; retention_amount?: 'invalid' | 'over_total' } = {};
+  // ISO dates compare as text.
+  if (form.invoice_date && form.due_date && form.due_date < form.invoice_date) out.due_date = 'before_issue';
+  const retention = paymentDecimalInput(form.retention_amount);
+  if (retention === null || retention.startsWith('-')) out.retention_amount = 'invalid';
+  else if (Number(retention) > form.total) out.retention_amount = 'over_total';
+  return out;
+}
+
+/** Invoice editor lines for the order lines still to bill, each keeping its budget link. */
+export function editorLinesFromOrder(lines: OrderLineToBill[], defaultVat: string | null): InvoiceEditorLine[] {
+  return lines.map((line) => ({
+    ...editLine(
+      { ...newEditorLine(defaultVat), description: line.description, quantity: line.quantity, unit: line.unit },
+      'unit_rate',
+      line.unit_rate,
+    ),
+    keep: { wbs_id: line.wbs_id, cost_category: line.cost_category, cost_line_id: line.cost_line_id },
+  }));
+}
+
 /**
  * True when this invoice is one we issue rather than one we received.
  *
@@ -528,6 +623,12 @@ interface FinanceDashboardData {
    *  nobody invoiced, settled past a subcontract's value). Committed stops at
    *  zero, so this is where that excess shows. */
   total_over_commitment?: number | string;
+  /** Net of VAT: the revised budget (the original when there is none) less the
+   *  outturn, actual plus still committed, so money on order is not counted
+   *  as still free to spend. Negative when the outturn passes the budget. */
+  total_remaining?: number | string;
+  /** True when the outturn is above the budget. */
+  budget_overrun?: boolean;
   /** Base currency the totals are expressed in. For a project-scoped
    *  dashboard the server FX-converts every foreign record into this
    *  currency via Project.fx_rates; empty when no record carries one. */
@@ -574,7 +675,13 @@ export function FinanceSummaryCards({
   const totalUnpaid = Number(dashboard?.total_payable ?? 0);
   const totalReceivable = Number(dashboard?.total_receivable ?? 0);
   const totalOverdue = Number(dashboard?.total_overdue ?? 0);
-  const remaining = (totalRevised || totalBudget) - totalActual;
+  // The server's figure: budget less what is spent and what is on order. An
+  // older server without it gets the same arithmetic here.
+  const remaining =
+    dashboard?.total_remaining != null
+      ? Number(dashboard.total_remaining)
+      : (totalRevised || totalBudget) - totalActual - totalCommitted;
+  const budgetOverrun = dashboard?.budget_overrun ?? remaining < 0;
   // Currency comes from the data (task #217) — never hardcoded. When the
   // backend cannot resolve one (no priced records yet) MoneyDisplay still
   // renders, falling back to the user's preferred currency for the symbol.
@@ -797,6 +904,20 @@ export function FinanceSummaryCards({
           </div>
         ))}
       </div>
+
+      {budgetOverrun && (
+        <div
+          className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300"
+          data-testid="finance-budget-overrun-notice"
+          role="alert"
+        >
+          {t('finance.budget_overrun_notice', {
+            defaultValue:
+              'Spent and committed costs are {{amount}} above the budget. Revise the budget or reduce commitments before placing further orders.',
+            amount: formatCurrency(Math.abs(remaining), currency),
+          })}
+        </div>
+      )}
 
       {/* No currency resolved (#169). MoneyDisplay refuses to print an amount
           without its unit - rightly, since a bare number invites being read
@@ -2108,7 +2229,9 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showOpenItems, setShowOpenItems] = useState(false);
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  // Local calendar date: a UTC date would default new invoices to yesterday
+  // in the hours after local midnight east of Greenwich.
+  const todayStr = todayLocalISO();
 
   // Resolve the project's currency (budgets → invoices) so new invoices
   // default to it rather than a hardcoded EUR (task #217). Shares the
@@ -2172,6 +2295,8 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
     status: 'draft',
     // Optional order this payable invoice bills. Empty means not linked.
     purchase_order_id: '',
+    // Retainage to hold back when the invoice is paid; empty means none.
+    retention_amount: '',
   });
   const [invoiceErrors, setInvoiceErrors] = useState<Record<string, string>>({});
   const invoiceDateRef = useRef<HTMLInputElement>(null);
@@ -2219,6 +2344,7 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
       // Shown exactly as stored. A person sees the state the machine wrote.
       status: inv.status || 'draft',
       purchase_order_id: inv.purchase_order_id ?? '',
+      retention_amount: Number(inv.retention_amount ?? 0) ? String(inv.retention_amount) : '',
     });
     setInvoiceErrors({});
     setEditingInvoice(inv);
@@ -2260,6 +2386,26 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
     if (!(linesTotals(invoiceForm.lines).total > 0)) {
       e.lines = t('finance.lines_required', {
         defaultValue: 'Enter at least one line with a quantity and a unit rate',
+      });
+    }
+    const problems = invoiceFormProblems({
+      invoice_date: invoiceForm.invoice_date,
+      due_date: invoiceForm.due_date,
+      retention_amount: invoiceForm.retention_amount,
+      total: linesTotals(invoiceForm.lines).total,
+    });
+    if (problems.due_date) {
+      e.due_date = t('finance.due_before_issue', {
+        defaultValue: 'The due date cannot be before the invoice date.',
+      });
+    }
+    if (problems.retention_amount === 'invalid') {
+      e.retention_amount = t('finance.retention_invalid', {
+        defaultValue: 'Enter the retention as an amount of zero or more, for example 2500.50.',
+      });
+    } else if (problems.retention_amount === 'over_total') {
+      e.retention_amount = t('finance.retention_over_total', {
+        defaultValue: 'The retention cannot be more than the invoice total.',
       });
     }
     setInvoiceErrors(e);
@@ -2311,12 +2457,13 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
         metadata: invoiceMetadataWithBuyerReference(null, data.buyer_reference),
         purchase_order_id:
           data.direction === 'payable' && data.purchase_order_id ? data.purchase_order_id : undefined,
+        retention_amount: paymentDecimalInput(data.retention_amount) ?? undefined,
       });
     },
     onSuccess: () => {
       void invalidateFinanceFigures(queryClient);
       setShowCreate(false);
-      setInvoiceForm({ direction: 'payable', counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', invoice_number: '', lines: [newEditorLine(defaultVat)], lines_dirty: false, currency: projectCurrency, description: '', buyer_reference: '', status: 'draft', purchase_order_id: '' });
+      setInvoiceForm({ direction: 'payable', counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', invoice_number: '', lines: [newEditorLine(defaultVat)], lines_dirty: false, currency: projectCurrency, description: '', buyer_reference: '', status: 'draft', purchase_order_id: '', retention_amount: '' });
       addToast({ type: 'success', title: t('finance.invoice_created', { defaultValue: 'Invoice created successfully' }) });
     },
     onError: (e: Error) =>
@@ -2350,6 +2497,10 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
       // sent invoice look like a sent -> sent transition, which the backend
       // table does not allow and would reject with a 400.
       const statusChanged = data.form.status !== data.prevStatus;
+      // Sent only when changed, so an issued invoice is not refused for a
+      // retention the form merely read back.
+      const retention = paymentDecimalInput(data.form.retention_amount) ?? '0';
+      const retentionChanged = Number(retention) !== Number(editingInvoice?.retention_amount ?? 0);
       return apiPatch(`/v1/finance/${data.id}`, {
         contact_id: data.form.contact_id || null,
         invoice_direction: data.form.direction,
@@ -2365,6 +2516,7 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
         purchase_order_id:
           data.form.direction === 'payable' && data.form.purchase_order_id ? data.form.purchase_order_id : null,
         ...(statusChanged ? { status: data.form.status } : {}),
+        ...(retentionChanged ? { retention_amount: retention } : {}),
       });
     },
     onSuccess: () => {
@@ -2435,13 +2587,16 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
       amount: Number(inv.amount ?? 0),
       currency: inv.currency || projectCurrency || undefined,
     }));
+    // Paid is what the payments settled, part payments included, and open is
+    // what is left (both server-computed), so a part-paid invoice counts in
+    // both columns instead of in neither.
     const totalPaid = filtered
-      .filter((inv) => inv.status === 'paid')
-      .map((inv) => ({
-        amount: Number(inv.amount ?? 0),
-        currency: inv.currency || projectCurrency || undefined,
-      }));
-    return { totalAmount, totalPaid };
+      .map((inv) => ({ amount: invoiceSettledAmount(inv), currency: inv.currency || projectCurrency || undefined }))
+      .filter((item) => item.amount !== 0);
+    const totalOpen = filtered
+      .map((inv) => ({ amount: invoiceOpenAmount(inv), currency: inv.currency || projectCurrency || undefined }))
+      .filter((item) => item.amount !== 0);
+    return { totalAmount, totalPaid, totalOpen };
   }, [filtered, projectCurrency]);
 
   // draft -> pending. A non-privileged transition (finance.update) so it is
@@ -2480,11 +2635,10 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
       addToast({ type: 'error', title: t('finance.approve_failed', { defaultValue: 'Failed to approve invoice' }), message: e.message }),
   });
 
-  // Records the payment for what is still open, then moves the status. The
-  // status change alone wrote no payment, so payments, cash flow and the
-  // statements stayed at zero for every invoice closed from this button.
+  // The server pays exactly what is still open (after part payments and the
+  // retainage they withheld) and closes the invoice, in one request.
   const markPaidMutation = useMutation({
-    mutationFn: (invoice: Invoice) => settleAndMarkPaid(invoice, new Date().toISOString().slice(0, 10)),
+    mutationFn: (invoice: Invoice) => settleAndMarkPaid(invoice),
     onSuccess: () => {
       void invalidateFinanceFigures(queryClient);
       addToast({
@@ -2495,6 +2649,63 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
     onError: (e: Error) =>
       addToast({ type: 'error', title: t('finance.pay_failed', { defaultValue: 'Failed to mark invoice as paid' }), message: e.message }),
   });
+
+  // The confirmation names the amount that will actually be paid: only what
+  // is still open, so a part-paid invoice is visibly not paid a second time.
+  // When retention is still to be held back, the cash paid and the retention
+  // withheld are named separately: the cash is less than what is open.
+  const confirmMarkPaid = async (inv: Invoice) => {
+    const currency = inv.currency || projectCurrency;
+    const open = formatCurrency(invoiceOpenAmount(inv), currency);
+    const split = markPaidSplit(inv);
+    const cash = formatCurrency(split.cash, currency);
+    const retention = formatCurrency(split.withheld, currency);
+    const paid = formatCurrency(invoiceSettledAmount(inv), currency);
+    const partial = isPartiallyPaid(inv);
+    let message: string;
+    if (split.withheld > 0) {
+      message = partial
+        ? t('finance.confirm_pay_msg_remaining_retention', {
+            defaultValue:
+              '{{paid}} has already been paid on invoice {{number}}. Of the {{open}} still open, this pays {{cash}} in cash and withholds {{retention}} as retention, then closes the invoice. The payment is a ledger entry and cannot be undone.',
+            paid,
+            open,
+            cash,
+            retention,
+            number: inv.invoice_number,
+          })
+        : t('finance.confirm_pay_msg_open_retention', {
+            defaultValue:
+              'Of the {{open}} open on invoice {{number}}, this pays {{cash}} in cash and withholds {{retention}} as retention, then closes the invoice. The payment is a ledger entry and cannot be undone.',
+            open,
+            cash,
+            retention,
+            number: inv.invoice_number,
+          });
+    } else {
+      message = partial
+        ? t('finance.confirm_pay_msg_remaining', {
+            defaultValue:
+              '{{paid}} has already been paid on invoice {{number}}. This records a payment of the {{open}} still open and closes the invoice. The payment is a ledger entry and cannot be undone.',
+            paid,
+            open,
+            number: inv.invoice_number,
+          })
+        : t('finance.confirm_pay_msg_open', {
+            defaultValue:
+              'This records a payment of the {{open}} open on invoice {{number}} and closes the invoice. The payment is a ledger entry and cannot be undone.',
+            open,
+            number: inv.invoice_number,
+          });
+    }
+    const ok = await confirm({
+      title: t('finance.confirm_pay_title', { defaultValue: 'Mark as paid?' }),
+      message,
+      confirmLabel: t('finance.mark_paid', { defaultValue: 'Mark Paid' }),
+      variant: 'warning',
+    });
+    if (ok) markPaidMutation.mutate(inv);
+  };
 
   return (
     <div className="space-y-4">
@@ -2561,7 +2772,7 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
             size="sm"
             icon={<Plus size={14} />}
             onClick={() => {
-              setInvoiceForm({ direction: subTab, counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', invoice_number: '', lines: [newEditorLine(defaultVat)], lines_dirty: false, currency: projectCurrency, description: '', buyer_reference: '', status: 'draft', purchase_order_id: '' });
+              setInvoiceForm({ direction: subTab, counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', invoice_number: '', lines: [newEditorLine(defaultVat)], lines_dirty: false, currency: projectCurrency, description: '', buyer_reference: '', status: 'draft', purchase_order_id: '', retention_amount: '' });
               setInvoiceErrors({});
               setShowCreate(true);
             }}
@@ -2639,7 +2850,7 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
                   ? {
                       label: t('finance.new_invoice', { defaultValue: 'New Invoice' }),
                       onClick: () => {
-                        setInvoiceForm({ direction: subTab, counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', invoice_number: '', lines: [newEditorLine(defaultVat)], lines_dirty: false, currency: projectCurrency, description: '', buyer_reference: '', status: 'draft', purchase_order_id: '' });
+                        setInvoiceForm({ direction: subTab, counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', invoice_number: '', lines: [newEditorLine(defaultVat)], lines_dirty: false, currency: projectCurrency, description: '', buyer_reference: '', status: 'draft', purchase_order_id: '', retention_amount: '' });
                         setInvoiceErrors({});
                         setShowCreate(true);
                       },
@@ -2758,16 +2969,29 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <MoneyDisplay amount={inv.amount} currency={inv.currency} />
+                        {isPartiallyPaid(inv) && (
+                          <div className="text-2xs text-content-tertiary mt-0.5" data-testid={`invoice-open-${inv.id}`}>
+                            {t('finance.amount_open', { defaultValue: 'Open' })}:{' '}
+                            <MoneyDisplay amount={invoiceOpenAmount(inv)} currency={inv.currency} />
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <Badge
-                          variant={INVOICE_STATUS_COLORS[inv.status] ?? 'neutral'}
-                          size="sm"
-                        >
-                          {t(`finance.status_${inv.status}`, {
-                            defaultValue: inv.status,
-                          })}
-                        </Badge>
+                        <div className="inline-flex flex-wrap items-center justify-center gap-1">
+                          <Badge
+                            variant={INVOICE_STATUS_COLORS[inv.status] ?? 'neutral'}
+                            size="sm"
+                          >
+                            {t(`finance.status_${inv.status}`, {
+                              defaultValue: inv.status,
+                            })}
+                          </Badge>
+                          {isPartiallyPaid(inv) && (
+                            <Badge variant="warning" size="sm">
+                              {t('finance.status_partially_paid', { defaultValue: 'Partially paid' })}
+                            </Badge>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="flex items-center justify-end gap-1">
@@ -2831,18 +3055,7 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
                             <Button
                               variant="primary"
                               size="sm"
-                              onClick={async () => {
-                                const ok = await confirm({
-                                  title: t('finance.confirm_pay_title', { defaultValue: 'Mark as paid?' }),
-                                  message: t('finance.confirm_pay_msg_immutable', {
-                                    defaultValue:
-                                      'This records the payment as an immutable ledger entry and closes the invoice. It cannot be undone.',
-                                  }),
-                                  confirmLabel: t('finance.mark_paid', { defaultValue: 'Mark Paid' }),
-                                  variant: 'danger',
-                                });
-                                if (ok) markPaidMutation.mutate(inv);
-                              }}
+                              onClick={() => void confirmMarkPaid(inv)}
                               loading={markPaidMutation.isPending}
                             >
                               {t('finance.mark_paid', { defaultValue: 'Mark Paid' })}
@@ -2863,8 +3076,14 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
                         <MultiCurrencyTotal items={invoiceTotals.totalAmount} variant="inline" />
                       </td>
                       <td className="px-4 py-3 text-center text-xs text-content-tertiary">
-                        {t('finance.total_paid', { defaultValue: 'Paid' })}:{' '}
-                        <MultiCurrencyTotal items={invoiceTotals.totalPaid} variant="inline" />
+                        <div>
+                          {t('finance.total_paid', { defaultValue: 'Paid' })}:{' '}
+                          <MultiCurrencyTotal items={invoiceTotals.totalPaid} variant="inline" />
+                        </div>
+                        <div>
+                          {t('finance.total_open', { defaultValue: 'Open' })}:{' '}
+                          <MultiCurrencyTotal items={invoiceTotals.totalOpen} variant="inline" />
+                        </div>
                       </td>
                       <td />
                     </tr>
@@ -2886,6 +3105,11 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
                       <Badge variant={INVOICE_STATUS_COLORS[inv.status] ?? 'neutral'} size="sm">
                         {t(`finance.status_${inv.status}`, { defaultValue: inv.status })}
                       </Badge>
+                      {isPartiallyPaid(inv) && (
+                        <Badge variant="warning" size="sm">
+                          {t('finance.status_partially_paid', { defaultValue: 'Partially paid' })}
+                        </Badge>
+                      )}
                       <button
                         type="button"
                         onClick={() => openEditInvoice(inv)}
@@ -2927,6 +3151,12 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
                       {t('finance.due_date', { defaultValue: 'Due' })}: <DateDisplay value={inv.due_date} format="numeric" />
                     </div>
                   )}
+                  {isPartiallyPaid(inv) && (
+                    <div className="text-xs text-content-tertiary mt-1">
+                      {t('finance.amount_open', { defaultValue: 'Open' })}:{' '}
+                      <MoneyDisplay amount={invoiceOpenAmount(inv)} currency={inv.currency} />
+                    </div>
+                  )}
                   {/* Status actions mirror the desktop row so a draft invoice
                       can be advanced on mobile too (#284 - the card previously
                       exposed only Edit, leaving status unreachable on phones). */}
@@ -2966,18 +3196,7 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
                         <Button
                           variant="primary"
                           size="sm"
-                          onClick={async () => {
-                            const ok = await confirm({
-                              title: t('finance.confirm_pay_title', { defaultValue: 'Mark as paid?' }),
-                              message: t('finance.confirm_pay_msg_immutable', {
-                                defaultValue:
-                                  'This records the payment as an immutable ledger entry and closes the invoice. It cannot be undone.',
-                              }),
-                              confirmLabel: t('finance.mark_paid', { defaultValue: 'Mark Paid' }),
-                              variant: 'danger',
-                            });
-                            if (ok) markPaidMutation.mutate(inv);
-                          }}
+                          onClick={() => void confirmMarkPaid(inv)}
                           loading={markPaidMutation.isPending}
                         >
                           {t('finance.mark_paid', { defaultValue: 'Mark Paid' })}
@@ -3277,6 +3496,11 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
                   onChange={(poId) => setInvoiceForm((f) => ({ ...f, purchase_order_id: poId }))}
                   amountSubtotal={linesTotals(invoiceForm.lines).subtotal}
                   invoiceId={editingInvoice?.id}
+                  lines={invoiceForm.lines}
+                  onCopyLines={(orderLines) => {
+                    setInvoiceForm((f) => ({ ...f, lines: editorLinesFromOrder(orderLines, defaultVat), lines_dirty: true }));
+                    if (invoiceErrors.lines) setInvoiceErrors((prev) => { const next = { ...prev }; delete next.lines; return next; });
+                  }}
                 />
               </WideModalField>
             )}
@@ -3378,13 +3602,40 @@ export function InvoicesTab({ projectId }: { projectId: string }) {
           <WideModalSection columns={2}>
             <WideModalField
               label={t('finance.due_date', { defaultValue: 'Due Date' })}
-              span={2}
+              error={invoiceErrors.due_date}
             >
               <input
                 type="date"
                 value={invoiceForm.due_date}
-                onChange={(e) => setInvoiceForm((f) => ({ ...f, due_date: e.target.value }))}
-                className={inputCls}
+                min={invoiceForm.invoice_date || undefined}
+                onChange={(e) => {
+                  setInvoiceForm((f) => ({ ...f, due_date: e.target.value }));
+                  if (invoiceErrors.due_date) setInvoiceErrors((prev) => { const next = { ...prev }; delete next.due_date; return next; });
+                }}
+                className={clsx(inputCls, invoiceErrors.due_date && 'border-semantic-error focus:ring-red-300 focus:border-semantic-error')}
+                aria-label={t('finance.due_date', { defaultValue: 'Due Date' })}
+              />
+            </WideModalField>
+            <WideModalField
+              label={t('finance.retention_amount', { defaultValue: 'Retention' })}
+              hint={t('finance.retention_amount_hint', {
+                defaultValue: 'Retainage held back from payment until it is released. Leave empty for none.',
+              })}
+              error={invoiceErrors.retention_amount}
+            >
+              <input
+                type="text"
+                inputMode="decimal"
+                value={invoiceForm.retention_amount}
+                maxLength={50}
+                onChange={(e) => {
+                  setInvoiceForm((f) => ({ ...f, retention_amount: e.target.value }));
+                  if (invoiceErrors.retention_amount) setInvoiceErrors((prev) => { const next = { ...prev }; delete next.retention_amount; return next; });
+                }}
+                className={clsx(inputCls, invoiceErrors.retention_amount && 'border-semantic-error focus:ring-red-300 focus:border-semantic-error')}
+                placeholder="0"
+                aria-label={t('finance.retention_amount', { defaultValue: 'Retention' })}
+                data-testid="invoice-retention-input"
               />
             </WideModalField>
             <WideModalField
@@ -3724,6 +3975,8 @@ function EVMTab({
      *  "Abweichung" never matched "Variance"). */
     isVariance?: boolean;
     good?: 'high' | 'low';
+    /** Optional [on-track, off-track] wording replacing the generic pair. */
+    status?: [string, string];
   }[] = [
     {
       label: t('finance.evm_bac', { defaultValue: 'BAC (Budget at Completion)' }),
@@ -3758,6 +4011,10 @@ function EVMTab({
       isCurrency: false,
       isIndex: true,
       good: 'high',
+      status: [
+        t('finance.evm_cpi_under_budget', { defaultValue: 'Under budget' }),
+        t('finance.evm_cpi_over_budget', { defaultValue: 'Over budget' }),
+      ],
     },
     {
       label: t('finance.evm_sv', { defaultValue: 'SV (Schedule Variance)' }),
@@ -3793,6 +4050,10 @@ function EVMTab({
       isCurrency: false,
       isIndex: true,
       good: 'low',
+      status: [
+        t('finance.evm_tcpi_achievable', { defaultValue: 'Budget achievable' }),
+        t('finance.evm_tcpi_needs_savings', { defaultValue: 'Needs cost savings' }),
+      ],
     },
   ];
 
@@ -3887,9 +4148,11 @@ function EVMTab({
                         onTrack ? 'text-semantic-success' : 'text-semantic-error'
                       }
                     >
-                      {onTrack
-                        ? t('finance.on_track', { defaultValue: 'On track' })
-                        : t('finance.behind', { defaultValue: 'Behind' })}
+                      {kpi.status
+                        ? kpi.status[onTrack ? 0 : 1]
+                        : onTrack
+                          ? t('finance.on_track', { defaultValue: 'On track' })
+                          : t('finance.behind', { defaultValue: 'Behind' })}
                     </span>
                   </div>
                 );

@@ -15,7 +15,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
-import { InvoicePurchaseOrderField } from '../InvoicePurchaseOrderField';
+import { fireEvent } from '@testing-library/react';
+import { InvoicePurchaseOrderField, orderLinesToBill } from '../InvoicePurchaseOrderField';
 
 const api = vi.hoisted(() => ({
   apiGet: vi.fn(),
@@ -164,5 +165,84 @@ describe('InvoicePurchaseOrderField', () => {
     const figures = await screen.findByTestId('invoice-po-figures');
     const values = Array.from(figures.querySelectorAll('dd')).map((node) => node.textContent);
     expect(values).toEqual(['$10.00', '—', '—']);
+  });
+
+  it('checks the lines being entered, not only the amount', async () => {
+    renderField({
+      value: 'po-issued',
+      amountSubtotal: 50000,
+      lines: [
+        { description: 'Glass panel', quantity: '200' },
+        { description: 'blank', quantity: '' },
+      ],
+    });
+    await waitFor(() => expect(api.apiPost).toHaveBeenCalled(), { timeout: 3000 });
+    const [, body] = api.apiPost.mock.calls.at(-1) ?? [];
+    expect(body).toMatchObject({ line_items: [{ description: 'Glass panel', quantity: '200' }] });
+  });
+
+  it('says a mismatch holds back approval and payment, not the save', async () => {
+    api.apiPost.mockResolvedValue({
+      results: [{ rule_id: 'procurement.invoice_quantity_received', severity: 'warning', passed: false, message: 'Over' }],
+    });
+    renderField({ value: 'po-issued', amountSubtotal: 100 });
+    const box = await screen.findByTestId('invoice-po-warnings', {}, { timeout: 3000 });
+    expect(box.textContent).toMatch(/cannot be approved or paid/);
+  });
+
+  it('copies the order lines still to bill into the invoice', async () => {
+    api.apiGet.mockImplementation((url: string) => {
+      if (url.endsWith('/match-status/')) {
+        return Promise.resolve({
+          lines: [
+            { line_id: 'l1', received_qty: '150', invoiced_qty: '0' },
+            { line_id: 'l2', received_qty: '10', invoiced_qty: '10' },
+          ],
+        });
+      }
+      if (url.startsWith('/v1/procurement/po-issued')) {
+        return Promise.resolve({
+          items: [
+            { id: 'l1', description: 'Glass panel', quantity: '200', unit: 'pcs', unit_rate: '250.00', wbs_id: 'w1', cost_category: 'material', cost_line_id: 'cl1' },
+            { id: 'l2', description: 'Frames', quantity: '10', unit: 'pcs', unit_rate: '80.00' },
+          ],
+        });
+      }
+      return Promise.resolve({ items: ORDERS, total: ORDERS.length });
+    });
+    const onCopyLines = vi.fn();
+    renderField({ value: 'po-issued', onCopyLines });
+    fireEvent.click(await screen.findByTestId('invoice-po-copy-lines'));
+    await waitFor(() => expect(onCopyLines).toHaveBeenCalled());
+    expect(onCopyLines.mock.calls[0]?.[0]).toEqual([
+      { description: 'Glass panel', quantity: '150', unit: 'pcs', unit_rate: '250.00', wbs_id: 'w1', cost_category: 'material', cost_line_id: 'cl1' },
+    ]);
+  });
+});
+
+describe('orderLinesToBill', () => {
+  const items = [
+    { id: 'l1', description: 'Glass panel', quantity: '200', unit: 'pcs', unit_rate: '250' },
+    { id: 'l2', description: 'Sealant', quantity: '5.5', unit: 'kg', unit_rate: '12' },
+  ];
+
+  it('bills up to what was received, less what is invoiced, once anything is received', () => {
+    const lines = orderLinesToBill(items, [
+      { line_id: 'l1', received_qty: '150', invoiced_qty: '20' },
+      { line_id: 'l2', received_qty: '0', invoiced_qty: '0' },
+    ]);
+    expect(lines.map((l) => [l.description, l.quantity])).toEqual([['Glass panel', '130']]);
+  });
+
+  it('bills up to what was ordered while nothing has been received', () => {
+    const lines = orderLinesToBill(items, [{ line_id: 'l2', received_qty: '0', invoiced_qty: '1.5' }]);
+    expect(lines.map((l) => [l.description, l.quantity])).toEqual([
+      ['Glass panel', '200'],
+      ['Sealant', '4'],
+    ]);
+  });
+
+  it('leaves out a line with nothing left to bill', () => {
+    expect(orderLinesToBill(items.slice(0, 1), [{ line_id: 'l1', received_qty: '50', invoiced_qty: '60' }])).toEqual([]);
   });
 });

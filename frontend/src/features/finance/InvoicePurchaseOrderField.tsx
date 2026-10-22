@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, ListPlus } from 'lucide-react';
 import { apiGet, apiPost, type Page } from '@/shared/lib/api';
 import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
 import { isDecimalString, subtractDecimalStrings } from '@/shared/lib/exactDecimal';
@@ -17,6 +17,73 @@ export interface LinkableOrder {
   amount_subtotal: string;
   invoiced_net?: string;
   invoice_count?: number;
+}
+
+/** One line of an order (POItemResponse on the wire). */
+export interface OrderItem {
+  id: string;
+  description: string;
+  quantity: string;
+  unit?: string | null;
+  unit_rate: string;
+  wbs_id?: string | null;
+  cost_category?: string | null;
+  cost_line_id?: string | null;
+}
+
+/** One line of the order's three-way match (POLineMatchStatus on the wire). */
+export interface OrderMatchLine {
+  line_id: string;
+  received_qty: string;
+  invoiced_qty: string;
+}
+
+/** An order line still to be billed, ready to become an invoice line. */
+export interface OrderLineToBill {
+  description: string;
+  quantity: string;
+  unit: string;
+  unit_rate: string;
+  wbs_id: string | null;
+  cost_category: string | null;
+  cost_line_id: string | null;
+}
+
+/** An invoice line as the match check reads it. */
+export interface InvoiceCheckLine {
+  description: string;
+  quantity: string;
+}
+
+/**
+ * The order lines still to be billed, at the quantity still to bill.
+ *
+ * Once anything on the order has been received, a line is billed up to what
+ * was received less what is already invoiced, the three-way match the server
+ * holds the invoice to before it is approved or paid. Before any receipt (an
+ * order for services, or one whose deliveries are not booked here) it is
+ * billed up to what was ordered. Lines with nothing left are left out.
+ */
+export function orderLinesToBill(items: OrderItem[], match: OrderMatchLine[] | undefined): OrderLineToBill[] {
+  const byLine = new Map((match ?? []).map((m) => [m.line_id, m]));
+  const anyReceived = (match ?? []).some((m) => Number(m.received_qty) > 0);
+  const out: OrderLineToBill[] = [];
+  for (const item of items) {
+    const m = byLine.get(item.id);
+    const base = anyReceived ? (m?.received_qty ?? '0') : item.quantity;
+    const left = subtractDecimalStrings(base, m?.invoiced_qty ?? '0');
+    if (left === null || !(Number(left) > 0)) continue;
+    out.push({
+      description: item.description,
+      quantity: String(Number(left)),
+      unit: item.unit ?? '',
+      unit_rate: item.unit_rate,
+      wbs_id: item.wbs_id ?? null,
+      cost_category: item.cost_category ?? null,
+      cost_line_id: item.cost_line_id ?? null,
+    });
+  }
+  return out;
 }
 
 interface InvoiceCheckResult {
@@ -39,8 +106,10 @@ const UNLINKABLE_STATUSES = new Set(['draft', 'cancelled']);
  * placed with the invoice's supplier, which is the same rule the server
  * applies when it saves the link. Beside the choice it shows what the order
  * is worth, what has been invoiced on it so far and what is still open, all
- * net of VAT, and the three-way match warnings for the amount being entered.
- * The warnings never block the save: the person entering the invoice decides.
+ * net of VAT, and the three-way match warnings for the lines being entered.
+ * The warnings never block the save; the server holds the invoice back from
+ * approval and payment while it bills more than was received. The order's
+ * lines still to bill can be copied into the invoice.
  */
 export function InvoicePurchaseOrderField({
   projectId,
@@ -49,6 +118,8 @@ export function InvoicePurchaseOrderField({
   onChange,
   amountSubtotal,
   invoiceId,
+  lines,
+  onCopyLines,
 }: {
   projectId: string;
   contactId: string;
@@ -58,8 +129,14 @@ export function InvoicePurchaseOrderField({
   amountSubtotal: number;
   /** Set when editing, so the invoice is not counted against itself. */
   invoiceId?: string;
+  /** The invoice's lines as typed, matched by quantity against the order's receipts. */
+  lines?: InvoiceCheckLine[];
+  /** Offered when set: replaces the invoice's lines with the order's lines still to bill. */
+  onCopyLines?: (lines: OrderLineToBill[]) => void;
 }) {
   const { t } = useTranslation();
+  const [copying, setCopying] = useState(false);
+  const [copyError, setCopyError] = useState('');
 
   const { data: ordersPage, isLoading } = useQuery({
     queryKey: ['procurement-po', projectId, 'vendor', contactId],
@@ -78,23 +155,62 @@ export function InvoicePurchaseOrderField({
   );
   const selected = orders.find((po) => po.id === value);
 
-  // Weigh the amount once typing settles, not on every keystroke.
-  const [checkedAmount, setCheckedAmount] = useState(amountSubtotal);
+  // Weigh the amount and the lines once typing settles, not on every keystroke.
+  const checkLines = useMemo(
+    () =>
+      (lines ?? [])
+        .filter((line) => Number(line.quantity) > 0)
+        .map((line) => ({ description: line.description.trim(), quantity: String(line.quantity).trim() })),
+    [lines],
+  );
+  const linesKey = JSON.stringify(checkLines);
+  const [checked, setChecked] = useState({ amount: amountSubtotal, linesKey });
   useEffect(() => {
-    const handle = window.setTimeout(() => setCheckedAmount(amountSubtotal), 400);
+    const handle = window.setTimeout(() => setChecked({ amount: amountSubtotal, linesKey }), 400);
     return () => window.clearTimeout(handle);
-  }, [amountSubtotal]);
+  }, [amountSubtotal, linesKey]);
 
   const { data: check } = useQuery({
-    queryKey: ['procurement-invoice-check', value, checkedAmount, invoiceId ?? ''],
+    queryKey: ['procurement-invoice-check', value, checked.amount, checked.linesKey, invoiceId ?? ''],
     queryFn: () =>
       apiPost<InvoiceCheckResult>(`/v1/procurement/${value}/invoice-check/`, {
-        amount_subtotal: String(checkedAmount),
-        line_items: [],
+        amount_subtotal: String(checked.amount),
+        line_items: JSON.parse(checked.linesKey) as InvoiceCheckLine[],
         invoice_id: invoiceId || undefined,
       }),
-    enabled: !!value && checkedAmount > 0,
+    enabled: !!value && checked.amount > 0,
   });
+
+  const copyLines = async () => {
+    if (!value || !onCopyLines) return;
+    setCopying(true);
+    setCopyError('');
+    try {
+      const [order, match] = await Promise.all([
+        apiGet<{ items?: OrderItem[] }>(`/v1/procurement/${encodeURIComponent(value)}`),
+        apiGet<{ lines?: OrderMatchLine[] }>(`/v1/procurement/${encodeURIComponent(value)}/match-status/`),
+      ]);
+      const toBill = orderLinesToBill(order?.items ?? [], match?.lines);
+      if (toBill.length === 0) {
+        setCopyError(
+          t('finance.po_copy_lines_nothing', {
+            defaultValue: 'Every line of this order is already invoiced up to what was received.',
+          }),
+        );
+        return;
+      }
+      onCopyLines(toBill);
+    } catch (e) {
+      setCopyError(
+        t('finance.po_copy_lines_failed', {
+          defaultValue: 'The lines of the order could not be loaded: {{reason}}',
+          reason: e instanceof Error ? e.message : String(e),
+        }),
+      );
+    } finally {
+      setCopying(false);
+    }
+  };
   const warnings = (check?.results ?? []).filter((r) => !r.passed);
 
   if (!contactId) {
@@ -168,6 +284,32 @@ export function InvoicePurchaseOrderField({
         </dl>
       )}
 
+      {selected && onCopyLines && (
+        <div className="space-y-1">
+          <button
+            type="button"
+            onClick={() => void copyLines()}
+            disabled={copying}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-content-secondary hover:bg-surface-secondary hover:text-oe-blue disabled:opacity-60"
+            data-testid="invoice-po-copy-lines"
+          >
+            <ListPlus size={14} />
+            {t('finance.po_copy_lines', { defaultValue: 'Copy lines from the order' })}
+          </button>
+          <p className="text-2xs text-content-tertiary">
+            {t('finance.po_copy_lines_hint', {
+              defaultValue:
+                'Replaces the invoice lines with the order lines still to bill, at the quantity received and not yet invoiced.',
+            })}
+          </p>
+          {copyError && (
+            <p className="text-xs text-semantic-error" role="alert" data-testid="invoice-po-copy-error">
+              {copyError}
+            </p>
+          )}
+        </div>
+      )}
+
       {selected && warnings.length > 0 && (
         <div
           className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-300"
@@ -182,8 +324,9 @@ export function InvoicePurchaseOrderField({
             ))}
           </ul>
           <p className="mt-1.5 text-2xs opacity-80">
-            {t('finance.po_link_warnings_note', {
-              defaultValue: 'These are warnings only. The invoice can still be saved.',
+            {t('finance.po_link_warnings_note_release', {
+              defaultValue:
+                'The invoice can still be saved, but it cannot be approved or paid while it bills more than has been received.',
             })}
           </p>
         </div>

@@ -186,51 +186,112 @@ class InvoiceRepository:
         )
         return bool((await self.session.execute(stmt)).scalar_one())
 
+    async def settlement_rows(
+        self,
+        *,
+        project_id: uuid.UUID | None = None,
+        project_ids: set[uuid.UUID] | None = None,
+        invoice_ids: list[uuid.UUID] | None = None,
+        direction: str | None = None,
+    ) -> list[dict]:
+        """Every invoice in scope with the payments that settle it, for ``finance.settlement``.
+
+        Two queries whatever the number of invoices: the invoices, then their
+        payments. Money is summed in Python from the stored decimals, never in
+        SQL, because ``MoneyType`` is text on SQLite and a SQL ``SUM`` there
+        goes through floating point.
+
+        ``project_ids`` is the accessible-projects scope; an empty set reads
+        nothing. Each row carries ``id``, ``project_id``, ``direction``,
+        ``status``, ``currency_code``, ``invoice_number``, ``due_date``,
+        ``amount_total``, ``retention_amount`` and ``payments`` (a list of
+        ``(amount, withholding, is_refund, currency_code, exchange_rate)``, the
+        fields of :class:`~app.modules.finance.settlement.SettlementPayment`).
+        """
+        stmt = select(
+            Invoice.id,
+            Invoice.project_id,
+            Invoice.invoice_direction,
+            Invoice.status,
+            Invoice.currency_code,
+            Invoice.invoice_number,
+            Invoice.due_date,
+            Invoice.amount_total,
+            Invoice.retention_amount,
+        )
+        if project_id is not None:
+            stmt = stmt.where(Invoice.project_id == project_id)
+        elif project_ids is not None:
+            if not project_ids:
+                return []
+            stmt = stmt.where(Invoice.project_id.in_(project_ids))
+        if invoice_ids is not None:
+            if not invoice_ids:
+                return []
+            stmt = stmt.where(Invoice.id.in_(invoice_ids))
+        if direction is not None:
+            stmt = stmt.where(Invoice.invoice_direction == direction)
+        rows: dict[uuid.UUID, dict] = {}
+        for inv_id, proj_id, inv_dir, inv_status, currency, number, due, total, retention in (
+            await self.session.execute(stmt)
+        ).all():
+            rows[inv_id] = {
+                "id": inv_id,
+                "project_id": proj_id,
+                "direction": inv_dir,
+                "status": inv_status,
+                "currency_code": currency or "",
+                "invoice_number": number or "",
+                "due_date": due,
+                "amount_total": total,
+                "retention_amount": retention,
+                "payments": [],
+            }
+        if not rows:
+            return []
+        pay_stmt = select(
+            Payment.invoice_id,
+            Payment.amount,
+            Payment.withholding_amount,
+            Payment.is_refund,
+            Payment.currency_code,
+            Payment.exchange_rate_snapshot,
+        ).join(Invoice, Invoice.id == Payment.invoice_id)
+        if invoice_ids is not None:
+            pay_stmt = pay_stmt.where(Payment.invoice_id.in_(invoice_ids))
+        elif project_id is not None:
+            pay_stmt = pay_stmt.where(Invoice.project_id == project_id)
+        elif project_ids is not None:
+            pay_stmt = pay_stmt.where(Invoice.project_id.in_(project_ids))
+        for inv_id, amount, withholding, is_refund, pay_currency, rate in (await self.session.execute(pay_stmt)).all():
+            row = rows.get(inv_id)
+            if row is not None:
+                row["payments"].append((amount, withholding, bool(is_refund), pay_currency or "", rate))
+        return list(rows.values())
+
     async def aggregate_for_dashboard(
         self,
         *,
         project_id: uuid.UUID | None = None,
         project_ids: set[uuid.UUID] | None = None,
     ) -> dict:
-        """Aggregate invoice KPIs using SQL instead of loading all rows.
+        """Aggregate invoice KPIs: open payable/receivable/overdue amounts and status counts.
 
-        Returns dict with payable/receivable/overdue totals and status counts,
-        computed entirely in the database for performance.
+        The money is what is still open on each invoice (total less what its
+        payments settled, see :mod:`app.modules.finance.settlement`), not its
+        full total: a partial payment lowers the unpaid and overdue figures by
+        exactly what was paid. Overdue is the open amount of an invoice whose
+        due date has passed.
 
         ``project_ids`` scopes the aggregation to a set of projects (the
         accessible-projects scope of a non-admin caller) when ``project_id`` is
         not given. An empty set aggregates nothing - the safe default for a
         caller with no projects, never every tenant's rows.
         """
-        from sqlalchemy import Numeric, cast
+        from datetime import date
 
-        # Group by currency as well so the caller can FX-convert each
-        # currency's subtotal into the project base currency rather than
-        # blindly summing mixed currencies (domain money rule).
-        base = select(
-            Invoice.invoice_direction,
-            Invoice.status,
-            Invoice.currency_code,
-            func.count().label("cnt"),
-            func.sum(cast(Invoice.amount_total, Numeric)).label("total"),
-        )
-        if project_id is not None:
-            base = base.where(Invoice.project_id == project_id)
-        elif project_ids is not None:
-            base = base.where(Invoice.project_id.in_(project_ids))
-        base = base.group_by(
-            Invoice.invoice_direction,
-            Invoice.status,
-            Invoice.currency_code,
-        )
+        from app.modules.finance.settlement import SettlementPayment, settle
 
-        result = await self.session.execute(base)
-        rows = result.all()
-
-        # Per-currency subtotals: {currency_code: amount}. Empty currency_code
-        # is kept under "" so the service treats it as the base currency.
-        payable_by_currency: dict[str, float] = {}
-        receivable_by_currency: dict[str, float] = {}
         status_counts: dict[str, int] = {
             "draft": 0,
             "pending": 0,
@@ -242,65 +303,45 @@ class InvoiceRepository:
             "paid": 0,
             "cancelled": 0,
         }
-
-        for direction, status, currency_code, cnt, total in rows:
-            if status in status_counts:
-                status_counts[status] += cnt
-            if status not in ("paid", "cancelled"):
-                code = currency_code or ""
-                amount = float(total or 0)
-                if direction == "payable":
-                    payable_by_currency[code] = payable_by_currency.get(code, 0.0) + amount
-                elif direction == "receivable":
-                    receivable_by_currency[code] = receivable_by_currency.get(code, 0.0) + amount
-
-        # Overdue count + per-currency amount
-        from datetime import date
-
-        today = date.today().isoformat()
-        overdue_base = select(
-            Invoice.currency_code,
-            func.count().label("cnt"),
-            func.coalesce(func.sum(cast(Invoice.amount_total, Numeric)), 0).label("total"),
-        ).where(
-            Invoice.due_date < today,
-            Invoice.status.notin_(("paid", "cancelled")),
-            Invoice.due_date.isnot(None),
-            # due_date is a VARCHAR; an empty string is a valid persisted value
-            # (a draft with no due date set). Lexically "" < today is True, so
-            # without this guard blank-due-date invoices pollute the overdue KPI
-            # as phantom overdues. Exclude them.
-            Invoice.due_date != "",
-        )
-        if project_id is not None:
-            overdue_base = overdue_base.where(Invoice.project_id == project_id)
-        elif project_ids is not None:
-            overdue_base = overdue_base.where(Invoice.project_id.in_(project_ids))
-        overdue_base = overdue_base.group_by(Invoice.currency_code)
-
-        overdue_rows = (await self.session.execute(overdue_base)).all()
-        overdue_by_currency: dict[str, float] = {}
+        # Per-currency subtotals: {currency_code: amount}. Empty currency_code
+        # is kept under "" so the service treats it as the base currency.
+        payable_by_currency: dict[str, Decimal] = {}
+        receivable_by_currency: dict[str, Decimal] = {}
+        overdue_by_currency: dict[str, Decimal] = {}
         overdue_count = 0
-        for currency_code, cnt, total in overdue_rows:
-            overdue_by_currency[currency_code or ""] = overdue_by_currency.get(currency_code or "", 0.0) + float(
-                total or 0
+        currency_votes: dict[str, int] = {}
+        today = date.today().isoformat()
+
+        for row in await self.settlement_rows(project_id=project_id, project_ids=project_ids):
+            inv_status = row["status"]
+            if inv_status in status_counts:
+                status_counts[inv_status] += 1
+            code = row["currency_code"]
+            if code:
+                currency_votes[code] = currency_votes.get(code, 0) + 1
+            position = settle(
+                total=row["amount_total"],
+                status=inv_status,
+                currency_code=code,
+                payments=[SettlementPayment(*pay) for pay in row["payments"]],
+                retention=row["retention_amount"],
             )
-            overdue_count += cnt
+            if position.open <= 0:
+                continue
+            if row["direction"] == "payable":
+                payable_by_currency[code] = payable_by_currency.get(code, Decimal("0")) + position.open
+            elif row["direction"] == "receivable":
+                receivable_by_currency[code] = receivable_by_currency.get(code, Decimal("0")) + position.open
+            # due_date is a VARCHAR; an empty string is a valid persisted value
+            # (a draft with no due date set) and must not read as overdue.
+            due = (row["due_date"] or "")[:10]
+            if due and due < today:
+                overdue_by_currency[code] = overdue_by_currency.get(code, Decimal("0")) + position.open
+                overdue_count += 1
 
         # Dominant invoice currency - used as a dashboard fallback when no
         # budget line carries a currency yet.
-        cur_stmt = (
-            select(Invoice.currency_code, func.count().label("cnt"))
-            .where(Invoice.currency_code != "")
-            .group_by(Invoice.currency_code)
-            .order_by(func.count().desc())
-        )
-        if project_id is not None:
-            cur_stmt = cur_stmt.where(Invoice.project_id == project_id)
-        elif project_ids is not None:
-            cur_stmt = cur_stmt.where(Invoice.project_id.in_(project_ids))
-        cur_row = (await self.session.execute(cur_stmt)).first()
-        currency = cur_row[0] if cur_row else ""
+        currency = max(currency_votes.items(), key=lambda kv: kv[1])[0] if currency_votes else ""
 
         return {
             "payable_by_currency": payable_by_currency,
