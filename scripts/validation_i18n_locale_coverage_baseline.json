@@ -140,6 +140,14 @@
       "de",
       "en"
     ],
+    "backend/app/modules/inspections/messages": [
+      "en",
+      "vi"
+    ],
+    "backend/app/modules/payment_release/messages": [
+      "en",
+      "vi"
+    ],
     "backend/app/modules/permits/messages": [
       "de",
       "en"
@@ -189,7 +197,8 @@
     ],
     "backend/app/modules/submittals/messages": [
       "en",
-      "tr"
+      "tr",
+      "vi"
     ]
   }
 }
