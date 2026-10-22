@@ -1367,7 +1367,7 @@ const resource = {
     "propdev.snag.new": "Log new punch item",
     "propdev.snag.log": "Log punch item",
     "propdev.snag.no_buyer_warn": "No buyer is linked to this plot - the punch item will be unattributed and cannot be promoted to a warranty claim until a buyer is assigned.",
-    "validation_rules.intro_1": "All validation rules built into OpenConstructionERP. Use this catalog to see what gets checked on every import (bid schedules, CAD models, tender data, takeoff results).",
+    "validation_rules.intro_1": "All validation rules built into CesCons. Use this catalog to see what gets checked on every import (bid schedules, CAD models, tender data, takeoff results).",
     "qms.how_step4_desc": "Track punch items on the punch list and clear them through to handover.",
     "qms.empty_punch_desc": "Punch item items captured on walkthroughs land here for assignment and close-out.",
     "quantities.flow_boq": "Bid Schedule / estimate",

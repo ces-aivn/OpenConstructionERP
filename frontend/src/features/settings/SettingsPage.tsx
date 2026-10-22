@@ -54,7 +54,7 @@ import {
   ScrollText,
   Building2,
 } from 'lucide-react';
-import { Card, CardHeader, CardContent, CardFooter, Button, Badge, InfoHint, Skeleton, Breadcrumb, DismissibleInfo, IntroRichText, ConfirmDialog, ModuleGuideButton, CountryFlag } from '@/shared/ui';
+import { Card, CardHeader, CardContent, CardFooter, Button, Badge, InfoHint, Skeleton, Breadcrumb, DismissibleInfo, IntroRichText, ConfirmDialog, ModuleGuideButton, CountryFlag, SourceNotice } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { settingsGuide } from './settingsGuide';
 import { useTabKeyboardNav } from '@/shared/hooks/useTabKeyboardNav';
@@ -1782,6 +1782,8 @@ export function SettingsPage() {
               {t('settings.about_link', { defaultValue: 'About OpenConstructionERP' })}
               <ChevronRight size={11} />
             </Link>
+            {/* AGPL-3.0 section 13: where users get this build's source. */}
+            <SourceNotice className="mt-2" />
           </div>
         </aside>
 
@@ -2326,6 +2328,7 @@ export function SettingsPage() {
               {t('settings.about_link', { defaultValue: 'About OpenConstructionERP' })}
               <ChevronRight size={12} />
             </Link>
+            <SourceNotice className="mt-2" />
           </div>
         </div>
       </div>

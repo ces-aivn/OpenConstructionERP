@@ -4,12 +4,11 @@
 //
 // Renders the user's company logo / name when they have customised
 // the platform via the edit modal; otherwise renders the default
-// OpenConstructionERP wordmark. Clicking the brand area (or the
-// "Customise" pencil that appears on hover) opens the editor.
+// CesCons wordmark. Clicking a customised brand area (or the admin-only
+// "Customise" pencil) opens the editor.
 //
 // Layout rules:
-//   * No customisation → full OpenConstructionERP logo+wordmark, as
-//     before (visual parity with v3.0.5).
+//   * No customisation → CES mark + CesCons wordmark, linking home.
 //   * Logo set        → user's logo fills the header width;
 //                       "OpenConstructionERP" subtitle is rendered at
 //                       roughly 1/3 of the original size beneath it
@@ -32,7 +31,7 @@ import clsx from 'clsx';
 import { Pencil, Upload, Trash2, X, Building2, FileText } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { Logo } from '@/shared/ui';
+import { Logo, LogoWithText, BRAND_NAME } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import {
@@ -118,15 +117,9 @@ export function CustomBranding({ iconified }: CustomBrandingProps) {
       );
     }
     return (
-      <a
-        href="https://openconstructionerp.com/?utm_source=app"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="hover:opacity-80 transition-opacity"
-        title="OpenConstructionERP"
-      >
+      <Link to="/dashboard" className="hover:opacity-80 transition-opacity" title={BRAND_NAME}>
         <Logo size="sm" />
-      </a>
+      </Link>
     );
   }
 
@@ -189,36 +182,18 @@ export function CustomBranding({ iconified }: CustomBrandingProps) {
               </span>
             </button>
           ) : (
-            <a
-              href="https://openconstructionerp.com/?utm_source=app"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 hover:opacity-80 transition-opacity"
-              title="OpenConstructionERP"
+            <Link
+              to="/dashboard"
+              className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+              title={BRAND_NAME}
             >
-              {/* Compact wordmark — 13px text + smaller gap to fit
-                  the 248px sidebar minus the 32px edit button without
-                  visual crowding. Standard LogoWithText size="xs" used
-                  15px and clipped against the pencil. */}
-              <Logo size="xs" />
-              <span
-                className="text-[13px] font-medium text-content-primary whitespace-nowrap leading-none"
-                style={{
-                  fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif",
-                  letterSpacing: '-0.02em',
-                }}
-              >
-                Open<span className="text-oe-blue">Construction</span>
-                <span className="text-content-quaternary">ERP</span>
-              </span>
-            </a>
+              <LogoWithText size="sm" />
+            </Link>
           )}
         </div>
 
-        {/* RIGHT — always-visible edit button (36px square so it
-            doesn't crowd the wordmark). User asked for it to be
-            permanent (not hover-only) so discoverability of the
-            white-labelling feature is high. */}
+        {/* RIGHT — edit button, admins only: they own the workspace brand. */}
+        {isAdmin && (
         <button
           type="button"
           onClick={() => setEditing(true)}
@@ -237,6 +212,7 @@ export function CustomBranding({ iconified }: CustomBrandingProps) {
         >
           <Pencil size={13} strokeWidth={2.25} />
         </button>
+        )}
       </div>
 
       {editing && (

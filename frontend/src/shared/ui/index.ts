@@ -56,7 +56,8 @@ export type {
 
 export { StatusDot } from './StatusDot';
 
-export { Logo, LogoWithText } from './Logo';
+export { Logo, LogoWithText, BrandWordmark, BRAND_NAME, BRAND_TEAL, BRAND_LOGO_URL } from './Logo';
+export { SourceNotice, SOURCE_CODE_URL } from './SourceNotice';
 
 export { ShortcutsDialog } from './ShortcutsDialog';
 

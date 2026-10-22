@@ -41,14 +41,14 @@ function manifestJson(): Record<string, unknown> {
 describe('PWA manifest', () => {
   it('has the required identity fields', () => {
     const manifest = manifestJson();
-    expect(manifest.name).toBe('OpenConstructionERP');
-    expect(manifest.short_name).toBe('OCERP');
+    expect(manifest.name).toBe('CesCons');
+    expect(manifest.short_name).toBe('CesCons');
     expect(typeof manifest.description).toBe('string');
   });
 
-  it('sets the OCE theme palette', () => {
+  it('sets the CesCons theme palette', () => {
     const manifest = manifestJson();
-    expect(manifest.theme_color).toBe('#0284c7');
+    expect(manifest.theme_color).toBe('#0197b2');
     expect(manifest.background_color).toBe('#f7fbff');
   });
 
@@ -59,14 +59,12 @@ describe('PWA manifest', () => {
     expect(manifest.scope).toBe('/');
   });
 
-  it('ships icons in 192/256/384/512 + a maskable variant', () => {
+  it('ships 192 and 512 icons + a maskable variant', () => {
     const icons = manifestJson().icons as Array<{ src: string; sizes: string; purpose?: string }>;
     expect(Array.isArray(icons)).toBe(true);
 
     const sizes = icons.map((i) => i.sizes);
     expect(sizes).toContain('192x192');
-    expect(sizes).toContain('256x256');
-    expect(sizes).toContain('384x384');
     expect(sizes).toContain('512x512');
 
     const maskable = icons.find((i) => (i.purpose ?? '').includes('maskable'));
@@ -84,11 +82,10 @@ describe('PWA manifest', () => {
 // from vite.config.ts, which the build-output half above would report as a
 // missing file rather than as a removed plugin.
 describe('PWA plugin configuration', () => {
-  it('vite.config.ts still wires VitePWA with the OCERP manifest', () => {
+  it('vite.config.ts still wires VitePWA with the CesCons manifest', () => {
     const config = readFileSync(resolve(__dirname, '..', '..', 'vite.config.ts'), 'utf-8');
     expect(config).toContain('VitePWA');
-    expect(config).toContain("'OpenConstructionERP'");
-    expect(config).toContain("'OCERP'");
-    expect(config).toContain("'#0284c7'");
+    expect(config).toContain("'CesCons'");
+    expect(config).toContain("'#0197b2'");
   });
 });
