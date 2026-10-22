@@ -386,3 +386,75 @@ def test_response_survives_empty_numeric_columns():
     # (F-PFO-RISK-06): default probability 0.5 x medium severity (3) = 1.5.
     assert resp.risk_score == 1.5
     assert resp.response_cost == 0.0
+
+
+# ── One exposure definition and one matrix scale ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_matrix_cells_carry_the_server_score_and_tier(session):
+    svc = RiskService(session)
+    await svc.create_risk(_create(probability=0.9, impact_severity="critical"))
+    cells = await svc.get_matrix(PROJECT_ID)
+    by_axis = {(c["probability_score"], c["impact_score"]): c for c in cells}
+    assert len(by_axis) == 25
+    assert by_axis[(5, 5)]["count"] == 1
+    assert by_axis[(5, 5)]["score"] == 25
+    assert by_axis[(5, 5)]["tier"] == "critical"
+    assert by_axis[(1, 4)]["tier"] == "low"  # 4: the low band ends at 4
+    assert by_axis[(2, 3)]["tier"] == "medium"
+    assert by_axis[(3, 4)]["tier"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_matrix_and_risk_tier_bucket_probability_the_same_way(session):
+    """0.35 scores 2 on the risk row; the grid used to round it to the 0.3 row
+    by nearest-bucket and 0.41 to 0.5, so the row and the grid disagreed."""
+    svc = RiskService(session)
+    r1 = await svc.create_risk(_create(probability=0.35, impact_severity="high"))
+    r2 = await svc.create_risk(_create(probability=0.41, impact_severity="high"))
+    cells = await svc.get_matrix(PROJECT_ID)
+    hit = {(c["probability_score"], c["impact_score"]): c["risk_ids"] for c in cells if c["count"]}
+    assert hit == {(2, 4): [r1.id], (3, 4): [r2.id]}
+    assert r1.probability_score == 2 and r2.probability_score == 3
+
+
+@pytest.mark.asyncio
+async def test_high_critical_card_counts_the_matrix_tiers_not_the_severity_label(session):
+    """A 'high' severity at 20 % sits in the low band of the matrix; the card
+    must not call it high while the grid colours it green."""
+    svc = RiskService(session)
+    await svc.create_risk(_create(title="Unlikely", probability=0.2, impact_severity="high"))  # 1x4 = 4 low
+    await svc.create_risk(_create(title="Likely", probability=0.7, impact_severity="high"))  # 4x4 = 16 critical
+    closed = await svc.create_risk(_create(title="Retired", probability=0.9, impact_severity="critical"))
+    await svc.update_risk(closed.id, RiskUpdate(status="closed"))
+
+    summary = await svc.get_summary(PROJECT_ID)
+    cells = await svc.get_matrix(PROJECT_ID)
+    grid_high = sum(c["count"] for c in cells if c["tier"] in ("high", "critical"))
+
+    assert summary["high_critical_count"] == 1 == grid_high
+    assert summary["by_tier"] == {"low": 1, "critical": 1}
+
+
+@pytest.mark.asyncio
+async def test_each_risk_expected_value_sums_to_the_summary_exposure(session):
+    svc = RiskService(session)
+    a = await svc.create_risk(_create(probability=0.5, impact_cost=120_000))
+    b = await svc.create_risk(_create(probability=0.4, impact_cost=100_000))
+    c = await svc.create_risk(_create(probability=0.6, impact_cost=80_000))
+    await svc.update_risk(c.id, RiskUpdate(status="occurred"))
+    d = await svc.create_risk(_create(probability=0.9, impact_cost=500_000))
+    await svc.update_risk(d.id, RiskUpdate(status="closed"))
+
+    items, _ = await svc.list_risks(PROJECT_ID, limit=100)
+    responses = [_risk_to_response(i) for i in items]
+    by_id = {r.id: r for r in responses}
+    assert by_id[a.id].expected_value == 60_000
+    assert by_id[b.id].expected_value == 40_000
+    assert by_id[c.id].expected_value == 80_000  # occurred: certain
+    assert by_id[d.id].expected_value == 0  # closed: retired
+    summary = await svc.get_summary(PROJECT_ID)
+    assert float(sum(r.expected_value for r in responses)) == pytest.approx(summary["total_exposure"])
+    # The 1-25 matrix score travels with each risk next to its tier.
+    assert by_id[a.id].matrix_score == 3 * 3 and by_id[a.id].risk_tier == "medium"

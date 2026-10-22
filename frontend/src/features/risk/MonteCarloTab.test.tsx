@@ -59,3 +59,11 @@ describe('binMidpointLabel (Monte Carlo histogram)', () => {
     expect(parseLabelNumber(label)).toBe(2000);
   });
 });
+
+describe('binMidpointLabel on a schedule histogram', () => {
+  it('labels the bin in days, not money', () => {
+    const bin = { lower: '10.00', upper: '20.00' } as unknown as RiskHistogramBin;
+    const label = binMidpointLabel(bin, 'VND', 'schedule');
+    expect(label).toBe('15');
+  });
+});

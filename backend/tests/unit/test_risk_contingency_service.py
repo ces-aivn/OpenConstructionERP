@@ -171,7 +171,8 @@ async def test_simulation_leaves_out_closed_risks(session):
     assert result["tornado"] == []
 
 
-# No PERT triple on these risks, so every draw is the point estimate and the
+# No PERT triple on these risks and the impact spread is switched off, so an
+# occurred risk (weight 1) always lands on its point estimate and the
 # percentiles are exact numbers rather than samples.
 
 
@@ -182,7 +183,7 @@ async def test_simulation_keeps_an_occurred_delay_in_the_schedule(session):
     closed = await _risk(svc, probability=0.9, impact_cost=D("0"), impact_schedule_days=40)
     await svc.update_risk(closed, RiskUpdate(status="closed"))
 
-    result = await svc.simulate(PROJECT_ID, iterations=1000, mode="schedule")
+    result = await svc.simulate(PROJECT_ID, iterations=1000, mode="schedule", impact_spread=0)
     # The 30 days have happened: in full, not at 0.2 (6 days) and not dropped
     # (0). The closed risk's 40 days are gone.
     assert result["p50_schedule_days"] == 30
@@ -197,7 +198,7 @@ async def test_simulation_cost_counts_a_pending_occurred_risk_and_not_a_drawn_on
     drawn = await _risk(svc, probability=0.2, impact_cost=D("7000"), impact_schedule_days=5, status="occurred")
     await svc.confirm_contingency_drawdown(PROJECT_ID, drawn, _req("7000"))
 
-    result = await svc.simulate(PROJECT_ID, iterations=1000, mode="both")
+    result = await svc.simulate(PROJECT_ID, iterations=1000, mode="both", impact_spread=0)
     # Pending in full (4000), drawn out (its money is spent): 4000. Weighting by
     # probability would say 800; counting the drawn one too 11 000.
     assert result["p50_cost"] == pytest.approx(4000.0)

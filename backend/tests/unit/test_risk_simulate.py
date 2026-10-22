@@ -1,16 +1,18 @@
-"""Unit tests for the Risk Register Monte Carlo simulation (v3.11 — T1).
+"""Unit tests for the Risk Register Monte Carlo simulation.
 
 Covers:
 
 * **Smoke**: 3 risks × 100 iterations → P50 ≤ P80 ≤ P95 (monotonic).
-* **Determinism**: ``random.seed(42)`` makes the simulation reproducible.
+* **Determinism**: the same ``seed`` (or ``random.seed``) reproduces a run.
 * **Edge**: project with zero risks → empty/null result, no crash.
-* **Edge**: project where every PERT triple is unset → falls back to
-  zero-variance point estimate from ``impact_cost`` / ``impact_schedule_days``.
+* **Sampling**: occurrence is a Bernoulli draw on the probability and the
+  impact a triangle, so a register of point estimates still yields a spread
+  distribution whose mean is the register EMV (Σ probability × impact).
 * **Edge**: mis-ordered triple (p10 > p90) clamped so triangular() never
   raises (regression guard for the pre-clamp version).
 * Tornado entries sorted descending by contribution.
-* ``last_simulation`` JSON persisted on every risk row after the run.
+* Every run stored as its own row, newest first; ``last_simulation`` JSON
+  persisted on every risk row after the run.
 
 All tests use a transaction-isolated PostgreSQL session (rolled back on
 teardown by ``tests._pg.transactional_session``) so they run fast and never
@@ -27,7 +29,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.risk.schemas import RiskCreate
+from app.modules.risk.schemas import RiskCreate, RiskUpdate
 from app.modules.risk.service import (
     RiskService,
     _histogram,
@@ -38,6 +40,7 @@ from tests._pg import transactional_session
 
 PROJECT_ID = uuid.uuid4()
 EMPTY_PROJECT_ID = uuid.uuid4()
+VND_PROJECT_ID = uuid.uuid4()
 OWNER_ID = uuid.uuid4()
 
 
@@ -66,6 +69,7 @@ async def session() -> AsyncSession:
                 currency="EUR",
             )
         )
+        s.add(Project(id=VND_PROJECT_ID, name="Theme park VN", owner_id=OWNER_ID, currency="VND"))
         await s.commit()
         yield s
 
@@ -185,13 +189,15 @@ async def test_simulate_smoke_monotonic_percentiles(session):
     assert res["p50_schedule_days"] <= res["p80_schedule_days"]
     assert res["p80_schedule_days"] <= res["p95_schedule_days"]
 
-    # Histogram is a 10-bin equal-width distribution.
-    assert len(res["histogram_bins"]) == 10
+    # Histogram is a 30-bin equal-width distribution of the cost totals.
+    assert res["histogram_basis"] == "cost"
+    assert len(res["histogram_bins"]) == 30
     assert sum(b["count"] for b in res["histogram_bins"]) == 100
 
-    # Tornado entries sorted descending; one per risk.
+    # Tornado entries sorted descending; at most one per risk (a risk that
+    # never occurred in 100 iterations contributes nothing).
     tornado = res["tornado"]
-    assert len(tornado) == 3
+    assert 1 <= len(tornado) <= 3
     contribs = [float(e["contribution"]) for e in tornado]
     assert contribs == sorted(contribs, reverse=True)
 
@@ -214,6 +220,8 @@ async def test_simulate_persists_last_simulation_on_every_row(session):
         assert row.last_simulation["iterations"] == 50
         assert row.last_simulation["mode"] == "cost"
         assert row.last_simulation["p50_cost"] is not None
+        # Money is stored as an exact decimal string, not a float.
+        assert isinstance(row.last_simulation["p50_cost"], str)
 
 
 # ── Regression: deterministic with the same seed ─────────────────────────
@@ -235,6 +243,36 @@ async def test_simulate_deterministic_with_seed(session):
     assert a["p95_cost"] == b["p95_cost"]
 
 
+@pytest.mark.asyncio
+async def test_explicit_seed_reproduces_a_run_and_is_reported(session):
+    svc = RiskService(session)
+    await _seed_three_risks(svc)
+
+    a = await svc.simulate(PROJECT_ID, iterations=500, mode="both", seed=2024)
+    b = await svc.simulate(PROJECT_ID, iterations=500, mode="both", seed=2024)
+    c = await svc.simulate(PROJECT_ID, iterations=500, mode="both", seed=2025)
+
+    assert a["seed"] == b["seed"] == 2024
+    assert (a["p50_cost"], a["p95_cost"], a["p80_schedule_days"]) == (
+        b["p50_cost"],
+        b["p95_cost"],
+        b["p80_schedule_days"],
+    )
+    assert a["histogram_bins"] == b["histogram_bins"]
+    assert a["run_id"] != b["run_id"]
+    assert a["mean_cost"] != c["mean_cost"]
+
+
+@pytest.mark.asyncio
+async def test_a_run_without_seed_reports_the_seed_it_drew(session):
+    svc = RiskService(session)
+    await _seed_three_risks(svc)
+    first = await svc.simulate(PROJECT_ID, iterations=300, mode="cost")
+    again = await svc.simulate(PROJECT_ID, iterations=300, mode="cost", seed=first["seed"])
+    assert isinstance(first["seed"], int)
+    assert again["p80_cost"] == first["p80_cost"]
+
+
 # ── Edge: project with zero risks ────────────────────────────────────────
 
 
@@ -254,25 +292,129 @@ async def test_simulate_zero_risks_returns_empty_result(session):
     assert res["tornado"] == []
 
 
-# ── Edge: only impact_cost set, no PERT triple — fallback path ───────────
+# ── Point estimates only: occurrence is still sampled ────────────────────
 
 
 @pytest.mark.asyncio
-async def test_simulate_falls_back_to_point_when_pert_missing(session):
-    """A risk with no PERT triple still contributes via ``impact_cost``."""
+async def test_point_estimates_are_sampled_on_occurrence_not_flattened(session):
+    """A register of single impact figures must not collapse to one number.
+
+    Weighting every draw by its probability made each iteration the same
+    total, so P50 = P80 = P95 and the chart held one bar. Sampling whether
+    each risk happens gives the real spread.
+    """
     svc = RiskService(session)
-    # Three risks created with impact_cost only — no p10/p50/p90 set.
     await svc.create_risk(_create(title="A", probability=0.5, impact_cost=10_000))
     await svc.create_risk(_create(title="B", probability=0.3, impact_cost=20_000))
     await svc.create_risk(_create(title="C", probability=0.7, impact_cost=30_000))
 
-    random.seed(123)
-    res = await svc.simulate(PROJECT_ID, iterations=100, mode="cost")
+    res = await svc.simulate(PROJECT_ID, iterations=5000, mode="cost", seed=11, impact_spread=0)
 
-    # With zero-variance point estimates the cost total per iteration is
-    # constant — P50, P80 and P95 collapse to the same value.
-    assert res["p50_cost"] is not None
-    assert res["p50_cost"] == res["p80_cost"] == res["p95_cost"]
+    assert res["p50_cost"] < res["p80_cost"] < res["p95_cost"]
+    # Spread switched off: every total is a sum of whole impacts.
+    possible = {Decimal(x) for x in (0, 10_000, 20_000, 30_000, 40_000, 50_000, 60_000)}
+    assert {res["p50_cost"], res["p80_cost"], res["p95_cost"]} <= possible
+    # EMV = 5000 + 6000 + 21000; the sampled mean sits on it.
+    assert res["emv_cost"] == Decimal("32000.00")
+    assert abs(res["mean_cost"] - res["emv_cost"]) / res["emv_cost"] < Decimal("0.03")
+    assert sum(1 for b in res["histogram_bins"] if b["count"] > 0) > 1
+
+
+@pytest.mark.asyncio
+async def test_probability_is_read_as_entered_not_rounded_to_a_matrix_score(session):
+    """0.35 is 35 %, not the 40 % of its 1-5 matrix score."""
+    svc = RiskService(session)
+    await svc.create_risk(_create(title="Only", probability=0.35, impact_cost=100_000))
+    res = await svc.simulate(PROJECT_ID, iterations=20_000, mode="cost", seed=5, impact_spread=0)
+    assert res["emv_cost"] == Decimal("35000.00")
+    assert abs(res["mean_cost"] - Decimal("35000")) < Decimal("1500")
+
+
+@pytest.mark.asyncio
+async def test_default_spread_keeps_the_mean_and_spreads_the_impact(session):
+    svc = RiskService(session)
+    rid = await svc.create_risk(_create(title="Certain", probability=0.5, impact_cost=100_000))
+    await svc.update_risk(rid.id, RiskUpdate(status="occurred"))
+    res = await svc.simulate(PROJECT_ID, iterations=5000, mode="cost", seed=3)
+
+    assert res["impact_spread"] == pytest.approx(0.2)
+    # Occurred: it happens every time, its cost drawn from 80 000 .. 120 000.
+    assert Decimal("80000") <= res["p50_cost"] < res["p80_cost"] < res["p95_cost"] <= Decimal("120000")
+    assert abs(res["mean_cost"] - Decimal("100000")) < Decimal("1000")
+
+
+# ── Acceptance: the theme-park register from the UAT ─────────────────────
+
+# Six risks, 480 billion VND of impact in total and an EMV of 204 billion VND
+# (Σ probability × impact): the register the UAT ran 10 000 iterations on.
+THEME_PARK_RISKS = (
+    ("Ground conditions", 0.5, 120_000_000_000, 30),
+    ("Imported ride delay", 0.4, 100_000_000_000, 45),
+    ("Steel price", 0.6, 80_000_000_000, 10),
+    ("Permit change", 0.3, 60_000_000_000, 20),
+    ("Monsoon flooding", 0.4, 70_000_000_000, 25),
+    ("Labour shortage", 0.2, 50_000_000_000, 15),
+)
+
+
+@pytest.mark.asyncio
+async def test_theme_park_register_gives_a_distribution_centred_on_its_emv(session):
+    svc = RiskService(session)
+    for title, prob, cost, days in THEME_PARK_RISKS:
+        await svc.create_risk(
+            _create(
+                project_id=VND_PROJECT_ID,
+                title=title,
+                probability=prob,
+                impact_cost=cost,
+                impact_schedule_days=days,
+                impact_severity="high",
+            )
+        )
+
+    res = await svc.simulate(VND_PROJECT_ID, iterations=10_000, mode="both", seed=20261022)
+
+    assert res["currency"] == "VND"
+    assert res["p50_cost"] < res["p80_cost"] < res["p95_cost"]
+    assert res["p50_schedule_days"] < res["p80_schedule_days"] < res["p95_schedule_days"]
+    emv = Decimal("204000000000")
+    assert res["emv_cost"] == emv
+    assert abs(res["mean_cost"] - emv) / emv < Decimal("0.02")
+    # 0.5x30 + 0.4x45 + 0.6x10 + 0.3x20 + 0.4x25 + 0.2x15 = 58 days expected.
+    assert res["emv_schedule_days"] == pytest.approx(58.0)
+    assert res["mean_schedule_days"] == pytest.approx(58.0, rel=0.03)
+    # VND has no minor unit: every money figure is a whole number of dong.
+    for key in ("p50_cost", "p80_cost", "p95_cost", "mean_cost"):
+        assert res[key] == res[key].to_integral_value()
+    # A real histogram, not one bar holding all 10 000 iterations.
+    bins = res["histogram_bins"]
+    assert len(bins) == 30
+    assert sum(b["count"] for b in bins) == 10_000
+    assert sum(1 for b in bins if b["count"] > 0) >= 15
+    assert max(b["count"] for b in bins) < 10_000 // 4
+
+
+# ── Every run is stored ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_each_run_is_stored_and_listed_newest_first(session):
+    from app.modules.risk.schemas import RiskSimulationResult
+
+    svc = RiskService(session)
+    await _seed_three_risks(svc)
+    first = await svc.simulate(PROJECT_ID, iterations=1000, mode="cost", seed=1)
+    second = await svc.simulate(PROJECT_ID, iterations=2000, mode="both", seed=2)
+
+    runs = await svc.list_simulation_runs(PROJECT_ID)
+    assert [r["run_id"] for r in runs] == [second["run_id"], first["run_id"]]
+    assert runs[0]["iterations"] == 2000
+    assert runs[0]["seed"] == 2
+    # A stored run reads back into the response model with the same figures.
+    stored = RiskSimulationResult(**runs[0])
+    assert stored.p80_cost == second["p80_cost"]
+    assert stored.mean_cost == second["mean_cost"]
+    assert await svc.list_simulation_runs(EMPTY_PROJECT_ID) == []
 
 
 # ── Mode: schedule-only run skips cost percentiles ───────────────────────

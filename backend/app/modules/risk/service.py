@@ -13,6 +13,7 @@ import math
 import random
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from fastapi import HTTPException, status
@@ -37,9 +38,11 @@ from app.modules.risk.contingency import (
     risk_weight,
     to_decimal,
 )
-from app.modules.risk.models import RiskItem
+from app.modules.risk.models import RiskItem, RiskSimulationRun
 from app.modules.risk.repository import RiskRepository
 from app.modules.risk.schemas import (
+    DEFAULT_IMPACT_SPREAD,
+    SEED_MAX,
     SEVERITY_ALIASES,
     SEVERITY_CANONICAL,
     ContingencyDrawdownRequest,
@@ -113,6 +116,42 @@ def _compute_risk_tier(prob_score: int, impact_score: int) -> str:
 def _compute_risk_score(probability: float, severity: str) -> float:
     """Compute risk score as probability x severity_numeric."""
     return round(probability * SEVERITY_NUMERIC.get(severity, 2), 2)
+
+
+#: Probability axis of the matrix, low to high: the label the ``/matrix/`` cell
+#: has always carried for each 1-5 probability score.
+PROBABILITY_LEVELS: tuple[str, ...] = ("0.1", "0.3", "0.5", "0.7", "0.9")
+#: Impact axis of the matrix, low to high (canonical severity vocabulary).
+IMPACT_LEVELS: tuple[str, ...] = SEVERITY_CANONICAL
+
+
+def matrix_position(probability: object, severity: str | None) -> tuple[int, int, int, str]:
+    """Where one risk sits on the 5x5 matrix: the one scale of the register.
+
+    Returns ``(probability_score, impact_score, score, tier)``: the 1-5
+    probability score (``_probability_to_score``), the 1-5 impact score of the
+    severity (legacy aliases map to the canonical level of the same rank), their
+    product 1-25 and its tier (``_compute_risk_tier``). The matrix cells, the
+    tier counts on the summary and every risk's ``risk_tier`` all come from
+    here, so a risk is never "high" on one card and "low" on the grid.
+    """
+    prob = float(clamp_probability(probability))
+    prob_score = _probability_to_score(prob)
+    impact_score = IMPACT_SCORE_MAP.get(severity or "medium", IMPACT_SCORE_MAP["medium"])
+    return prob_score, impact_score, prob_score * impact_score, _compute_risk_tier(prob_score, impact_score)
+
+
+def expected_value(status: str | None, probability: object, impact_cost: object, *, drawn: bool = False) -> Decimal:
+    """One risk's EMV: weight x cost impact (``contingency.risk_weight``).
+
+    The register summary's ``total_exposure``, the contingency card's EMV, the
+    Monte Carlo ``emv_cost`` and each risk's ``expected_value`` are all sums of
+    this, so the page carries one exposure definition.
+    """
+    impact = to_decimal(impact_cost)
+    if impact <= 0:
+        return Decimal("0")
+    return risk_weight(status, probability, drawn=drawn) * impact
 
 
 class RiskService:
@@ -392,12 +431,16 @@ class RiskService:
             by_status[item.status] = by_status.get(item.status, 0) + 1
             by_category[item.category] = by_category.get(item.category, 0) + 1
 
-            # Tier breakdown by risk_tier (computed from 5x5 matrix)
-            tier = item.risk_tier or item.impact_severity or "medium"
-            by_tier[tier] = by_tier.get(tier, 0) + 1
-
-            if item.impact_severity in ("high", "critical"):
-                high_critical_count += 1
+            # Tier from the matrix scale (matrix_position), recomputed rather
+            # than read from the stored column, and only for risks the matrix
+            # shows (closed ones are retired). The "High / Critical" card is
+            # the count of risks in the high and critical bands of that grid,
+            # so the card and the matrix can never disagree.
+            if item.status != "closed":
+                tier = matrix_position(item.probability, item.impact_severity)[3]
+                by_tier[tier] = by_tier.get(tier, 0) + 1
+                if tier in ("high", "critical"):
+                    high_critical_count += 1
 
             # A risk counts as "mitigated" once a mitigation is in flight or
             # complete. Beyond the in-flight "mitigating" and terminal
@@ -421,7 +464,9 @@ class RiskService:
             # its probability.
             try:
                 weight = risk_weight(item.status, item.probability, drawn=str(item.id) in drawn_ids)
-                exposure = float(item.impact_cost) * float(weight)
+                exposure = float(
+                    expected_value(item.status, item.probability, item.impact_cost, drawn=str(item.id) in drawn_ids)
+                )
                 # A legacy / raw-written non-finite or absurd impact_cost makes
                 # float() overflow to inf (no exception); inf would poison the
                 # whole rollup (round(inf) -> inf -> RiskSummary 500). Skip just
@@ -487,63 +532,41 @@ class RiskService:
     # ── Risk Matrix ───────────────────────────────────────────────────────
 
     async def get_matrix(self, project_id: uuid.UUID) -> list[dict[str, Any]]:
-        """Build 5x5 risk matrix data from project risks.
+        """Build the 5x5 risk matrix from the project's open risks.
 
-        Probability levels: 0.1 (very low), 0.3 (low), 0.5 (medium), 0.7 (high), 0.9 (very high)
-        Impact levels: very_low, low, medium, high, critical (canonical PMBOK 5-level scheme).
-        Legacy values (negligible / minor / moderate / major / catastrophic) are normalised
-        to the canonical set below so existing data still falls into a cell.
+        Rows are the 1-5 probability score, columns the 1-5 impact score of the
+        severity, both read with :func:`matrix_position` - the same function
+        that sets each risk's ``risk_tier`` and the summary's tier counts. Each
+        cell carries its score (1-25) and tier, so the UI colours it from the
+        server's bands instead of a second scale of its own. The legacy
+        ``probability_level`` labels ("0.1" .. "0.9") and canonical
+        ``impact_level`` names are kept on every cell. Closed risks are left out.
         """
         items = await self.repo.all_for_project(project_id)
 
-        prob_levels = ["0.1", "0.3", "0.5", "0.7", "0.9"]
-        impact_levels = ["very_low", "low", "medium", "high", "critical"]
-        legacy_impact_alias = {
-            "negligible": "very_low",
-            "minor": "low",
-            "moderate": "medium",
-            "major": "high",
-            "catastrophic": "critical",
-        }
-
-        # Initialize cells
-        cells: list[dict[str, Any]] = []
-        for prob in prob_levels:
-            for impact in impact_levels:
-                cells.append(
-                    {
-                        "probability_level": prob,
-                        "impact_level": impact,
-                        "count": 0,
-                        "risk_ids": [],
-                    }
-                )
-
-        # Map each risk to the nearest probability bucket
-        def _nearest_prob(val: float) -> str:
-            buckets = [0.1, 0.3, 0.5, 0.7, 0.9]
-            nearest = min(buckets, key=lambda b: abs(b - val))
-            return str(nearest)
+        cells: dict[tuple[int, int], dict[str, Any]] = {}
+        for p_score, prob_level in enumerate(PROBABILITY_LEVELS, start=1):
+            for i_score, impact_level in enumerate(IMPACT_LEVELS, start=1):
+                cells[(p_score, i_score)] = {
+                    "probability_level": prob_level,
+                    "impact_level": impact_level,
+                    "probability_score": p_score,
+                    "impact_score": i_score,
+                    "score": p_score * i_score,
+                    "tier": _compute_risk_tier(p_score, i_score),
+                    "count": 0,
+                    "risk_ids": [],
+                }
 
         for item in items:
             if item.status == "closed":
                 continue
-            try:
-                prob_bucket = _nearest_prob(float(item.probability))
-            except (ValueError, TypeError):
-                prob_bucket = "0.5"
-            raw_sev = item.impact_severity or "medium"
-            # Normalise legacy labels onto the canonical 5-level set.
-            raw_sev = legacy_impact_alias.get(raw_sev, raw_sev)
-            severity = raw_sev if raw_sev in impact_levels else "medium"
+            p_score, i_score, _, _ = matrix_position(item.probability, item.impact_severity)
+            cell = cells[(p_score, i_score)]
+            cell["count"] += 1
+            cell["risk_ids"].append(item.id)
 
-            for cell in cells:
-                if cell["probability_level"] == prob_bucket and cell["impact_level"] == severity:
-                    cell["count"] += 1
-                    cell["risk_ids"].append(item.id)
-                    break
-
-        return cells
+        return list(cells.values())
 
     # ── Monte Carlo simulation (v3.11 - T1) ──────────────────────────────
 
@@ -553,260 +576,233 @@ class RiskService:
         *,
         iterations: int = 10000,
         mode: Literal["cost", "schedule", "both"] = "both",
+        seed: int | None = None,
+        impact_spread: float = DEFAULT_IMPACT_SPREAD,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
-        """Run a Monte Carlo simulation across this project's risks.
+        """Run a Monte Carlo simulation across this project's risks and store it.
 
-        Uses ``random.triangular(low, high, mode)`` per risk per iteration
-        - a PERT-style three-point estimate sampling - and multiplies each
-        draw by ``probability_score / 5`` (the qualitative probability
-        scale) to get the probability-weighted contribution. The
-        per-iteration sums form the simulated distribution of project-
-        level contingency, and P50/P80/P95 are read off via
-        ``statistics.quantiles`` (inclusive method).
+        Every iteration decides for each risk whether it occurs - one uniform
+        draw per risk compared with its weight (``contingency.risk_weight``:
+        the probability, 1 for an occurred risk, 0 for a closed one; on the
+        cost side also 0 once its drawdown is confirmed) - and, when it does,
+        draws its cost and schedule impact from a triangular distribution: the
+        three-point estimate (p10 / p50 / p90 read as low / most likely / high)
+        when the risk has one, otherwise ``impact_spread`` either side of the
+        stated impact, which keeps the mean at the stated impact. The totals per
+        iteration form the distribution; P50 / P80 / P95 are read off it.
 
-        ``mode``:
-          * ``"cost"``      - only sample the cost triple.
-          * ``"schedule"``  - only sample the schedule triple.
-          * ``"both"``      - sample both (independent draws).
-
-        Risks with no PERT triple in the requested mode contribute zero
-        - the qualitative 5x5 path keeps working untouched. Each risk
-        gets its ``last_simulation`` JSON updated with the full result
-        snapshot so the drill-down survives a page refresh.
+        The random stream comes from ``seed`` (drawn and reported when not
+        given), so the same seed on the same register gives the same result.
+        Each run is stored as a :class:`RiskSimulationRun` row and stamped on
+        every risk's ``last_simulation``.
 
         Returns a dict matching :class:`RiskSimulationResult`.
         """
-        # Bound iterations defensively even though the schema already
-        # enforces 1000 ≤ iterations ≤ 100 000.
         iterations = max(1, min(int(iterations), 100_000))
+        spread = min(max(float(impact_spread), 0.0), 0.9)
+        if seed is None:
+            # From the module RNG, so ``random.seed`` still pins a run in tests.
+            seed = random.randint(0, SEED_MAX)
+        rng = random.Random(seed)
 
-        # ── One query, no N+1: load every risk for the project once. ──
         items = await self.repo.all_for_project(project_id)
         currency = await self._get_project_currency(project_id)
-
-        # Empty project - return an empty (but well-formed) result. The
-        # frontend's "Last run" chips render as "-" and the histogram
-        # / tornado simply hide.
-        if not items:
-            return {
-                "iterations": iterations,
-                "risk_count": 0,
-                "mode": mode,
-                "p50_cost": None,
-                "p80_cost": None,
-                "p95_cost": None,
-                "p50_schedule_days": None,
-                "p80_schedule_days": None,
-                "p95_schedule_days": None,
-                "histogram_bins": [],
-                "tornado": [],
-                "currency": currency,
-                "mixed_currency": False,
-            }
-
-        # Build per-risk PERT triples. Where a triple is incomplete we
-        # fall back to (impact_cost, impact_cost, impact_cost) - i.e. a
-        # zero-variance point estimate that still folds the risk into
-        # the simulation when only the qualitative path is populated.
-        cost_triples: list[tuple[float, float, float]] = []
-        schedule_triples: list[tuple[float, float, float]] = []
-        cost_weights: list[float] = []
-        schedule_weights: list[float] = []
-        item_meta: list[tuple[uuid.UUID, str]] = []
-        drawn_ids = await self._drawn_risk_ids(project_id) if mode in ("cost", "both") else set()
-
-        for item in items:
-            # Probability weight on a 0..1 scale. Prefer the 1-5 PMBOK
-            # score (probability_score) - it's already discretised - and
-            # fall back to the raw ``probability`` string if missing.
-            if item.probability_score is not None:
-                probability = max(0.0, min(float(item.probability_score) / 5.0, 1.0))
-            else:
-                try:
-                    probability = max(0.0, min(float(item.probability), 1.0))
-                except (ValueError, TypeError):
-                    probability = 0.0
-            # The status rule the contingency card uses (contingency.risk_weight):
-            # a closed risk is out, an occurred one is certain. Cost and schedule
-            # differ in one place only: a confirmed drawdown takes the cost out
-            # (it is drawn money now), but the delay has still happened.
-            cost_weights.append(float(risk_weight(item.status, probability, drawn=str(item.id) in drawn_ids)))
-            schedule_weights.append(float(risk_weight(item.status, probability)))
-            item_meta.append((item.id, item.code))
-
-            cost_triples.append(
-                _pert_triple_or_point(
-                    item.cost_p10,
-                    item.cost_p50,
-                    item.cost_p90,
-                    fallback=_safe_float(item.impact_cost),
-                )
-            )
-            schedule_triples.append(
-                _pert_triple_or_point(
-                    item.schedule_p10,
-                    item.schedule_p50,
-                    item.schedule_p90,
-                    fallback=float(item.impact_schedule_days or 0),
-                )
-            )
-
-        # Currency honesty (F-PFO-RISK-04): the per-iteration cost sum blends
-        # every risk's cost draw into one number, which is only meaningful when
-        # the cost-bearing risks share a single currency. Collect the distinct
-        # non-blank currencies among risks that actually contribute cost (a
-        # blank currency inherits the project currency, so it is not a distinct
-        # one). If more than one, the blended cost total cannot be honestly
-        # labelled, so we suppress the cost read-outs below rather than mislabel
-        # them - the same rule get_summary applies to total_exposure.
-        cost_currencies: set[str] = set()
-        for idx in range(len(items)):
-            if cost_weights[idx] > 0.0 and max(cost_triples[idx]) > 0.0:
-                cur = (items[idx].currency or "").strip()
-                if cur:
-                    cost_currencies.add(cur)
-        mixed_currency = len(cost_currencies) > 1
+        drawn_ids = await self._drawn_risk_ids(project_id) if items and mode in ("cost", "both") else set()
 
         sample_cost = mode in ("cost", "both")
         sample_schedule = mode in ("schedule", "both")
-        # When cost currencies are mixed, the cost distribution is not a single-
-        # currency quantity; only schedule (currency-agnostic days) stays valid.
-        cost_currency_ok = not mixed_currency
 
-        # Per-iteration sums for the contingency distribution.
+        cost_weights: list[float] = []
+        schedule_weights: list[float] = []
+        cost_triples: list[tuple[float, float, float]] = []
+        schedule_triples: list[tuple[float, float, float]] = []
+        emv_cost = Decimal("0")
+        emv_schedule = 0.0
+        cost_currencies: set[str] = set()
+        for item in items:
+            drawn = str(item.id) in drawn_ids
+            c_weight = float(risk_weight(item.status, item.probability, drawn=drawn))
+            s_weight = float(risk_weight(item.status, item.probability))
+            c_triple = _impact_triple(
+                item.cost_p10, item.cost_p50, item.cost_p90, point=_safe_float(item.impact_cost), spread=spread
+            )
+            s_triple = _impact_triple(
+                item.schedule_p10,
+                item.schedule_p50,
+                item.schedule_p90,
+                point=float(item.impact_schedule_days or 0),
+                spread=spread,
+            )
+            cost_weights.append(c_weight)
+            schedule_weights.append(s_weight)
+            cost_triples.append(c_triple)
+            schedule_triples.append(s_triple)
+            emv_cost += expected_value(item.status, item.probability, item.impact_cost, drawn=drawn)
+            emv_schedule += s_weight * max(float(item.impact_schedule_days or 0), 0.0)
+            # Currency honesty (F-PFO-RISK-04): a cost total blending two
+            # currencies cannot be labelled, so it is suppressed below. A blank
+            # currency inherits the project's and is not a distinct one.
+            if c_weight > 0.0 and c_triple[2] > 0.0:
+                cur = (item.currency or "").strip()
+                if cur:
+                    cost_currencies.add(cur)
+        mixed_currency = len(cost_currencies) > 1
+        cost_ok = sample_cost and not mixed_currency and bool(items)
+
+        n = len(items)
         cost_totals: list[float] = []
         schedule_totals: list[float] = []
-        # Per-risk running sum so we can compute the mean contribution
-        # afterwards for the tornado chart. Combined (cost + schedule
-        # cast to "days as currency-equivalent" is meaningless), so we
-        # tornado on whichever signal was sampled, preferring cost.
-        per_risk_cost_sum = [0.0] * len(items)
-        per_risk_schedule_sum = [0.0] * len(items)
+        per_risk_cost = [0.0] * n
+        per_risk_schedule = [0.0] * n
+        if items:
+            for _ in range(iterations):
+                c_total = 0.0
+                s_total = 0.0
+                for idx in range(n):
+                    c_weight = cost_weights[idx]
+                    s_weight = schedule_weights[idx]
+                    if c_weight <= 0.0 and s_weight <= 0.0:
+                        continue
+                    # One occurrence draw per risk drives both sides: a risk
+                    # that happens costs money and time in the same iteration.
+                    u = rng.random()
+                    if sample_cost and u < c_weight:
+                        draw = _triangular(rng, cost_triples[idx])
+                        c_total += draw
+                        per_risk_cost[idx] += draw
+                    if sample_schedule and u < s_weight:
+                        draw = _triangular(rng, schedule_triples[idx])
+                        s_total += draw
+                        per_risk_schedule[idx] += draw
+                if sample_cost:
+                    cost_totals.append(c_total)
+                if sample_schedule:
+                    schedule_totals.append(s_total)
 
-        for _ in range(iterations):
-            c_total = 0.0
-            s_total = 0.0
-            for idx in range(len(items)):
-                c_weight = cost_weights[idx]
-                s_weight = schedule_weights[idx]
-                if sample_cost and c_weight > 0.0:
-                    lo, mid, hi = cost_triples[idx]
-                    # random.triangular(low, high, mode) - note the
-                    # argument order is (low, high, mode), NOT
-                    # (low, mode, high). Easy off-by-one to make.
-                    draw = random.triangular(lo, hi, mid) if hi > lo else mid
-                    contrib = draw * c_weight
-                    c_total += contrib
-                    per_risk_cost_sum[idx] += contrib
-                if sample_schedule and s_weight > 0.0:
-                    lo, mid, hi = schedule_triples[idx]
-                    draw = random.triangular(lo, hi, mid) if hi > lo else mid
-                    contrib = draw * s_weight
-                    s_total += contrib
-                    per_risk_schedule_sum[idx] += contrib
-            if sample_cost:
-                cost_totals.append(c_total)
-            if sample_schedule:
-                schedule_totals.append(s_total)
+        def _money(value: float | None) -> Decimal | None:
+            if value is None or not math.isfinite(value):
+                return None
+            return quantize_money(Decimal(repr(value)), currency)
 
-        # ── Percentile read-out ─────────────────────────────────────
-        # Suppress the cost percentiles when currencies are mixed (a blended
-        # total would be mislabelled under one currency).
-        if sample_cost and cost_currency_ok:
-            p50_cost, p80_cost, p95_cost = _percentiles(cost_totals)
-        else:
-            p50_cost, p80_cost, p95_cost = None, None, None
-        if sample_schedule:
-            ps50, ps80, ps95 = _percentiles(schedule_totals)
-            p50_sched = int(round(ps50)) if ps50 is not None else None
-            p80_sched = int(round(ps80)) if ps80 is not None else None
-            p95_sched = int(round(ps95)) if ps95 is not None else None
-        else:
-            p50_sched = p80_sched = p95_sched = None
+        p50_cost = p80_cost = p95_cost = mean_cost = None
+        if cost_ok:
+            q50, q80, q95 = _percentiles(cost_totals)
+            p50_cost, p80_cost, p95_cost = _money(q50), _money(q80), _money(q95)
+            mean_cost = _money(sum(cost_totals) / len(cost_totals)) if cost_totals else None
 
-        # ── Histogram: 10 equal-width bins over the cost distribution
-        # (or schedule if cost wasn't sampled). The frontend draws this
-        # as a bar chart.
-        # Prefer the cost distribution, but never chart a currency-blended cost
-        # total - fall back to schedule (or nothing) when currencies are mixed.
-        if sample_cost and cost_currency_ok:
-            histogram_source = cost_totals
-        elif sample_schedule:
-            histogram_source = schedule_totals
-        else:
-            histogram_source = []
-        histogram_bins = _histogram(histogram_source, bins=10)
+        p50_sched = p80_sched = p95_sched = None
+        mean_sched: float | None = None
+        if sample_schedule and items:
+            qs50, qs80, qs95 = _percentiles(schedule_totals)
+            p50_sched, p80_sched, p95_sched = (_round_days(v) for v in (qs50, qs80, qs95))
+            mean_sched = round(sum(schedule_totals) / len(schedule_totals), 1) if schedule_totals else None
 
-        # ── Tornado: top contributors by mean probability-weighted
-        # contribution. Sort descending so the frontend can slice [:N]
-        # without re-sorting.
-        if sample_cost and cost_currency_ok:
-            contribs = per_risk_cost_sum
-        elif sample_schedule:
-            contribs = per_risk_schedule_sum
+        # The chart shows the cost distribution when there is one to show
+        # honestly, otherwise the schedule distribution.
+        if cost_ok:
+            histogram_basis = "cost"
+            histogram_bins = [
+                {**b, "lower": _money(b["lower"]), "upper": _money(b["upper"])}
+                for b in _histogram(cost_totals, bins=HISTOGRAM_BINS)
+            ]
+            contribs = per_risk_cost
+        elif sample_schedule and items:
+            histogram_basis = "schedule"
+            histogram_bins = _histogram(schedule_totals, bins=HISTOGRAM_BINS)
+            contribs = per_risk_schedule
         else:
-            contribs = [0.0] * len(items)
+            histogram_basis = ""
+            histogram_bins = []
+            contribs = [0.0] * n
+
+        # Tornado: each risk's mean contribution to the total, largest first.
         tornado_entries: list[dict[str, Any]] = []
-        if iterations > 0:
-            for idx, (risk_id, code) in enumerate(item_meta):
-                mean_contrib = contribs[idx] / iterations
-                if mean_contrib <= 0.0:
-                    continue
-                tornado_entries.append(
-                    {
-                        "risk_id": str(risk_id),
-                        "code": code,
-                        "contribution": round(mean_contrib, 2),
-                    }
-                )
-            tornado_entries.sort(key=lambda e: float(e["contribution"]), reverse=True)
+        for idx, item in enumerate(items):
+            mean_contrib = contribs[idx] / iterations
+            if mean_contrib <= 0.0:
+                continue
+            value = _money(mean_contrib) if histogram_basis == "cost" else round(mean_contrib, 2)
+            tornado_entries.append({"risk_id": str(item.id), "code": item.code, "contribution": value})
+        tornado_entries.sort(key=lambda e: float(e["contribution"]), reverse=True)
 
-        # JSON-serialisable result. Pydantic widens floats to Decimal on
-        # the response schema, but the persisted ``last_simulation`` JSON
-        # blob has to round-trip through json.dumps (SQLAlchemy's default
-        # serializer rejects Decimal), so we keep floats here and let
-        # Pydantic do the float→Decimal lift at response time.
+        run_id = uuid.uuid4()
+        run_at = datetime.now(UTC)
         result: dict[str, Any] = {
+            "run_id": str(run_id),
+            "created_at": run_at.isoformat(),
+            "seed": seed,
+            "impact_spread": spread,
             "iterations": iterations,
-            "risk_count": len(items),
+            "risk_count": n,
             "mode": mode,
-            "p50_cost": _round_or_none(p50_cost),
-            "p80_cost": _round_or_none(p80_cost),
-            "p95_cost": _round_or_none(p95_cost),
+            "p50_cost": p50_cost,
+            "p80_cost": p80_cost,
+            "p95_cost": p95_cost,
+            "mean_cost": mean_cost,
+            "emv_cost": quantize_money(emv_cost, currency) if sample_cost and not mixed_currency else None,
             "p50_schedule_days": p50_sched,
             "p80_schedule_days": p80_sched,
             "p95_schedule_days": p95_sched,
+            "mean_schedule_days": mean_sched,
+            "emv_schedule_days": round(emv_schedule, 1) if sample_schedule else None,
+            "histogram_basis": histogram_basis,
             "histogram_bins": histogram_bins,
             "tornado": tornado_entries,
             "currency": currency,
             "mixed_currency": mixed_currency,
         }
 
-        # Persist the snapshot on every risk so a page refresh keeps the
-        # last-run drill-down. We read IDs into a Python list BEFORE the first
-        # update so the loop iterates over a fixed set rather than over rows it
-        # is writing to, where a reload raises MissingGreenlet.
-        item_ids_to_stamp = [item.id for item in items]
-        for risk_id in item_ids_to_stamp:
-            await self.repo.update_fields(risk_id, last_simulation=result)
+        # Stored JSON keeps money as decimal strings (exact, JSON-safe).
+        stored = _json_ready(result)
+        await self.repo.add_simulation_run(
+            RiskSimulationRun(
+                id=run_id,
+                created_at=run_at,
+                updated_at=run_at,
+                project_id=project_id,
+                created_by=user_id,
+                iterations=iterations,
+                mode=mode,
+                seed=seed,
+                result=stored,
+            )
+        )
+        # Kept for clients that read the snapshot off a risk row. IDs are read
+        # into a list first so the loop never iterates rows it is writing to.
+        for risk_id in [item.id for item in items]:
+            await self.repo.update_fields(risk_id, last_simulation=stored)
 
         logger.info(
-            "Risk MC simulation: project=%s iterations=%d mode=%s risks=%d",
+            "Risk MC simulation: project=%s iterations=%d mode=%s risks=%d seed=%d",
             project_id,
             iterations,
             mode,
-            len(items),
+            n,
+            seed,
         )
         await _safe_publish(
             "risk.simulation.completed",
             {
                 "project_id": str(project_id),
+                "run_id": str(run_id),
                 "iterations": iterations,
                 "mode": mode,
-                "risk_count": len(items),
+                "risk_count": n,
             },
         )
         return result
+
+    async def list_simulation_runs(
+        self, project_id: uuid.UUID, *, offset: int = 0, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Stored Monte Carlo results for a project, newest first."""
+        runs = await self.repo.list_simulation_runs(project_id, offset=offset, limit=limit)
+        return [run.result for run in runs if isinstance(run.result, dict) and run.result]
+
+    async def count_simulation_runs(self, project_id: uuid.UUID) -> int:
+        """How many Monte Carlo runs a project has stored."""
+        return await self.repo.count_simulation_runs(project_id)
 
     # ── Risk-based contingency (EMV vs the finance contingency line) ─────
 
@@ -870,6 +866,10 @@ class RiskService:
             for record in _line_drawdowns(budget, norm_code(budget.currency_code))
             if record.risk_id
         }
+
+    async def drawn_risk_ids(self, project_id: uuid.UUID) -> set[str]:
+        """Public read of :meth:`_drawn_risk_ids` for the routes that price one risk."""
+        return await self._drawn_risk_ids(project_id)
 
     async def get_contingency_position(self, project_id: uuid.UUID) -> dict[str, Any]:
         """Risk-based contingency (EMV, P50/P80) against the finance contingency lines."""
@@ -1099,6 +1099,58 @@ def _safe_float(value: object, default: float = 0.0) -> float:
     return result
 
 
+#: Equal-width bins of the simulated distribution chart.
+HISTOGRAM_BINS = 30
+
+
+def _impact_triple(
+    p10: object,
+    p50: object,
+    p90: object,
+    *,
+    point: float,
+    spread: float,
+) -> tuple[float, float, float]:
+    """(low, mode, high) of one risk's impact distribution.
+
+    A complete three-point estimate is used as given (clamped into order). A
+    risk with only its stated impact gets ``spread`` either side of it - a
+    symmetric triangle, so its mean stays the stated impact. Negative values
+    read as 0: an impact never reduces the total.
+    """
+    if all(math.isfinite(_safe_float(v, math.nan)) for v in (p10, p50, p90)):
+        lo, mid, hi = _pert_triple_or_point(p10, p50, p90, fallback=point)
+        if hi > lo:
+            return max(lo, 0.0), max(mid, 0.0), max(hi, 0.0)
+        point = mid
+    point = max(point, 0.0)
+    return point * (1.0 - spread), point, point * (1.0 + spread)
+
+
+def _triangular(rng: random.Random, triple: tuple[float, float, float]) -> float:
+    """One draw from a (low, mode, high) triangle; a point when it has no width."""
+    lo, mid, hi = triple
+    if hi <= lo:
+        return mid
+    # random.triangular takes (low, high, mode) - not (low, mode, high).
+    return rng.triangular(lo, hi, mid)
+
+
+def _round_days(value: float | None) -> int | None:
+    return int(round(value)) if value is not None else None
+
+
+def _json_ready(value: Any) -> Any:
+    """A result dict with Decimals as plain decimal strings, for a JSON column."""
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, dict):
+        return {k: _json_ready(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_ready(v) for v in value]
+    return value
+
+
 def _pert_triple_or_point(
     p10: object,
     p50: object,
@@ -1182,17 +1234,3 @@ def _histogram(samples: list[float], *, bins: int = 10) -> list[dict[str, Any]]:
         }
         for i in range(bins)
     ]
-
-
-def _round_or_none(value: float | None) -> float | None:
-    """Round a float total to 2 dp, preserving None.
-
-    Stays as a float (not Decimal) so the result dict round-trips through
-    SQLAlchemy's default JSON serializer when we persist it on each
-    risk's ``last_simulation`` column. Pydantic v2 lifts float → Decimal
-    automatically on the response schema, so callers see well-typed
-    Decimals at the API boundary without needing pre-coercion here.
-    """
-    if value is None:
-        return None
-    return round(value, 2)

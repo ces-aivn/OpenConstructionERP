@@ -14,7 +14,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.orm.util import identity_key
 from sqlalchemy.sql.elements import ClauseElement
 
-from app.modules.risk.models import RiskItem
+from app.modules.risk.models import RiskItem, RiskSimulationRun
 
 
 class RiskRepository:
@@ -112,3 +112,30 @@ class RiskRepository:
         stmt = select(RiskItem).where(RiskItem.project_id == project_id)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    # ── Monte Carlo runs ──────────────────────────────────────────────────
+
+    async def add_simulation_run(self, run: RiskSimulationRun) -> RiskSimulationRun:
+        """Insert one Monte Carlo run."""
+        self.session.add(run)
+        await self.session.flush()
+        return run
+
+    async def list_simulation_runs(
+        self, project_id: uuid.UUID, *, offset: int = 0, limit: int = 10
+    ) -> list[RiskSimulationRun]:
+        """A project's runs, newest first."""
+        stmt = (
+            select(RiskSimulationRun)
+            .where(RiskSimulationRun.project_id == project_id)
+            .order_by(RiskSimulationRun.created_at.desc(), RiskSimulationRun.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count_simulation_runs(self, project_id: uuid.UUID) -> int:
+        """How many runs a project has stored."""
+        stmt = select(func.count()).select_from(RiskSimulationRun).where(RiskSimulationRun.project_id == project_id)
+        return (await self.session.execute(stmt)).scalar_one()

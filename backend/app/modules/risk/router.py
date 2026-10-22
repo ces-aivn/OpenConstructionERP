@@ -10,6 +10,8 @@ Endpoints:
     DELETE /{id}                   - Delete risk
     GET    /matrix?project_id=X    - Risk matrix data (5x5 grid)
     GET    /summary?project_id=X   - Aggregated stats
+    POST   /projects/{pid}/simulate                        - Run (and store) a Monte Carlo simulation
+    GET    /projects/{pid}/simulations                     - Stored Monte Carlo runs, newest first
     GET    /projects/{pid}/contingency                     - EMV vs finance contingency
     POST   /projects/{pid}/contingency/drawdowns/{risk_id} - Confirm a drawdown
     DELETE /projects/{pid}/contingency/drawdowns/{risk_id} - Reverse a drawdown
@@ -35,6 +37,7 @@ from app.modules.risk.schemas import (
     RiskResponse,
     RiskSimulateRequest,
     RiskSimulationResult,
+    RiskSimulationRunList,
     RiskSummary,
     RiskUpdate,
 )
@@ -62,7 +65,7 @@ def _as_float(value: object, default: float = 0.0) -> float:
         return default
 
 
-def _risk_to_response(item: object) -> RiskResponse:
+def _risk_to_response(item: object, *, drawn: bool = False) -> RiskResponse:
     """Build a RiskResponse from a RiskItem ORM object.
 
     ``risk_score`` is ALWAYS recomputed on the single canonical 0-5 scale
@@ -74,11 +77,14 @@ def _risk_to_response(item: object) -> RiskResponse:
     (F-PFO-RISK-06). Recomputing here keeps the list, detail view and the
     summary endpoint all on one comparable scale.
     """
-    from app.modules.risk.service import _compute_risk_score
+    from app.modules.risk.service import _compute_risk_score, expected_value, matrix_position
 
     probability = _as_float(item.probability, 0.5)  # type: ignore[attr-defined]
     severity = item.impact_severity or "medium"  # type: ignore[attr-defined]
     canonical_score = _compute_risk_score(probability, severity)
+    # Matrix scores and tier recomputed on the one matrix scale, so a seeded or
+    # imported row with stale columns still lands where the grid shows it.
+    prob_score, impact_score, matrix_score, tier = matrix_position(probability, severity)
     return RiskResponse(
         id=item.id,  # type: ignore[attr-defined]
         project_id=item.project_id,  # type: ignore[attr-defined]
@@ -91,10 +97,17 @@ def _risk_to_response(item: object) -> RiskResponse:
         impact_schedule_days=item.impact_schedule_days,  # type: ignore[attr-defined]
         impact_severity=item.impact_severity,  # type: ignore[attr-defined]
         risk_score=canonical_score,
-        probability_score=getattr(item, "probability_score", None),
-        impact_score_cost=getattr(item, "impact_score_cost", None),
+        probability_score=prob_score,
+        impact_score_cost=impact_score,
         impact_score_time=getattr(item, "impact_score_time", None),
-        risk_tier=getattr(item, "risk_tier", None),
+        risk_tier=tier,
+        matrix_score=matrix_score,
+        expected_value=expected_value(
+            item.status,  # type: ignore[attr-defined]
+            probability,
+            _as_float(item.impact_cost),  # type: ignore[attr-defined]
+            drawn=drawn,
+        ),
         status=item.status,  # type: ignore[attr-defined]
         mitigation_strategy=item.mitigation_strategy,  # type: ignore[attr-defined]
         contingency_plan=item.contingency_plan,  # type: ignore[attr-defined]
@@ -215,8 +228,9 @@ async def list_risks(
         sort_by=sort_by,
         sort_order=sort_order,
     )
+    drawn_ids = await service.drawn_risk_ids(project_id) if items else set()
     return RiskListResponse(
-        items=[_risk_to_response(i) for i in items],
+        items=[_risk_to_response(i, drawn=str(i.id) in drawn_ids) for i in items],
         total=total,
         offset=offset,
         limit=limit,
@@ -245,22 +259,50 @@ async def simulate_risks(
 ) -> RiskSimulationResult:
     """Run a Monte Carlo simulation across this project's risks.
 
-    Samples a PERT (triangular) distribution on each risk's
-    (p10, p50, p90) triple and weights each draw by
-    ``probability_score / 5`` to form the project-level contingency
-    distribution. Returns P50/P80/P95 percentiles, a 10-bin histogram
-    and a tornado-chart sensitivity ranking.
-
-    Persisted on every risk row's ``last_simulation`` field so a refresh
-    keeps the drill-down without re-running.
+    Each iteration samples whether every risk occurs (Bernoulli on its
+    probability) and, if so, its impact from a triangular distribution (the
+    three-point estimate, or ``impact_spread`` around the stated impact).
+    Returns P50/P80/P95, the mean next to the register EMV, a histogram and a
+    tornado ranking. Every run is stored and listed by
+    ``GET /projects/{project_id}/simulations``.
     """
     await verify_project_access(project_id, user_id, session)
     data = await service.simulate(
         project_id,
         iterations=body.iterations,
         mode=body.mode,
+        seed=body.seed,
+        impact_spread=body.impact_spread,
+        user_id=str(user_id) if user_id else None,
     )
     return RiskSimulationResult(**data)
+
+
+@router.get(
+    "/projects/{project_id}/simulations",
+    response_model=RiskSimulationRunList,
+    dependencies=[Depends(RequirePermission("risk.read"))],
+)
+async def list_simulation_runs(
+    project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=10, ge=1, le=50),
+    service: RiskService = Depends(_get_service),
+) -> RiskSimulationRunList:
+    """Stored Monte Carlo runs for a project, newest first (the first is the last run).
+
+    ``total`` is the number of runs the project has stored, not the page size.
+    """
+    await verify_project_access(project_id, user_id, session)
+    runs = await service.list_simulation_runs(project_id, offset=offset, limit=limit)
+    return RiskSimulationRunList(
+        items=[RiskSimulationResult(**r) for r in runs],
+        total=await service.count_simulation_runs(project_id),
+        offset=offset,
+        limit=limit,
+    )
 
 
 # ── Risk-based contingency (EMV vs the finance contingency line) ─────────
@@ -500,7 +542,7 @@ async def get_risk(
     """Get a single risk item."""
     item = await service.get_risk(risk_id)
     await verify_project_access(item.project_id, str(user_id), session)
-    return _risk_to_response(item)
+    return _risk_to_response(item, drawn=str(item.id) in await service.drawn_risk_ids(item.project_id))
 
 
 # ── Update ───────────────────────────────────────────────────────────────────
@@ -519,7 +561,7 @@ async def update_risk(
     existing = await service.get_risk(risk_id)
     await verify_project_access(existing.project_id, str(user_id), session)
     item = await service.update_risk(risk_id, data, user_id=str(user_id) if user_id else None)
-    return _risk_to_response(item)
+    return _risk_to_response(item, drawn=str(item.id) in await service.drawn_risk_ids(item.project_id))
 
 
 # ── Delete ───────────────────────────────────────────────────────────────────

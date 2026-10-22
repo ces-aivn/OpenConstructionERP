@@ -36,11 +36,11 @@ export const riskGuide: ModuleGuideContent = {
     },
     {
       icon: 'FileSearch',
-      titleKey: 'guide.risk.matrix.title',
-      titleDefault: 'Read the matrix and heatmap',
-      bodyKey: 'guide.risk.matrix.body',
+      titleKey: 'guide.risk.matrix_single.title',
+      titleDefault: 'Read the matrix',
+      bodyKey: 'guide.risk.matrix_single.body',
       bodyDefault:
-        'The probability-by-impact matrix and the 5 by 5 heatmap show how many risks sit in each cell, shaded green through red as severity climbs. Use them to see at a glance where the project is most exposed and which risks demand attention first.',
+        'The 5 by 5 matrix places every open risk by its probability score (1-5) and impact score (1-5). Their product, 1 to 25, sets the colour: low 1-4, medium 5-9, high 10-15, critical 16-25. The High / Critical card and the score column in the table use the same bands, so a risk reads the same everywhere.',
     },
     {
       icon: 'Search',
@@ -54,9 +54,9 @@ export const riskGuide: ModuleGuideContent = {
       icon: 'Workflow',
       titleKey: 'guide.risk.montecarlo.title',
       titleDefault: 'Monte Carlo simulation',
-      bodyKey: 'guide.risk.montecarlo.body',
+      bodyKey: 'guide.risk.montecarlo_sampled.body',
       bodyDefault:
-        'The Monte Carlo tab runs thousands of iterations over the whole register to model cost and schedule outcomes. It returns P50, P80 and P95 confidence bands, a distribution histogram and a tornado chart that ranks which risks drive the most uncertainty.',
+        'The Monte Carlo tab runs thousands of iterations over the whole register. In each one every risk occurs or not with its probability, and the impact of those that occur is drawn from a triangular distribution. It returns P50, P80 and P95, the mean next to the register EMV, a distribution histogram and a tornado chart of the risks that drive the result. Every run is saved and the tab reopens on the last one.',
     },
     {
       icon: 'Rocket',

@@ -5,13 +5,13 @@
  *
  * Endpoints (mounted at /api/v1/risk):
  *   POST   /v1/risk/projects/{project_id}/simulate
- *     — Run a Monte Carlo (PERT) simulation across the project's risks.
- *
- * The result is also persisted on every risk row's ``last_simulation``
- * JSON column server-side so a page refresh keeps the drill-down.
+ *     — Run a Monte Carlo simulation across the project's risks. Every run
+ *       is stored server-side.
+ *   GET    /v1/risk/projects/{project_id}/simulations?limit=N
+ *     — Stored runs, newest first (the first one is the last run).
  */
 
-import { apiPost } from '@/shared/lib/api';
+import { apiGet, apiPost, type Page } from '@/shared/lib/api';
 
 /* ── Auto-escalation (TOP-30 #24) ──────────────────────────────────────── */
 
@@ -55,7 +55,17 @@ export interface RiskSimulateRequest {
   /** Number of Monte Carlo iterations. Backend clamps to [1000, 100000]. */
   iterations?: number;
   mode?: RiskSimulateMode;
+  /** Reproduce a run: same seed on the same register, same result. */
+  seed?: number;
+  /**
+   * +/- band (fraction, 0-0.9) of the triangular impact distribution for a
+   * risk that has one impact figure and no three-point estimate.
+   */
+  impact_spread?: number;
 }
+
+/** Default impact spread the server applies (0.2 = 80 % to 120 %). */
+export const DEFAULT_IMPACT_SPREAD = 0.2;
 
 /**
  * One bin in the contingency histogram (10-bin equal-width by default).
@@ -84,9 +94,21 @@ export interface RiskTornadoEntry {
 
 /** Result of a Monte Carlo simulation, mirroring the backend Pydantic model. */
 export interface RiskSimulationResult {
+  /** Stored run id and time (ISO); absent only on very old snapshots. */
+  run_id?: string | null;
+  created_at?: string | null;
+  seed?: number | null;
+  impact_spread?: number | null;
   iterations: number;
   risk_count: number;
   mode: RiskSimulateMode;
+  /** Mean of the simulated cost totals and the register EMV next to it. */
+  mean_cost?: number | string | null;
+  emv_cost?: number | string | null;
+  mean_schedule_days?: number | null;
+  emv_schedule_days?: number | null;
+  /** What the histogram bins measure: money ("cost") or days ("schedule"). */
+  histogram_basis?: 'cost' | 'schedule' | '';
   // Cost percentiles are Decimal-as-string on the wire (or null when the
   // project mixes currencies / has no cost risks) — coerce with Number().
   p50_cost: number | string | null;
@@ -99,6 +121,7 @@ export interface RiskSimulationResult {
   tornado: RiskTornadoEntry[];
   /** Project currency (data-driven; "" means unknown — render currency-less). */
   currency: string;
+  mixed_currency?: boolean;
 }
 
 /**
@@ -116,9 +139,17 @@ export async function simulateRisk(
   const payload: RiskSimulateRequest = {
     iterations: body.iterations ?? 10000,
     mode: body.mode ?? 'both',
+    impact_spread: body.impact_spread ?? DEFAULT_IMPACT_SPREAD,
+    ...(body.seed !== undefined ? { seed: body.seed } : {}),
   };
   return apiPost<RiskSimulationResult, RiskSimulateRequest>(
     `/v1/risk/projects/${projectId}/simulate`,
     payload,
   );
+}
+
+/** Stored Monte Carlo runs for ``projectId``, newest first (the first page of ``limit``). */
+export async function listSimulationRuns(projectId: string, limit = 1): Promise<RiskSimulationResult[]> {
+  const page = await apiGet<Page<RiskSimulationResult>>(`/v1/risk/projects/${projectId}/simulations?limit=${limit}`);
+  return page.items;
 }

@@ -28,6 +28,8 @@ import { ContingencyCard } from './ContingencyCard';
 import { riskGuide } from './riskGuide';
 import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/features/insights';
 import { buildRiskInsights } from './riskInsights';
+import { checkRiskDraft, riskApiErrorMessage, riskApiFieldErrors } from './riskValidation';
+import { toNum } from '@/shared/lib/money';
 import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 const RISK_TAB_IDS = ['register', 'montecarlo'] as const;
@@ -44,6 +46,11 @@ interface RiskItem {
   contingency_plan: string; owner_name: string; owner_user_id?: string | null;
   response_cost: number; currency: string;
   probability_score?: number | null; impact_score_cost?: number | null;
+  // The 5x5 matrix position from the server: score 1-25 and its tier, the one
+  // scale the matrix, the cards and the table share.
+  matrix_score?: number | null; risk_tier?: string | null;
+  // weight x cost impact: this risk's share of the register EMV.
+  expected_value?: number | string;
   // Auto-escalation (TOP-30 #24): set server-side when the risk crosses the
   // escalation threshold or its review date lapses.
   escalated?: boolean;
@@ -63,7 +70,11 @@ interface RiskSummary {
   exposure_by_currency?: Record<string, number>;
 }
 
-interface MatrixCell { probability_level: string; impact_level: string; count: number; risk_ids: string[] }
+interface MatrixCell {
+  probability_level: string; impact_level: string; count: number; risk_ids: string[];
+  // 1-5 axes, their product and the tier band, all computed by the server.
+  probability_score: number; impact_score: number; score: number; tier: string;
+}
 
 /* ── Constants ─────────────────────────────────────────────────────────── */
 
@@ -93,19 +104,30 @@ const STATUS_LABELS: Record<string, string> = {
   identified: 'Identified', assessed: 'Assessed', mitigating: 'Mitigating', monitoring: 'Monitoring',
   mitigated: 'Mitigated', open: 'Open', closed: 'Closed', occurred: 'Occurred',
 };
-const PROB_LEVELS = ['0.9', '0.7', '0.5', '0.3', '0.1'];
-function getProbLabels(t: (key: string, opts?: Record<string, unknown>) => string): Record<string, string> {
-  return {
-    '0.9': t('risk.probability_very_high', { defaultValue: 'Very High' }),
-    '0.7': t('risk.probability_high', { defaultValue: 'High' }),
-    '0.5': t('risk.probability_medium', { defaultValue: 'Medium' }),
-    '0.3': t('risk.probability_low', { defaultValue: 'Low' }),
-    '0.1': t('risk.probability_very_low', { defaultValue: 'Very Low' }),
-  };
+// Probability rows of the matrix, high to low: the 1-5 score the server gives
+// a probability (<= 20 % is 1, <= 40 % is 2, ... above 80 % is 5).
+const PROB_ROWS: { score: number; key: string; fallback: string; upTo: number | null }[] = [
+  { score: 5, key: 'risk.probability_very_high', fallback: 'Very High', upTo: null },
+  { score: 4, key: 'risk.probability_high', fallback: 'High', upTo: 80 },
+  { score: 3, key: 'risk.probability_medium', fallback: 'Medium', upTo: 60 },
+  { score: 2, key: 'risk.probability_low', fallback: 'Low', upTo: 40 },
+  { score: 1, key: 'risk.probability_very_low', fallback: 'Very Low', upTo: 20 },
+];
+// Tier bands of the matrix score (probability score x impact score, 1-25).
+// Same bands as the server's risk_tier.
+const TIER_BANDS: { tier: string; min: number; max: number; cls: string; key: string; fallback: string }[] = [
+  { tier: 'low', min: 1, max: 4, cls: 'bg-green-400/70 text-gray-900', key: 'risk.legend_low', fallback: 'Low' },
+  { tier: 'medium', min: 5, max: 9, cls: 'bg-yellow-400/80 text-gray-900', key: 'risk.legend_medium', fallback: 'Medium' },
+  { tier: 'high', min: 10, max: 15, cls: 'bg-orange-400/80 text-white', key: 'risk.legend_high', fallback: 'High' },
+  { tier: 'critical', min: 16, max: 25, cls: 'bg-red-500/80 text-white', key: 'risk.legend_critical', fallback: 'Critical' },
+];
+const TIER_BADGE: Record<string, 'neutral' | 'blue' | 'success' | 'warning' | 'error'> = {
+  low: 'success', medium: 'blue', high: 'warning', critical: 'error',
+};
+function tierLabel(tier: string | null | undefined, t: (key: string, opts?: Record<string, unknown>) => string): string {
+  const band = TIER_BANDS.find((b) => b.tier === tier);
+  return band ? t(band.key, { defaultValue: band.fallback }) : '-';
 }
-// Must mirror the backend `/matrix/` canonical impact axis exactly
-// (service.py builds 5 levels: very_low..critical). Dropping `very_low`
-// here silently hid every risk the backend bucketed into that column.
 const IMPACT_LEVELS = ['very_low', 'low', 'medium', 'high', 'critical'];
 const IMPACT_LABEL_FALLBACK: Record<string, string> = {
   very_low: 'Very Low', low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical',
@@ -119,134 +141,71 @@ function fmtCur(n: number, c = 'EUR') {
   catch { return `${fmtFixed(n, 0)} ${s}`; }
 }
 
-function matrixColor(prob: string, impact: string) {
-  // Guard against missing/invalid probability — treat as 0 so the cell stays neutral
-  const probNum = parseFloat(prob);
-  const probValid = Number.isFinite(probNum) ? probNum : 0;
-  // Guard against unknown impact values — default to 0 (not 1) so the cell is marked neutral
-  // instead of silently treated as low-risk. Levels 1-5 mirror the backend
-  // canonical impact axis (very_low..critical).
-  const impactMap: Record<string, number> = {
-    very_low: 1, low: 2, medium: 3, high: 4, critical: 5,
-  };
-  const impactNum = impactMap[impact] ?? 0;
-  // score range: 0.1*1=0.1 .. 0.9*5=4.5
-  const score = probValid * impactNum;
-  if (score === 0) return 'bg-surface-secondary text-content-quaternary';
-  if (score >= 2.7) return 'bg-red-500/80 text-white';
-  if (score >= 1.5) return 'bg-orange-400/80 text-white';
-  if (score >= 0.6) return 'bg-yellow-400/80 text-gray-900';
-  return 'bg-green-400/70 text-gray-900';
-}
-
 /* ── Risk Matrix ──────────────────────────────────────────────────────── */
 
+/**
+ * The one risk matrix of the register: probability score (1-5) by impact
+ * score (1-5). Cells, scores and tiers come from the server (`/matrix/`), so
+ * the colours, the legend, the "High / Critical" card and each row's tier in
+ * the table all read the same bands.
+ */
 function RiskMatrix({ cells }: { cells: MatrixCell[] }) {
   const { t } = useTranslation();
   const map = useMemo(() => {
     const m: Record<string, MatrixCell> = {};
-    for (const c of cells) m[`${c.probability_level}|${c.impact_level}`] = c;
+    for (const c of cells) m[`${c.probability_score}|${c.impact_score}`] = c;
     return m;
   }, [cells]);
+  const tierCls = (tier: string) => TIER_BANDS.find((b) => b.tier === tier)?.cls ?? 'bg-surface-secondary text-content-quaternary';
 
   return (
     <Card className="p-4">
-      <h3 className="text-sm font-semibold text-content-primary mb-3">{t('risk.matrix', { defaultValue: 'Risk Matrix' })}</h3>
+      <h3 className="text-sm font-semibold text-content-primary mb-1">{t('risk.matrix', { defaultValue: 'Risk Matrix' })}</h3>
+      <p className="text-2xs text-content-tertiary mb-3">
+        {t('risk.matrix_formula', {
+          defaultValue: 'Score = probability score (1-5) × impact score (1-5), from 1 to 25.',
+        })}
+      </p>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
             <tr>
-              <th className="p-1 text-left text-content-tertiary w-20">{t('risk.probability', { defaultValue: 'Probability' })}</th>
-              {IMPACT_LEVELS.map((i) => <th key={i} className="p-1 text-center text-content-tertiary">{t(`risk.impact_${i}`, { defaultValue: IMPACT_LABEL_FALLBACK[i] ?? i })}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {PROB_LEVELS.map((p) => (
-              <tr key={p}>
-                <td className="p-1 text-content-secondary font-medium">{getProbLabels(t)[p]}</td>
-                {IMPACT_LEVELS.map((i) => {
-                  const c = map[`${p}|${i}`]?.count || 0;
-                  return <td key={i} className="p-1"><div className={`flex items-center justify-center h-10 rounded-md text-sm font-bold ${c > 0 ? matrixColor(p, i) : 'bg-surface-secondary text-content-quaternary'}`}>{c > 0 ? c : ''}</div></td>;
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="mt-2 flex items-center gap-4 text-2xs text-content-tertiary">
-        {[['bg-green-400/70', t('risk.legend_low', { defaultValue: 'Low' })], ['bg-yellow-400/80', t('risk.legend_medium', { defaultValue: 'Medium' })], ['bg-orange-400/80', t('risk.legend_high', { defaultValue: 'High' })], ['bg-red-500/80', t('risk.legend_critical', { defaultValue: 'Critical' })]].map(([bg, l]) => (
-          <span key={l} className="flex items-center gap-1"><span className={`inline-block w-3 h-3 rounded ${bg}`} />{l}</span>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-/* ── 5x5 Risk Heatmap ────────────────────────────────────────────────── */
-
-function heatmapColor(score: number): string {
-  if (score >= 16) return 'bg-red-500 text-white';
-  if (score >= 11) return 'bg-orange-500 text-white';
-  if (score >= 6) return 'bg-yellow-400 text-gray-900';
-  if (score >= 1) return 'bg-green-500 text-white';
-  return 'bg-surface-secondary text-content-quaternary';
-}
-
-function RiskMatrixHeatmap({ risks }: { risks: RiskItem[] }) {
-  const { t } = useTranslation();
-
-  // Build a 5x5 grid: key = "prob|impact", value = count
-  const grid = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const r of risks) {
-      const p = r.probability_score;
-      const i = r.impact_score_cost;
-      if (p != null && i != null && p >= 1 && p <= 5 && i >= 1 && i <= 5) {
-        const key = `${p}|${i}`;
-        map.set(key, (map.get(key) ?? 0) + 1);
-      }
-    }
-    return map;
-  }, [risks]);
-
-  const probLabels = ['5', '4', '3', '2', '1'];
-  const impactLabels = ['1', '2', '3', '4', '5'];
-
-  return (
-    <Card className="p-4 mb-6">
-      <h3 className="text-sm font-semibold text-content-primary mb-3">
-        {t('risk.heatmap', { defaultValue: 'Risk Matrix' })}
-      </h3>
-      <div className="overflow-x-auto">
-        <table className="text-xs mx-auto">
-          <thead>
-            <tr>
-              <th className="p-1 text-right text-content-tertiary w-20 pr-2">
-                {t('risk.probability', { defaultValue: 'Probability' })}
-              </th>
-              {impactLabels.map((il) => (
-                <th key={il} className="p-1 text-center text-content-tertiary w-12">{il}</th>
+              <th className="p-1 text-left text-content-tertiary w-28">{t('risk.probability', { defaultValue: 'Probability' })}</th>
+              {IMPACT_LEVELS.map((i, idx) => (
+                <th key={i} className="p-1 text-center text-content-tertiary">
+                  {t(`risk.impact_${i}`, { defaultValue: IMPACT_LABEL_FALLBACK[i] ?? i })}
+                  <span className="block text-2xs font-normal opacity-70">{idx + 1}</span>
+                </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {probLabels.map((pl) => (
-              <tr key={pl}>
-                <td className="p-1 text-right text-content-secondary font-medium pr-2">{pl}</td>
-                {impactLabels.map((il) => {
-                  const p = parseInt(pl, 10);
-                  const i = parseInt(il, 10);
-                  const score = p * i;
-                  const count = grid.get(`${p}|${i}`) ?? 0;
+            {PROB_ROWS.map((row) => (
+              <tr key={row.score}>
+                <td className="p-1 text-content-secondary font-medium">
+                  {t(row.key, { defaultValue: row.fallback })}
+                  <span className="block text-2xs font-normal text-content-tertiary">
+                    {row.upTo === null
+                      ? t('risk.matrix_prob_above', { defaultValue: '> {{min}} %', min: 80 })
+                      : t('risk.matrix_prob_upto', { defaultValue: '≤ {{max}} %', max: row.upTo })}
+                    {' · '}{row.score}
+                  </span>
+                </td>
+                {IMPACT_LEVELS.map((_, idx) => {
+                  const impactScore = idx + 1;
+                  const cell = map[`${row.score}|${impactScore}`];
+                  const count = cell?.count ?? 0;
+                  const score = cell?.score ?? row.score * impactScore;
                   return (
-                    <td key={il} className="p-1">
+                    <td key={impactScore} className="p-1">
                       <div
-                        className={`flex items-center justify-center h-10 w-12 rounded-md text-sm font-bold ${
-                          count > 0 ? heatmapColor(score) : 'bg-surface-secondary text-content-quaternary'
-                        }`}
-                        title={`P=${p} x I=${i} = ${score}${count > 0 ? `, ${count} ${t('risk.risks_count', { defaultValue: 'risk(s)' })}` : ''}`}
+                        className={`flex items-center justify-center h-10 rounded-md text-sm font-bold ${count > 0 && cell ? tierCls(cell.tier) : 'bg-surface-secondary text-content-quaternary'}`}
+                        title={t('risk.matrix_cell_title', {
+                          defaultValue: '{{p}} × {{i}} = {{score}} ({{tier}}), {{count}} risk(s)',
+                          p: row.score, i: impactScore, score, tier: tierLabel(cell?.tier, t), count,
+                        })}
                       >
-                        {count > 0 ? count : '-'}
+                        {count > 0 ? count : ''}
                       </div>
                     </td>
                   );
@@ -254,21 +213,18 @@ function RiskMatrixHeatmap({ risks }: { risks: RiskItem[] }) {
               </tr>
             ))}
           </tbody>
-          <tfoot>
-            <tr>
-              <td />
-              <td colSpan={5} className="text-center text-content-tertiary text-2xs pt-1">
-                {t('risk.impact', { defaultValue: 'Impact' })}
-              </td>
-            </tr>
-          </tfoot>
         </table>
       </div>
-      <div className="flex gap-4 mt-2 text-2xs text-content-tertiary justify-center">
-        <span className="flex items-center gap-1"><div className="w-3 h-3 rounded bg-green-500" /> {t('risk.low', { defaultValue: 'Low (1-5)' })}</span>
-        <span className="flex items-center gap-1"><div className="w-3 h-3 rounded bg-yellow-400" /> {t('risk.medium', { defaultValue: 'Medium (6-10)' })}</span>
-        <span className="flex items-center gap-1"><div className="w-3 h-3 rounded bg-orange-500" /> {t('risk.high', { defaultValue: 'High (11-15)' })}</span>
-        <span className="flex items-center gap-1"><div className="w-3 h-3 rounded bg-red-500" /> {t('risk.critical', { defaultValue: 'Critical (16-25)' })}</span>
+      <div className="mt-2 flex flex-wrap items-center gap-4 text-2xs text-content-tertiary">
+        {TIER_BANDS.map((b) => (
+          <span key={b.tier} className="flex items-center gap-1">
+            <span className={`inline-block w-3 h-3 rounded ${b.cls.split(' ')[0]}`} />
+            {t('risk.tier_band', {
+              defaultValue: '{{tier}} ({{min}}-{{max}})',
+              tier: t(b.key, { defaultValue: b.fallback }), min: b.min, max: b.max,
+            })}
+          </span>
+        ))}
       </div>
     </Card>
   );
@@ -281,13 +237,27 @@ const textareaCls = 'w-full rounded-lg border border-border bg-surface-primary p
 
 /* ── Create Dialog ─────────────────────────────────────────────────────── */
 
-const INITIAL_RISK_FORM = { title: '', description: '', category: 'technical', probability: 0.5, impactSeverity: 'medium', impactCost: 0, scheduleDays: 0, ownerName: '', ownerUserId: '' };
+// Probability is typed in percent (the scale the table shows); it is sent as
+// a 0-1 fraction.
+const INITIAL_RISK_FORM = { title: '', description: '', category: 'technical', probabilityPercent: '50', impactSeverity: 'medium', impactCost: 0, scheduleDays: 0, ownerName: '', ownerUserId: '' };
 
 function CreateDialog({ projectId, currency, onClose, onCreated }: { projectId: string; currency: string; onClose: () => void; onCreated: () => void }) {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const [f, setF] = useState(INITIAL_RISK_FORM);
-  const set = (k: string, v: unknown) => setF((p) => ({ ...p, [k]: v }));
+  const [touched, setTouched] = useState(false);
+  const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
+  const set = (k: string, v: unknown) => {
+    setF((p) => ({ ...p, [k]: v }));
+    setServerErrors({});
+  };
+  const check = checkRiskDraft(
+    { probabilityPercent: f.probabilityPercent, impactCost: f.impactCost, scheduleDays: f.scheduleDays },
+    t,
+  );
+  const hasErrors = Object.keys(check.errors).length > 0;
+  const fieldError = (local: keyof typeof check.errors, server: string) =>
+    (touched ? check.errors[local] : undefined) ?? serverErrors[server];
 
   const mut = useMutation({
     mutationFn: () => apiPost<RiskItem>('/v1/risk/', {
@@ -295,7 +265,7 @@ function CreateDialog({ projectId, currency, onClose, onCreated }: { projectId: 
       title: f.title,
       description: f.description,
       category: f.category,
-      probability: f.probability,
+      probability: check.probability,
       impact_severity: f.impactSeverity,
       impact_cost: f.impactCost,
       impact_schedule_days: f.scheduleDays,
@@ -304,8 +274,16 @@ function CreateDialog({ projectId, currency, onClose, onCreated }: { projectId: 
       currency,
     }),
     onSuccess: () => { onCreated(); onClose(); addToast({ type: 'success', title: t('risk.created', { defaultValue: 'Risk created' }) }); },
-    onError: (e: Error) => addToast({ type: 'error', title: t('common.error', { defaultValue: 'Error' }), message: e.message }),
+    onError: (e: Error) => {
+      setServerErrors(riskApiFieldErrors(e, t));
+      addToast({ type: 'error', title: t('common.error', { defaultValue: 'Error' }), message: riskApiErrorMessage(e, t) });
+    },
   });
+  const submit = () => {
+    setTouched(true);
+    if (hasErrors) return;
+    mut.mutate();
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" role="dialog" aria-modal="true" aria-labelledby="risk-create-title" onClick={onClose}>
@@ -339,16 +317,31 @@ function CreateDialog({ projectId, currency, onClose, onCreated }: { projectId: 
           </div>
           <div className="grid grid-cols-3 gap-4">
             <div>
-              <label htmlFor="risk-probability" className="block text-sm font-medium text-content-primary mb-1.5">{t('risk.probability', { defaultValue: 'Probability' })}</label>
-              <input id="risk-probability" type="number" min={0} max={1} step={0.1} value={f.probability} onChange={(e) => set('probability', parseFloat(e.target.value) || 0)} className={inputCls} />
+              <label htmlFor="risk-probability" className="block text-sm font-medium text-content-primary mb-1.5">{t('risk.probability_percent', { defaultValue: 'Probability (%)' })}</label>
+              <input
+                id="risk-probability"
+                type="text"
+                inputMode="decimal"
+                value={f.probabilityPercent}
+                onChange={(e) => set('probabilityPercent', e.target.value)}
+                onBlur={() => setTouched(true)}
+                aria-invalid={!!fieldError('probability', 'probability')}
+                aria-describedby="risk-probability-hint"
+                className={inputCls + (fieldError('probability', 'probability') ? ' border-semantic-error' : '')}
+              />
+              <p id="risk-probability-hint" className={`mt-1 text-2xs ${fieldError('probability', 'probability') ? 'text-semantic-error' : 'text-content-tertiary'}`}>
+                {fieldError('probability', 'probability') ?? t('risk.probability_hint', { defaultValue: '0 to 100 %' })}
+              </p>
             </div>
             <div>
               <label htmlFor="risk-impact-cost" className="block text-sm font-medium text-content-primary mb-1.5">{t('risk.impact_cost', { defaultValue: 'Cost Impact' })}</label>
-              <input id="risk-impact-cost" type="number" min={0} step="any" value={f.impactCost} onChange={(e) => set('impactCost', parseFloat(e.target.value) || 0)} className={inputCls} />
+              <input id="risk-impact-cost" type="number" min={0} step="any" value={f.impactCost} onChange={(e) => set('impactCost', parseFloat(e.target.value) || 0)} aria-invalid={!!fieldError('impactCost', 'impact_cost')} className={inputCls} />
+              {fieldError('impactCost', 'impact_cost') && <p className="mt-1 text-2xs text-semantic-error">{fieldError('impactCost', 'impact_cost')}</p>}
             </div>
             <div>
               <label htmlFor="risk-schedule-days" className="block text-sm font-medium text-content-primary mb-1.5">{t('risk.schedule_days', { defaultValue: 'Days' })}</label>
-              <input id="risk-schedule-days" type="number" min={0} value={f.scheduleDays} onChange={(e) => set('scheduleDays', parseInt(e.target.value) || 0)} className={inputCls} />
+              <input id="risk-schedule-days" type="number" min={0} step={1} value={f.scheduleDays} onChange={(e) => set('scheduleDays', parseInt(e.target.value) || 0)} aria-invalid={!!fieldError('scheduleDays', 'impact_schedule_days')} className={inputCls} />
+              {fieldError('scheduleDays', 'impact_schedule_days') && <p className="mt-1 text-2xs text-semantic-error">{fieldError('scheduleDays', 'impact_schedule_days')}</p>}
             </div>
           </div>
           <div>
@@ -363,7 +356,7 @@ function CreateDialog({ projectId, currency, onClose, onCreated }: { projectId: 
         </div>
         <div className="mt-6 flex justify-end gap-3">
           <Button variant="ghost" onClick={onClose}>{t('common.cancel', { defaultValue: 'Cancel' })}</Button>
-          <Button variant="primary" disabled={!f.title.trim() || mut.isPending} onClick={() => mut.mutate()}>
+          <Button variant="primary" disabled={!f.title.trim() || mut.isPending || (touched && hasErrors)} onClick={submit}>
             {mut.isPending ? t('common.creating', { defaultValue: 'Creating...' }) : t('common.create', { defaultValue: 'Create' })}
           </Button>
         </div>
@@ -393,7 +386,7 @@ function DetailView({ riskId, onBack }: { riskId: string; onBack: () => void }) 
   const upd = useMutation({
     mutationFn: (p: Record<string, unknown>) => apiPatch<RiskItem>(`/v1/risk/${riskId}`, p),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['risk'] }); qc.invalidateQueries({ queryKey: ['risks'] }); qc.invalidateQueries({ queryKey: ['risk-summary'] }); qc.invalidateQueries({ queryKey: ['risk-matrix'] }); qc.invalidateQueries({ queryKey: ['risk-contingency'] }); setEditing(false); addToast({ type: 'success', title: t('risk.updated', { defaultValue: 'Risk updated' }) }); },
-    onError: (e: Error) => addToast({ type: 'error', title: t('common.error', { defaultValue: 'Error' }), message: e.message }),
+    onError: (e: Error) => addToast({ type: 'error', title: t('common.error', { defaultValue: 'Error' }), message: riskApiErrorMessage(e, t) }),
   });
 
   if (isLoading || !risk) return <SkeletonCard className="my-6" />;
@@ -424,12 +417,13 @@ function DetailView({ riskId, onBack }: { riskId: string; onBack: () => void }) 
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
         {[
           [t('risk.probability', { defaultValue: 'Probability' }), fmtPercent(risk.probability * 100, 0)],
           [t('risk.severity', { defaultValue: 'Severity' }), t(`risk.severity_${risk.impact_severity}`, { defaultValue: risk.impact_severity })],
-          [t('risk.score', { defaultValue: 'Score' }), fmtFixed(risk.risk_score, 2)],
+          [t('risk.matrix_score', { defaultValue: 'Matrix score (1-25)' }), risk.matrix_score != null ? `${risk.matrix_score} · ${tierLabel(risk.risk_tier, t)}` : '-'],
           [t('risk.impact_cost', { defaultValue: 'Cost Impact' }), fmtCur(risk.impact_cost, risk.currency)],
+          [t('risk.exposure_emv', { defaultValue: 'Exposure (EMV)' }), fmtCur(toNum(risk.expected_value ?? 0), risk.currency)],
           [t('risk.owner', { defaultValue: 'Owner' }), risk.owner_name || '-'],
         ].map(([label, val]) => (
           <Card key={label} className="p-4">
@@ -567,8 +561,8 @@ function HowRiskWork() {
     {
       icon: <LayoutGrid size={14} className="text-oe-blue" />,
       title: t('risk.flow_2_title', { defaultValue: 'Score and map' }),
-      desc: t('risk.flow_2_desc', {
-        defaultValue: 'Read exposure on a probability-by-impact matrix and 5x5 heatmap.',
+      desc: t('risk.flow_2_desc_matrix', {
+        defaultValue: 'Read exposure on one 5x5 probability-by-impact matrix.',
       }),
     },
     {
@@ -854,17 +848,18 @@ export function RiskRegisterPage() {
       {summary && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {[
-            { icon: ShieldAlert, label: t('risk.total', { defaultValue: 'Total Risks' }), value: summary.total_risks, cls: 'text-content-primary', bg: 'bg-surface-secondary' },
-            { icon: AlertTriangle, label: t('risk.high_critical', { defaultValue: 'High / Critical' }), value: summary.high_critical_count, cls: 'text-semantic-error', bg: 'bg-red-50 dark:bg-red-950/30' },
-            { icon: DollarSign, label: t('risk.exposure', { defaultValue: 'Total Exposure' }), value: exposureNode, cls: 'text-semantic-error', bg: 'bg-surface-secondary' },
-            { icon: Shield, label: t('risk.mitigated', { defaultValue: 'Mitigated' }), value: summary.mitigated_count, cls: 'text-semantic-success', bg: 'bg-green-50 dark:bg-green-950/30' },
-          ].map(({ icon: Icon, label, value, cls, bg }) => (
+            { icon: ShieldAlert, label: t('risk.total', { defaultValue: 'Total Risks' }), value: summary.total_risks, cls: 'text-content-primary', bg: 'bg-surface-secondary', hint: '' },
+            { icon: AlertTriangle, label: t('risk.high_critical', { defaultValue: 'High / Critical' }), value: summary.high_critical_count, cls: 'text-semantic-error', bg: 'bg-red-50 dark:bg-red-950/30', hint: t('risk.high_critical_hint', { defaultValue: 'Matrix score 10-25, open risks' }) },
+            { icon: DollarSign, label: t('risk.exposure_emv', { defaultValue: 'Exposure (EMV)' }), value: exposureNode, cls: 'text-semantic-error', bg: 'bg-surface-secondary', hint: t('risk.exposure_emv_hint', { defaultValue: 'Σ probability × cost impact' }) },
+            { icon: Shield, label: t('risk.mitigated', { defaultValue: 'Mitigated' }), value: summary.mitigated_count, cls: 'text-semantic-success', bg: 'bg-green-50 dark:bg-green-950/30', hint: '' },
+          ].map(({ icon: Icon, label, value, cls, bg, hint }) => (
             <Card key={label} className="p-4">
               <div className="flex items-center gap-2">
                 <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${bg}`}><Icon size={16} className={cls} /></div>
                 <div>
                   <p className="text-2xs text-content-tertiary uppercase tracking-wide">{label}</p>
                   <p className={`text-lg font-semibold ${cls}`}>{value}</p>
+                  {hint && <p className="text-2xs text-content-tertiary">{hint}</p>}
                 </div>
               </div>
             </Card>
@@ -878,8 +873,7 @@ export function RiskRegisterPage() {
       {projectId && <ContingencyCard projectId={projectId} />}
 
       {/* ── Tabs: Register (qualitative) vs Monte Carlo (quantitative) ──
-          The register tab keeps the existing 5x5 matrix + heatmap +
-          filter table. The Monte Carlo tab adds enterprise-CPM-style PERT
+          The register tab keeps the 5x5 matrix + filter table. The Monte Carlo tab adds enterprise-CPM-style PERT
           simulation with P50/P80/P95 confidence bands. */}
       {projectId && (
         <div
@@ -934,11 +928,6 @@ export function RiskRegisterPage() {
 
       {/* Only show matrix when there are actual risks */}
       {activeTab === 'register' && hasRisks && matrixData?.cells && <div><RiskMatrix cells={matrixData.cells} /></div>}
-
-      {/* 5x5 Risk Heatmap (client-side, based on probability_score × impact_score_cost) */}
-      {activeTab === 'register' && risks.length > 0 && risks.some((r) => r.probability_score != null && r.impact_score_cost != null) && (
-        <div><RiskMatrixHeatmap risks={risks} /></div>
-      )}
 
       {/* Search & filter bar (only when there are risks) */}
       {activeTab === 'register' && risks.length > 0 && (
@@ -1003,7 +992,7 @@ export function RiskRegisterPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-surface-secondary/50">
-                    {([['risk.code', 'Code', 'left'], ['common.title', 'Title', 'left'], ['risk.category', 'Category', 'left'], ['risk.probability_short', 'Prob.', 'center'], ['risk.impact', 'Impact', 'left'], ['risk.score', 'Score', 'center'], ['common.status', 'Status', 'left'], ['risk.owner', 'Owner', 'left']] as const).map(([key, dv, align]) => (
+                    {([['risk.code', 'Code', 'left'], ['common.title', 'Title', 'left'], ['risk.category', 'Category', 'left'], ['risk.probability_short', 'Prob.', 'center'], ['risk.impact', 'Impact', 'left'], ['risk.matrix_score_short', 'Score (1-25)', 'center'], ['common.status', 'Status', 'left'], ['risk.owner', 'Owner', 'left']] as const).map(([key, dv, align]) => (
                       <th key={key} className={`px-4 py-3 text-${align} font-medium text-content-secondary`}>{t(key, { defaultValue: dv })}</th>
                     ))}
                     <th className="px-4 py-3 w-16" />
@@ -1035,7 +1024,15 @@ export function RiskRegisterPage() {
                       <td className="px-4 py-3"><Badge variant="neutral">{t(`risk.cat_${r.category}`, { defaultValue: CATEGORY_LABELS[r.category] ?? r.category })}</Badge></td>
                       <td className="px-4 py-3 text-center text-content-secondary tabular-nums">{fmtPercent(r.probability * 100, 0)}</td>
                       <td className="px-4 py-3"><Badge variant={r.impact_severity === 'critical' ? 'error' : r.impact_severity === 'high' ? 'warning' : r.impact_severity === 'medium' ? 'blue' : 'neutral'}>{t(`risk.severity_${r.impact_severity}`, { defaultValue: r.impact_severity })}</Badge></td>
-                      <td className="px-4 py-3 text-center font-medium tabular-nums text-content-primary">{fmtFixed(r.risk_score, 1)}</td>
+                      <td className="px-4 py-3 text-center">
+                        {r.matrix_score != null ? (
+                          <Badge variant={TIER_BADGE[r.risk_tier ?? ''] ?? 'neutral'}>
+                            <span className="tabular-nums">{r.matrix_score}</span>{' · '}{tierLabel(r.risk_tier, t)}
+                          </Badge>
+                        ) : (
+                          <span className="tabular-nums text-content-primary">{fmtFixed(r.risk_score, 1)}</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3"><Badge variant={STATUS_COLORS[r.status] || 'neutral'}>{t(`risk.status_${r.status}`, { defaultValue: STATUS_LABELS[r.status] ?? r.status })}</Badge></td>
                       <td className="px-4 py-3 text-content-secondary text-xs truncate max-w-[100px]" title={r.owner_name || undefined}>{r.owner_name || '-'}</td>
                       <td className="px-4 py-3">

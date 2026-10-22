@@ -13,6 +13,7 @@
  */
 import { useTranslation } from 'react-i18next';
 import type { InsightDataset, InsightDef } from '@/features/insights';
+import { toNum } from '@/shared/lib/money';
 
 // English fallbacks for the computed `risk.cat_*` keys. The default used to be
 // the raw value, so until the key lands in a locale the screen shows the bare
@@ -45,9 +46,13 @@ interface RiskLite {
   impact_schedule_days: number;
   owner_name: string;
   created_at: string;
+  /** weight x cost impact from the server: the register's one exposure rule. */
+  expected_value?: number | string;
+  /** Matrix tier from the server (low / medium / high / critical). */
+  risk_tier?: string | null;
 }
 
-const HIGH_SEVERITIES = ['high', 'critical'];
+const HIGH_TIERS = ['high', 'critical'];
 const MITIGATED_STATUSES = ['mitigating', 'mitigated', 'closed'];
 
 /** Sortable YYYY-MM key so the time series stays chronological. */
@@ -80,6 +85,7 @@ interface Row {
   owner: string;
   month: string;
   exposure: number;
+  impact: number;
   score: number;
   schedule: number;
   high: number;
@@ -94,10 +100,15 @@ function toRow(r: RiskLite, unassigned: string, t: Translate): Row {
     status: statusLabel(r.status, t),
     owner: r.owner_name?.trim() || unassigned,
     month: monthKey(r.created_at),
-    exposure: r.impact_cost ?? 0,
+    // Exposure is EMV, the figure the summary card and the contingency card
+    // show; the unweighted impact stays available as its own measure.
+    exposure: toNum(r.expected_value ?? 0),
+    impact: r.impact_cost ?? 0,
     score: r.risk_score ?? 0,
     schedule: r.impact_schedule_days ?? 0,
-    high: HIGH_SEVERITIES.includes(r.impact_severity) ? 1 : 0,
+    // Same rule as the "High / Critical" card: open risks in the matrix's
+    // high and critical bands.
+    high: r.status !== 'closed' && HIGH_TIERS.includes(r.risk_tier ?? '') ? 1 : 0,
     mitigated: MITIGATED_STATUSES.includes(r.status) ? 1 : 0,
   };
 }
@@ -129,10 +140,11 @@ export function buildRiskInsights(
       { key: 'status', label: t('risk.insights.f_status', { defaultValue: 'Status' }), kind: 'dimension' },
       { key: 'owner', label: t('risk.insights.f_owner', { defaultValue: 'Owner' }), kind: 'dimension' },
       { key: 'month', label: t('risk.insights.f_month', { defaultValue: 'Month logged' }), kind: 'dimension' },
-      { key: 'exposure', label: t('risk.insights.f_exposure', { defaultValue: 'Cost impact (unweighted)' }), kind: 'measure', format: 'currency' },
+      { key: 'exposure', label: t('risk.insights.f_exposure_emv', { defaultValue: 'Exposure (EMV)' }), kind: 'measure', format: 'currency' },
+      { key: 'impact', label: t('risk.insights.f_impact_unweighted', { defaultValue: 'Cost impact if it occurs' }), kind: 'measure', format: 'currency' },
       { key: 'score', label: t('risk.insights.f_score', { defaultValue: 'Risk score' }), kind: 'measure', format: 'number' },
       { key: 'schedule', label: t('risk.insights.f_schedule', { defaultValue: 'Schedule impact (days)' }), kind: 'measure', format: 'number' },
-      { key: 'high', label: t('risk.insights.f_high', { defaultValue: 'High / Critical' }), kind: 'measure', format: 'number' },
+      { key: 'high', label: t('risk.high_critical', { defaultValue: 'High / Critical' }), kind: 'measure', format: 'number' },
       { key: 'mitigated', label: t('risk.insights.f_mitigated', { defaultValue: 'Mitigated' }), kind: 'measure', format: 'number' },
     ],
     rows,
@@ -141,10 +153,10 @@ export function buildRiskInsights(
   const base = { datasetId: 'risks', builtin: true } as const;
   const builtins: InsightDef[] = [
     { ...base, id: 'kpi-risks', title: t('risk.insights.k_risks', { defaultValue: 'Risks' }), chart: 'kpi', agg: 'count', color: 0 },
-    { ...base, id: 'kpi-exposure', title: t('risk.insights.k_exposure', { defaultValue: 'Total impact (unweighted)' }), chart: 'kpi', measure: 'exposure', agg: 'sum', color: 1 },
+    { ...base, id: 'kpi-exposure', title: t('risk.insights.k_exposure_emv', { defaultValue: 'Exposure (EMV)' }), chart: 'kpi', measure: 'exposure', agg: 'sum', color: 1 },
     { ...base, id: 'kpi-avg-score', title: t('risk.insights.k_avgscore', { defaultValue: 'Avg risk score' }), chart: 'kpi', measure: 'score', agg: 'avg', color: 4 },
-    { ...base, id: 'kpi-high', title: t('risk.insights.k_high', { defaultValue: 'High / Critical' }), chart: 'kpi', measure: 'high', agg: 'sum', color: 1 },
-    { ...base, id: 'bar-exposure-by-cat', title: t('risk.insights.c_exposure_by_cat', { defaultValue: 'Impact by category' }), chart: 'bar', dimension: 'category', measure: 'exposure', agg: 'sum', color: 1 },
+    { ...base, id: 'kpi-high', title: t('risk.high_critical', { defaultValue: 'High / Critical' }), chart: 'kpi', measure: 'high', agg: 'sum', color: 1 },
+    { ...base, id: 'bar-exposure-by-cat', title: t('risk.insights.c_exposure_emv_by_cat', { defaultValue: 'Exposure (EMV) by category' }), chart: 'bar', dimension: 'category', measure: 'exposure', agg: 'sum', color: 1 },
     { ...base, id: 'donut-by-severity', title: t('risk.insights.c_by_severity', { defaultValue: 'Risks by severity' }), chart: 'donut', dimension: 'severity', agg: 'count', color: 4 },
     { ...base, id: 'bar-by-status', title: t('risk.insights.c_by_status', { defaultValue: 'Risks by status' }), chart: 'bar', dimension: 'status', agg: 'count', color: 0 },
     { ...base, id: 'area-over-time', title: t('risk.insights.c_over_time', { defaultValue: 'Risks logged over time' }), chart: 'area', dimension: 'month', agg: 'count', color: 5 },

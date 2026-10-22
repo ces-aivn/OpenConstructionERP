@@ -4,13 +4,15 @@
 
 Tables:
     oe_risk_register - risk items with probability, impact, mitigation, and status
+    oe_risk_simulation_run - one row per Monte Carlo run with its full result
 """
 
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import GUID, Base
@@ -116,3 +118,33 @@ class RiskItem(Base):
 
     def __repr__(self) -> str:
         return f"<RiskItem {self.code} - {self.title[:40]} ({self.status})>"
+
+
+class RiskSimulationRun(Base):
+    """One Monte Carlo run over a project's risk register.
+
+    Every run is kept, so the tab can reopen on the last result and a run can
+    be reproduced from its ``seed``. ``result`` holds the response body of the
+    run (money as decimal strings, so it round-trips through JSON unchanged).
+    """
+
+    __tablename__ = "oe_risk_simulation_run"
+    __table_args__ = (Index("ix_risk_simulation_run_project_created", "project_id", "created_at"),)
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("oe_projects_project.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    iterations: Mapped[int] = mapped_column(Integer, nullable=False)
+    mode: Mapped[str] = mapped_column(String(10), nullable=False)
+    seed: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    result: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+    )
+
+    def __repr__(self) -> str:
+        return f"<RiskSimulationRun {self.project_id} {self.mode} x{self.iterations}>"

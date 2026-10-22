@@ -9,12 +9,14 @@ as strings in SQLite-compatible models; v3 §10 money fields
 Decimal-as-string in JSON.
 """
 
+import math
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic_core import PydanticCustomError
 
 
 # ── v3 §10 money serialisation helper ─────────────────────────────────────
@@ -54,6 +56,27 @@ def _bound_money(v: Decimal | None) -> Decimal | None:
         raise ValueError("amount must be a finite number (no NaN/Infinity)")
     if abs(v) >= _MONEY_MAX:
         raise ValueError("amount is outside the supported range")
+    return v
+
+
+# ── Probability: one scale, one error code ───────────────────────────────
+#
+# The API stores probability as a fraction in [0, 1]; the register UI shows and
+# takes it as a percentage (0-100 %) and divides by 100 before sending. An out
+# of range value is refused with a stable error ``type`` the UI translates, so a
+# reader never sees Pydantic's English sentence.
+PROBABILITY_ERROR_CODE = "risk_probability_out_of_range"
+
+
+def _check_probability(v: float | None) -> float | None:
+    if v is None:
+        return v
+    if not math.isfinite(v) or v < 0.0 or v > 1.0:
+        raise PydanticCustomError(
+            PROBABILITY_ERROR_CODE,
+            "Probability must be between 0 and 1 (0 to 100 %).",
+            {"min": 0, "max": 1, "min_percent": 0, "max_percent": 100},
+        )
     return v
 
 
@@ -118,7 +141,8 @@ class RiskCreate(BaseModel):
         default="technical",
         pattern=r"^(technical|financial|schedule|regulatory|environmental|safety|procurement)$",
     )
-    probability: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Fraction 0-1; the range check lives in ``_probability_in_range``.
+    probability: float = Field(default=0.5)
     impact_cost: Decimal = Field(default=Decimal("0"), ge=0)
     impact_schedule_days: int = Field(default=0, ge=0)
     impact_severity: str = Field(
@@ -152,6 +176,11 @@ class RiskCreate(BaseModel):
     def _bound_money_fields(cls, v: Decimal | None) -> Decimal | None:
         return _bound_money(v)
 
+    @field_validator("probability")
+    @classmethod
+    def _probability_in_range(cls, v: float | None) -> float | None:
+        return _check_probability(v)
+
 
 class RiskUpdate(BaseModel):
     """Partial update for a risk item."""
@@ -164,7 +193,8 @@ class RiskUpdate(BaseModel):
         default=None,
         pattern=r"^(technical|financial|schedule|regulatory|environmental|safety|procurement)$",
     )
-    probability: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Fraction 0-1; the range check lives in ``_probability_in_range``.
+    probability: float | None = Field(default=None)
     impact_cost: Decimal | None = Field(default=None, ge=0)
     impact_schedule_days: int | None = Field(default=None, ge=0)
     impact_severity: str | None = Field(
@@ -193,6 +223,11 @@ class RiskUpdate(BaseModel):
     def _bound_money_fields(cls, v: Decimal | None) -> Decimal | None:
         return _bound_money(v)
 
+    @field_validator("probability")
+    @classmethod
+    def _probability_in_range(cls, v: float | None) -> float | None:
+        return _check_probability(v)
+
 
 class RiskResponse(BaseModel):
     """Risk item returned from the API."""
@@ -216,6 +251,12 @@ class RiskResponse(BaseModel):
     impact_score_cost: int | None = None
     impact_score_time: int | None = None
     risk_tier: str | None = None
+    # probability_score x impact_score_cost on the 1-25 matrix scale; the
+    # tier above is read off this number (see service.matrix_position).
+    matrix_score: int | None = None
+    # This risk's share of the register exposure: weight x impact_cost, the
+    # same rule the summary's total_exposure and the contingency EMV use.
+    expected_value: Decimal = Decimal("0")
     status: str = "identified"
     mitigation_strategy: str = ""
     contingency_plan: str = ""
@@ -232,7 +273,7 @@ class RiskResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    @field_serializer("impact_cost", "response_cost", when_used="json")
+    @field_serializer("impact_cost", "response_cost", "expected_value", when_used="json")
     def _ser_money(self, v: Decimal) -> str | None:
         return _serialise_money(v)
 
@@ -267,7 +308,14 @@ class TopRisk(BaseModel):
 
 
 class RiskSummary(BaseModel):
-    """Aggregated risk stats for a project."""
+    """Aggregated risk stats for a project.
+
+    ``total_exposure`` is the register EMV: the sum of weight x impact_cost
+    (weight = probability, 1 for an occurred risk awaiting its drawdown, 0 for
+    a closed or drawn one). ``high_critical_count`` and ``by_tier`` count risks
+    by the tier of the 5x5 matrix (probability score x impact score), closed
+    risks excluded, so the cards and the matrix always agree.
+    """
 
     total: int = 0
     total_risks: int = 0
@@ -300,10 +348,20 @@ class RiskSummary(BaseModel):
 
 
 class RiskMatrixCell(BaseModel):
-    """Single cell in the 5x5 risk matrix."""
+    """Single cell in the 5x5 risk matrix.
+
+    ``probability_score``/``impact_score`` are the 1-5 axes, ``score`` their
+    product (1-25) and ``tier`` the band it falls in (low 1-4, medium 5-9,
+    high 10-15, critical 16-25) - the same scale every risk's ``risk_tier``
+    and the summary's ``by_tier`` use.
+    """
 
     probability_level: str
     impact_level: str
+    probability_score: int = 0
+    impact_score: int = 0
+    score: int = 0
+    tier: str = ""
     count: int = 0
     risk_ids: list[UUID] = Field(default_factory=list)
 
@@ -340,17 +398,29 @@ class RiskEscalationSweepResult(BaseModel):
 # ── Monte Carlo simulation (v3.11 - T1) ──────────────────────────────────
 
 
+#: Largest seed accepted: the biggest integer a browser holds exactly, so the
+#: seed the UI shows can be sent back to reproduce a run.
+SEED_MAX = 2**53 - 1
+#: Default +/- spread of the impact distribution for a risk that has a single
+#: impact figure and no three-point estimate (0.2 = triangular from 80 % to
+#: 120 % of the stated impact, mean unchanged).
+DEFAULT_IMPACT_SPREAD = 0.2
+
+
 class RiskSimulateRequest(BaseModel):
     """Request body for ``POST /v1/risk/projects/{id}/simulate``.
 
     ``iterations`` is bounded so a misconfigured client can't accidentally
-    DoS the worker; 100 000 samples per risk is plenty for stable
-    P50/P80/P95 estimates and finishes in well under a second on a typical
-    project (fewer than ~50 risks).
+    DoS the worker. ``seed`` makes a run reproducible (a random one is drawn
+    and reported when left out). ``impact_spread`` is the +/- band of the
+    triangular impact distribution for risks that carry one impact figure and
+    no three-point estimate; 0 samples occurrence only.
     """
 
     iterations: int = Field(default=10000, ge=1000, le=100000)
     mode: Literal["cost", "schedule", "both"] = "both"
+    seed: int | None = Field(default=None, ge=0, le=SEED_MAX)
+    impact_spread: float = Field(default=DEFAULT_IMPACT_SPREAD, ge=0.0, le=0.9)
 
 
 class RiskTornadoEntry(BaseModel):
@@ -368,7 +438,7 @@ class RiskTornadoEntry(BaseModel):
 
 
 class RiskHistogramBin(BaseModel):
-    """One bin in the 10-bin contingency histogram."""
+    """One bin of the simulated distribution histogram (equal-width bins)."""
 
     lower: Decimal
     upper: Decimal
@@ -376,16 +446,36 @@ class RiskHistogramBin(BaseModel):
 
 
 class RiskSimulationResult(BaseModel):
-    """Persisted-style Monte Carlo result for a project.
+    """Result of one Monte Carlo run, as returned and as stored per run.
+
+    Each iteration decides independently for every risk whether it occurs
+    (Bernoulli on its weight: the probability, 1 for an occurred risk, 0 for a
+    closed one) and, when it does, draws its impact from a triangular
+    distribution: the risk's three-point estimate when it has one, else
+    ``impact_spread`` around its stated impact. ``mean_cost`` is the mean of
+    the simulated totals and ``emv_cost`` the register EMV (the summary's
+    ``total_exposure``); without three-point estimates the two agree up to
+    sampling noise.
 
     ``currency`` is data-driven (resolved from the owning project) - the
     UI must render currency-less totals when this is empty rather than
     silently mislabelling, e.g., AED exposure as EUR.
     """
 
+    run_id: UUID | None = None
+    created_at: datetime | None = None
+    seed: int | None = None
+    impact_spread: float | None = None
     iterations: int
     risk_count: int
     mode: Literal["cost", "schedule", "both"]
+    mean_cost: Decimal | None = None
+    emv_cost: Decimal | None = None
+    mean_schedule_days: float | None = None
+    emv_schedule_days: float | None = None
+    # Which distribution ``histogram_bins`` describes: "cost" (money in
+    # ``currency``) or "schedule" (days); "" when there is none.
+    histogram_basis: Literal["cost", "schedule", ""] = ""
     p50_cost: Decimal | None = None
     p80_cost: Decimal | None = None
     p95_cost: Decimal | None = None
@@ -402,6 +492,20 @@ class RiskSimulationResult(BaseModel):
 
 
 # ── Risk-based contingency (EMV vs the finance contingency line) ─────────
+
+
+class RiskSimulationRunList(BaseModel):
+    """One page of a project's stored Monte Carlo runs, newest first.
+
+    ``total`` counts every run the project has stored, not the length of
+    ``items``, so a caller asking for the last run alone still learns how many
+    earlier ones there are.
+    """
+
+    items: list[RiskSimulationResult] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 10
 
 
 class ContingencyLineOut(BaseModel):
