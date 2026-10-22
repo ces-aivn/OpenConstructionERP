@@ -125,9 +125,13 @@ describe('validationSummary', () => {
   });
 });
 
-describe('dashboard layout of the pack and the market cases', () => {
-  it('stacks both cards at full width so neither is stretched beside the other', () => {
-    expect(DASHBOARD_WIDGET_BY_ID.regional_pack?.defaultSpan).toBe(6);
-    expect(DASHBOARD_WIDGET_BY_ID.cases_market?.defaultSpan).toBe(6);
+describe('dashboard widgets CesCons leaves out', () => {
+  it('does not offer the regional pack card, which is configuration', () => {
+    expect(DASHBOARD_WIDGET_BY_ID.regional_pack).toBeUndefined();
+  });
+
+  it('no longer offers the market cases widget on the dashboard', () => {
+    expect(DASHBOARD_WIDGET_BY_ID.cases_market).toBeUndefined();
+    expect(DASHBOARD_WIDGET_BY_ID.cases_learn).toBeUndefined();
   });
 });

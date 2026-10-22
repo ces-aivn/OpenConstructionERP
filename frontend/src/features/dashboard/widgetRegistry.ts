@@ -19,7 +19,6 @@ import {
   Globe,
   Cpu,
   Upload,
-  Lightbulb,
   CheckCircle2,
   BarChart3,
   Activity,
@@ -40,9 +39,7 @@ import {
   // Interoperability: dashboard <- estimate (2026-07-09)
   Package,
   // Learn-by-example cases card, folded into the registry 2026-07-21
-  GraduationCap,
   // Cases for the reader's own market (2026-09-06)
-  MapPin,
   // Validation across projects (2026-10-04)
   ShieldCheck,
 } from 'lucide-react';
@@ -61,55 +58,9 @@ export interface DashboardWidgetMeta {
 }
 
 export const DASHBOARD_WIDGETS: readonly DashboardWidgetMeta[] = [
-  // "Start here - learn by example" cases gallery. Folded into the registry so
-  // it can be hidden or narrowed like any other widget (it used to be pinned
-  // full-width and could not be removed). Defaults to full width at the top.
-  {
-    id: 'cases_learn',
-    labelKey: 'dashboard.layout.w_cases_learn',
-    labelDefault: 'Start here - learn by example',
-    descKey: 'dashboard.layout.w_cases_learn_desc',
-    descDefault: 'Guided real-world example workflows to learn the platform',
-    icon: GraduationCap,
-  },
-  // Which regional pack is switched on and what it set up. Sits this high on
-  // purpose: it answers "is this product configured for the country I work
-  // in", which is the question a new reader has before any number on the page
-  // means anything, and which nothing on the dashboard answered at all until
-  // now. A handful of short fact tiles, laid out as one row at full width,
-  // and the card keeps its own height rather than the row's
-  // (WIDGET_NO_STRETCH in DashboardPage) should a reader narrow it.
-  //
-  // labelKey is the card's own heading key rather than a
-  // dashboard.layout.w_* of its own. The layout manager lists this widget by
-  // exactly the words the card is titled with, so a second key would be the
-  // same sentence translated twice into forty-one languages with nothing to
-  // keep the two copies agreeing.
-  {
-    id: 'regional_pack',
-    labelKey: 'dashboard.regional_pack_title',
-    labelDefault: 'Your regional pack',
-    descKey: 'dashboard.layout.w_regional_pack_desc',
-    descDefault: 'Which market pack is active and what it sets up for you',
-    icon: Globe,
-    // Full width by default: a one-row strip of facts above the market
-    // cases. Side by side at a third, the pair never matched in height (a
-    // short fact card beside a tall list) whatever either card did.
-    defaultSpan: 6,
-  },
-  // The cases written for the reader's own market, with every other market
-  // one click away. Sits under the regional pack card on purpose: that card
-  // says which market the product is set up for, this one shows the worked
-  // examples for it, three across at full width. labelKey is the card's own heading key, for the reason given above.
-  {
-    id: 'cases_market',
-    labelKey: 'dashboard.market_cases.title',
-    labelDefault: 'Cases for your market',
-    descKey: 'dashboard.layout.w_cases_market_desc',
-    descDefault: 'Worked cases for the country you work in, with every other market one click away',
-    icon: MapPin,
-    defaultSpan: 6,
-  },
+  // The "learn by example" and market cases galleries are tutorials and are
+  // not offered in CesCons.
+  // The regional-pack card is configuration and lives in Settings.
   // ── Core (existing 12) ────────────────────────────────────────────────
   {
     id: 'continue_work',
@@ -220,14 +171,6 @@ export const DASHBOARD_WIDGETS: readonly DashboardWidgetMeta[] = [
     descDefault: 'Model coverage and linked-quantity health',
     icon: Cpu,
     defaultSpan: 3,
-  },
-  {
-    id: 'onboarding',
-    labelKey: 'dashboard.layout.w_onboarding',
-    labelDefault: 'Getting started',
-    descKey: 'dashboard.layout.w_onboarding_desc',
-    descDefault: 'Setup checklist - hides itself once complete',
-    icon: Lightbulb,
   },
   {
     id: 'next_steps',

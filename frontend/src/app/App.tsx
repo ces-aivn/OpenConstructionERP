@@ -24,7 +24,7 @@ import { NlRuleBuilderPanel } from '@/features/compliance';
 import { useModuleRouteElements } from '@/modules/ModuleRoutes';
 import { DatabaseSetupPage } from '@/features/setup';
 import { ModuleVideosSlot } from '@/features/videos/ModuleVideosSlot';
-import { Logo, ShortcutsDialog, CommandPalette, ToastContainer, DemoReadOnlyDialog, BackgroundInstallBanner, ErrorBoundary, NotFoundPage, ProductTour, OfflineBanner, DesktopPortBanner, PWAInstallPrompt } from '@/shared/ui';
+import { Logo, ShortcutsDialog, CommandPalette, ToastContainer, DemoReadOnlyDialog, BackgroundInstallBanner, ErrorBoundary, NotFoundPage, OfflineBanner, DesktopPortBanner, PWAInstallPrompt } from '@/shared/ui';
 import { AdminOnly } from '@/shared/auth/AdminOnly';
 import GlobalSearchModal from '@/features/search/GlobalSearchModal';
 import { useGlobalSearchStore } from '@/stores/useGlobalSearchStore';
@@ -764,21 +764,6 @@ const IntegrationsPage = lazy(() =>
 const AboutPage = lazy(() =>
   import('@/features/about/AboutPage').then((m) => ({ default: m.AboutPage }))
 );
-const HowItWorksPage = lazy(() => import('@/features/help/HowItWorksPage'));
-// Cases (playbooks) - cross-module, end-to-end guided scenarios. Lazy so the
-// playbook data + runner stay out of the boot bundle.
-const CasesPage = lazy(() =>
-  import('@/features/cases').then((m) => ({ default: m.CasesPage }))
-);
-// Videos - tutorial and training videos. Lazy: the page is a list of posters,
-// and nothing on it is needed at boot.
-const VideosPage = lazy(() =>
-  import('@/features/videos').then((m) => ({ default: m.VideosPage }))
-);
-// The case editor, split from the hub: most readers never author one.
-const CaseEditorPage = lazy(() =>
-  import('@/features/cases').then((m) => ({ default: m.CaseEditorPage }))
-);
 // Inside track - backers-only early-look panel (donation perk). Lazy so the
 // changelog it reuses does not weigh down the boot bundle.
 const InsidePage = lazy(() =>
@@ -1182,24 +1167,8 @@ export default function App() {
       <OfflineBanner />
       <DesktopPortBanner />
       {isAuthenticated && <GlobalShortcuts />}
-      {/* First-run product tour — 8-step spotlight walk-through. Always
-          mounted (for authenticated users) but renders nothing unless
-          active; auto-starts on the dashboard the first time a user
-          logs in (gated by `oe.tour_completed` in localStorage) and
-          listens for the `oe:start-tour` window event so the
-          WhatsNewCard / Help menu can (re-)launch it on demand.
-
-          UX-audit collapse: the older `OnboardingTour` (storage key
-          `oe_tour_completed`, no dot) used to be mounted here in
-          parallel — dismissing one still let the other pop on the
-          next page. ProductTour now owns the global tour surface;
-          a one-shot legacy-key migration in the effect above
-          forwards a dismissed flag from the old storage key so
-          returning users don't see the tour again. The
-          `OnboardingTour` component still ships for per-feature
-          custom tours (e.g. Pipelines page), but is no longer mounted
-          globally. */}
-      {isAuthenticated && <ProductTour />}
+      {/* No product tour in this build: the VN/US deployment ships without
+          guided walkthroughs, so `ProductTour` is not mounted. */}
       <Routes>
         {/* Public share-link landing page — no auth required, no app shell */}
         <Route path="/share/:token" element={<SharePage />} />
@@ -1582,20 +1551,19 @@ export default function App() {
         <Route path="/saved-views" element={<P title="Saved Views"><SavedViewsPage /></P>} />
         <Route path="/projects/:projectId/saved-views" element={<P title="Saved Views"><SavedViewsPage /></P>} />
         <Route path="/about" element={<P title="About"><AboutPage /></P>} />
-        <Route path="/how-it-works" element={<P title="How it works"><HowItWorksPage /></P>} />
+        {/* Tutorials, training videos and guided cases are not part of this
+            build; old links land on the dashboard. */}
+        <Route path="/how-it-works" element={<Navigate to="/dashboard" replace />} />
         {/* Cases (playbooks) - list at /cases, the stepper at /cases/:playbookId
             (one component serves both so it stays a single lazy chunk).
             The editor is a separate chunk: most readers never author a case,
             and the form has no business loading for the ones who do not.
             /cases/new is declared before the stepper for readability only -
             the router ranks a static segment above a dynamic one regardless. */}
-        <Route path="/videos" element={<P title="Videos"><VideosPage /></P>} />
+        <Route path="/videos" element={<Navigate to="/dashboard" replace />} />
         <Route path="/packs" element={<P title="Packs"><PacksPage /></P>} />
         <Route path="/packs/:slug" element={<P title="Packs"><PackDetailPage /></P>} />
-        <Route path="/cases" element={<P title="Cases"><CasesPage /></P>} />
-        <Route path="/cases/new" element={<P title="Cases"><CaseEditorPage /></P>} />
-        <Route path="/cases/:playbookId/edit" element={<P title="Cases"><CaseEditorPage /></P>} />
-        <Route path="/cases/:playbookId" element={<P title="Cases"><CasesPage /></P>} />
+        <Route path="/cases/*" element={<Navigate to="/dashboard" replace />} />
         {/* Inside track - backers-only early-look panel (donation perk):
             recent releases (reused from the /about changelog) + a short
             coming-next list. Gated client-side by a supporter access code

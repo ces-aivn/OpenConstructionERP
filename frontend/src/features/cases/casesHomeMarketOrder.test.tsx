@@ -218,17 +218,18 @@ describe("catalogue order follows the reader's language", () => {
     expect(shows(front, german.titleDefault)).toBe(false);
   });
 
-  it("puts the German cases first for a German reader", () => {
+  it("puts the US cases first for a reader of US English, and keeps the British ones behind them", () => {
     // The control that has to come out the other way. Same catalogue, same
     // page, one changed language: if the front of the list does not move, the
     // page is not reading the language at all and the English case above
-    // proved nothing.
-    const texts = textsOf(renderCards("de"));
-    const german = PLAYBOOKS.filter((pb) => pb.region === "DE");
-    expect(german.length).toBeGreaterThan(0);
+    // proved nothing. German is no longer offered in this build, so the
+    // control uses en-US, the other shipped language that names a market.
+    const texts = textsOf(renderCards("en-US"));
+    const american = PLAYBOOKS.filter((pb) => pb.region === "US");
+    expect(american.length).toBeGreaterThan(0);
 
-    const front = texts.slice(0, german.length);
-    for (const pb of german) expect(shows(front, pb.titleDefault), pb.id).toBe(true);
+    const front = texts.slice(0, american.length);
+    for (const pb of american) expect(shows(front, pb.titleDefault), pb.id).toBe(true);
 
     const british = PLAYBOOKS.find((pb) => pb.region === "GB")!;
     expect(shows(front, british.titleDefault)).toBe(false);

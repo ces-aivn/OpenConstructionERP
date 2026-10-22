@@ -100,7 +100,7 @@ describe('Sidebar with a framework pack', () => {
     await waitFor(() => expect(hidden.set).toHaveBeenCalledTimes(1));
     const next = hidden.set.mock.calls[0]![0] as string[];
     expect(next.slice(0, 2)).toEqual(['/rfi', packMarker(SLUG)]);
-    expect(next).toContain('/crm');
+    expect(next).toContain('/contracts');
     for (const kept of ['/site-logistics', '/costs', '/boq', '/takeoff', '/dwg-takeoff', '/bim', '/schedule']) {
       expect(next).not.toContain(kept);
     }

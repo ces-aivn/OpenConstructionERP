@@ -1,15 +1,19 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 //
-// The Quantity Rules entry. Release 17c62d2fa dropped it from the menu, which
-// left the compliance "BIM Rules" row (?mode=requirements, which hides the
-// Quantity Rules tab) as the only way in, and that row sits in a group the
-// simple view hides. Simple is the default view, so a new user had no menu
-// path to quantity rules at all. This renders the real sidebar in both views.
+// The Quantity Rules, BIM Rules and Clash screens. The curated sidebar
+// (navCatalog `sidebarNavGroups`) lists none of them: it carries the eight
+// operational groups only, and no module-registry rows. The screens are not
+// gone, though. Their routes are still registered in the app, and the full
+// catalogue still carries their rows for the route-icon map and page titles,
+// so a link or a typed address still reaches them. This renders the real
+// sidebar in both views, with every group open, to show that.
 
 import type { ReactNode } from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, waitFor } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -58,6 +62,7 @@ vi.mock('@/features/projects/useProjectProfile', () => ({
 }));
 
 import { Sidebar } from './Sidebar';
+import { navGroups, sidebarNavGroups } from './navCatalog';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useModuleStore } from '@/stores/useModuleStore';
 import { useViewModeStore } from '@/stores/useViewModeStore';
@@ -91,56 +96,46 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-describe('the Quantity rules menu entry', () => {
-  it('is in the simple view, which is the default, without the compliance row', () => {
-    useViewModeStore.getState().setMode('simple');
+const OFF_MENU = ['/bim/rules', '/bim/rules?mode=requirements', '/clash'];
+
+/** Open every curated group, through the collapse state the menu reads on mount. */
+function expandAllGroups(): void {
+  localStorage.setItem(
+    'oe_sidebar_collapsed_v2',
+    JSON.stringify(Object.fromEntries(sidebarNavGroups.map((group) => [group.id, false]))),
+  );
+}
+
+const appSource = () => readFileSync(resolve(__dirname, '../App.tsx'), 'utf-8');
+
+describe('the BIM rules and clash screens, off the curated menu', () => {
+  it.each(['simple', 'advanced'] as const)('are not in the %s view, with every group open', async (mode) => {
+    useViewModeStore.getState().setMode(mode);
+    expandAllGroups();
     renderSidebar();
-    expect(hrefs()).toContain('/bim/rules');
-    expect(hrefs()).not.toContain('/bim/rules?mode=requirements');
+    // Positive control: the curated rows did render, so an absence below is
+    // the catalogue's choice and not an empty menu.
+    await waitFor(() => expect(hrefs()).toContain('/boq'));
+    expect(hrefs()).toContain('/schedule');
+    expect(hrefs()).toContain('/reports');
+    for (const route of OFF_MENU) expect(hrefs(), route).not.toContain(route);
   });
 
-  // Quantity maps are BIM Hub; the compliance requirements are their own
-  // module. Switching one off must not take the other's row with it.
-  const modulesOff = (...names: string[]) =>
-    api.apiGet.mockImplementation((path: string) =>
-      path === '/v1/users/me/onboarding/'
-        ? Promise.resolve({ completed: true, company_type: null })
-        : path === '/v1/modules/'
-          ? Promise.resolve(names.map((name) => ({ name, enabled: false, is_core: false })))
-          : Promise.resolve([]),
-    );
-
-  // The compliance view has two tabs from two modules: Requirements
-  // (oe_requirements) and the Rule Library (oe_bim_requirements). Its row
-  // goes only when neither is left. `oe_clash` goes off in every case as a
-  // marker: once its row is gone the module list has arrived, so a row that
-  // is still there stayed on purpose, not because nothing was loaded yet.
-  it.each([
-    { off: [], compliance: true },
-    { off: ['oe_requirements'], compliance: true },
-    { off: ['oe_bim_requirements'], compliance: true },
-    { off: ['oe_requirements', 'oe_bim_requirements'], compliance: false },
-  ])('with $off switched off the compliance row shows: $compliance', async ({ off, compliance }) => {
-    modulesOff('oe_clash', ...off);
-    useViewModeStore.getState().setMode('advanced');
-    renderSidebar();
-    await waitFor(() => expect(hrefs()).not.toContain('/clash'));
-    expect(hrefs().includes('/bim/rules?mode=requirements')).toBe(compliance);
-    expect(hrefs()).toContain('/bim/rules');
+  it('are listed by none of the curated groups', () => {
+    const curated = sidebarNavGroups.flatMap((group) => group.items.map((item) => item.to));
+    expect(curated.length).toBeGreaterThan(0);
+    for (const route of OFF_MENU) expect(curated, route).not.toContain(route);
   });
 
-  it('goes with BIM Hub, while the compliance row stays', async () => {
-    modulesOff('oe_bim_hub');
-    useViewModeStore.getState().setMode('advanced');
-    renderSidebar();
-    await waitFor(() => expect(hrefs()).not.toContain('/bim/rules'));
-    expect(hrefs()).toContain('/bim/rules?mode=requirements');
+  it('keep their rows in the full catalogue, for the route-icon map and page titles', () => {
+    const all = navGroups.flatMap((group) => group.items.map((item) => item.to));
+    for (const route of OFF_MENU) expect(all, route).toContain(route);
   });
 
-  it('sits next to the compliance row in the advanced view', () => {
-    useViewModeStore.getState().setMode('advanced');
-    renderSidebar();
-    expect(hrefs()).toContain('/bim/rules');
-    expect(hrefs()).toContain('/bim/rules?mode=requirements');
+  it('stay reachable by route: the app still registers each page', () => {
+    const app = appSource();
+    expect(app).toContain('<Route path="/bim/rules" element={<BimRulesRoute />} />');
+    expect(app).toContain('<Route path="/bim/quantity-rules" element={<Navigate to="/bim/rules" replace />} />');
+    expect(app).toMatch(/<Route path="\/clash" element=\{<P title="Clash Detection"><ClashDetectionPage \/><\/P>\} \/>/);
   });
 });

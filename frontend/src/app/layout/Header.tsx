@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback, useId } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useLocation, useMatch } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Search, ChevronDown, ChevronRight, LogOut, User, Settings, Menu, MessageSquarePlus, FolderOpen, CheckCircle2, XCircle, Bug, BookOpen, Loader2, Upload, HelpCircle, GraduationCap, Mail, ExternalLink, Github, Sun, Moon, Monitor, Globe } from 'lucide-react';
+import { Search, ChevronDown, ChevronRight, LogOut, User, Users, Settings, Menu, MessageSquarePlus, FolderOpen, CheckCircle2, XCircle, Bug, Loader2, Upload, Mail, Github, Sun, Moon, Monitor } from 'lucide-react';
 import clsx from 'clsx';
 import { SUPPORTED_LANGUAGES, getLanguageByCode, changeLanguage } from '../i18n';
 import { sortLanguagesByName } from '@/shared/lib/languageOrder';
@@ -12,13 +12,10 @@ import { useAuthStore } from '@/stores/useAuthStore';
 import { useUploadQueueStore } from '@/stores/useUploadQueueStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useThemeStore } from '@/stores/useThemeStore';
-import { ActivePackChip, CountryFlag, ModuleInfoButton, PartnerLogoBadge } from '@/shared/ui';
+import { CountryFlag, ModuleInfoButton, PartnerLogoBadge } from '@/shared/ui';
 import { usePartnerPack } from '@/shared/hooks/usePartnerPack';
 import { NotificationBell } from '@/shared/ui/NotificationBell';
-import { LearnTopBarButton } from './LearnTopBarButton';
 import { ProcessesButton } from '@/features/processes/ProcessesButton';
-import { HeaderNewsButton } from '@/shared/ui/HeaderNewsButton';
-import { ModuleBuilderButton } from '@/features/module-builder';
 import { fetchProjectList } from '@/shared/lib/projectList';
 import { copyToClipboard } from '@/shared/lib/browser';
 import { triggerDownload } from '@/shared/lib/api';
@@ -31,10 +28,7 @@ import {
 import { APP_VERSION, APP_BUILD_FINGERPRINT } from '@/shared/lib/version';
 import { useToastStore } from '@/stores/useToastStore';
 import { useI18nReady } from '@/shared/lib/useI18nReady';
-import { isTauri, openAppInBrowser, openLink } from '@/shared/lib/desktop';
-import { SupportUsButton } from './SupportUsButton';
-import { SubscribeButton } from './SubscribeButton';
-import { ProjectJourneyButton } from './ProjectJourney';
+import { isTauri, openLink } from '@/shared/lib/desktop';
 import { PresenceAvatarStack } from '@/features/global_presence';
 import { getRouteIcon } from './routeIcons';
 import { useIconOverridesVersion } from './menuIcons';
@@ -357,6 +351,7 @@ export function Header({ title, onMenuClick }: HeaderProps) {
   // returned version number is unused — its role is to invalidate the
   // memoization React applies to this render.
   useI18nReady();
+  const isAdmin = useAuthStore((s) => s.userRole) === 'admin';
   // A partner pack drives the centered co-brand chip only. The secondary
   // header actions (search, Support, Subscribe) keep their full labelled
   // form whether or not a pack is active, so the top bar looks the same for
@@ -486,7 +481,8 @@ export function Header({ title, onMenuClick }: HeaderProps) {
             project picker instead of truncating its name. The column keeps
             room for the globe, so the readout shrinks to its icon and tooltip
             rather than vanishing, which is the one thing it must not do. */}
-        <ActivePackChip className="min-w-0" />
+        {/* The active-pack readout is configuration, so CesCons leaves it to
+            the Settings page. */}
         {showCoBrand && <PartnerLogoBadge variant="nav" />}
       </div>
 
@@ -501,11 +497,6 @@ export function Header({ title, onMenuClick }: HeaderProps) {
           tension with the project switcher on the left; planted next
           to Support/Help, the two CTAs read as a coherent cluster. */}
       <div className="flex items-center gap-2 shrink-0">
-        {/* ── Journey (orientation) ─────────────────────────────────
-            Names the lifecycle phase the current screen belongs to and
-            opens the whole-platform journey map. First in the cluster so it
-            reads as "where am I" ahead of the action buttons. */}
-        <ProjectJourneyButton />
         <PresenceAvatarStack />
         <div className="hidden sm:block h-4 w-px bg-border-light/70" aria-hidden />
 
@@ -550,31 +541,15 @@ export function Header({ title, onMenuClick }: HeaderProps) {
         {/* Hairline divider between Zone 2 and Zone 3. */}
         <div className="hidden sm:block h-4 w-px bg-border-light/70" aria-hidden />
 
-        {/* ── Zone 3 (Notifications + Subscribe + Bug + Help) ──────
-            Order: NotificationBell · What's new · SupportUs · Subscribe · BugReport · Help.
-            The "ask the user for something" CTAs (Support / Subscribe) stay
-            adjacent; Bug + Help sit on the right edge so a user filing a
-            report doesn't have to scan past the marketing CTAs. */}
-        {/* Only while the Learn card is hidden from the menu: its way back,
-            at every width. */}
-        <LearnTopBarButton />
-        {/* Background services: what the platform keeps loaded, at every
-            width, because it is the way back to a feature that stopped. */}
-        <ProcessesButton />
+        {/* ── Zone 3 (Background services + Notifications) ────────── */}
+        {/* Background services: what the platform keeps loaded. It is a
+            system view, so in CesCons only admins see it. */}
+        {isAdmin && <ProcessesButton />}
         <NotificationBell />
-        <HeaderNewsButton />
-        {/* Building a module is something you do from wherever you noticed the
-            platform was missing one, so it lives here rather than in the
-            sidebar. Renders nothing for anyone who may not install one.
-            Hidden below xl to reduce crowding on narrower screens. */}
-        {/* Shown from 2xl only: at 125% and 150% text size a 1280-1440px bar
-            had no room for these three next to the project picker, and the
-            right cluster ran off screen. */}
-        <div className="hidden 2xl:block"><ModuleBuilderButton /></div>
-        <div className="hidden 2xl:block"><SupportUsButton /></div>
-        <div className="hidden 2xl:block"><SubscribeButton /></div>
-        <BugReportMenu />
-        <HelpMenu />
+        {/* Building modules is platform configuration and is not offered
+            from the CesCons top bar. */}
+        {/* Support / Subscribe / bug report point at the upstream project
+            and are not offered in CesCons. */}
 
         {/* Hairline divider between Zone 3 and Zone 4. */}
         <div className="hidden sm:block h-4 w-px bg-border-light/70" aria-hidden />
@@ -1031,180 +1006,6 @@ export function BugReportMenu() {
 
 /* ── Help Menu (consolidated docs / GitHub / feedback / bug-report) ─── */
 
-/** Single `?` icon button at top-right that opens a popover with every
- *  help / feedback / external-link action consolidated. Replaces what
- *  was previously six separate header buttons (GitHub, Docs, Report
- *  Issue, More, Feedback, Email Issues). One discoverable menu reads
- *  cleaner than six visually competing buttons. */
-function HelpMenu() {
-  const { t } = useTranslation();
-  const addToast = useToastStore((s) => s.addToast);
-  const navigate = useNavigate();
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [open]);
-
-  // Open the contact form pre-tagged as "Send Feedback". Mirrors the
-  // pre-consolidation amber-Feedback button (which used to live in the
-  // header). Downloads the in-session error log if there are any
-  // errors so the user can attach it.
-  const handleFeedback = () => {
-    setOpen(false);
-    if (getErrorCount() > 0) {
-      triggerDownload(exportErrorReport(), errorLogFilename());
-    }
-    const params = new URLSearchParams({
-      feedback: 'true',
-      app_version: APP_VERSION,
-    });
-    openLink(`https://openconstructionerp.com/contact.html?${params}`);
-  };
-
-  return (
-    <div className="relative hidden sm:block" ref={ref} data-testid="header-help-menu">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className={clsx(
-          'flex h-8 w-8 items-center justify-center rounded-lg transition-colors',
-          'text-content-tertiary hover:bg-surface-secondary hover:text-content-secondary',
-          open && 'bg-surface-secondary text-content-secondary',
-        )}
-        title={t('nav.help', { defaultValue: 'Help & feedback' })}
-        aria-label={t('nav.help', { defaultValue: 'Help & feedback' })}
-      >
-        <HelpCircle size={16} strokeWidth={1.75} />
-      </button>
-
-      {open && (
-        <div
-          role="menu"
-          className="absolute right-0 top-full mt-1.5 w-60 rounded-xl border border-border-light bg-surface-elevated shadow-lg animate-scale-in py-1 z-40"
-        >
-          {/* In-app guided explanation of every module - the "How it works"
-              hub. Lives first so it is the most discoverable help action. */}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              navigate('/how-it-works');
-            }}
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-content-primary hover:bg-surface-secondary transition-colors"
-          >
-            <GraduationCap size={14} className="text-oe-blue shrink-0" />
-            <span className="flex-1 text-left">{t('howto.menu_item', { defaultValue: 'How it works' })}</span>
-          </button>
-          <div className="my-1 border-t border-border-light" role="separator" />
-
-          {/* External resources. Documentation points at the official docs
-              site so users land on the maintained guides, not the raw repo. */}
-          <a
-            role="menuitem"
-            href="https://openconstructionerp.com/docs"
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={() => setOpen(false)}
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-content-primary hover:bg-surface-secondary transition-colors"
-          >
-            <BookOpen size={14} className="text-content-tertiary shrink-0" />
-            <span className="flex-1">{t('nav.docs', { defaultValue: 'Documentation' })}</span>
-            <ExternalLink size={11} className="text-content-quaternary shrink-0" />
-          </a>
-          <a
-            role="menuitem"
-            href="https://github.com/datadrivenconstruction/OpenConstructionERP"
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={() => setOpen(false)}
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-content-primary hover:bg-surface-secondary transition-colors"
-          >
-            <Github size={14} className="text-content-tertiary shrink-0" />
-            <span className="flex-1">{t('nav.github', { defaultValue: 'GitHub repository' })}</span>
-            <ExternalLink size={11} className="text-content-quaternary shrink-0" />
-          </a>
-
-          {/* Desktop only: open the same app in the user's normal web browser.
-              The app window stays open; this just gives people who prefer
-              browser tabs the local address in one click. */}
-          {isTauri && (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setOpen(false);
-                void openAppInBrowser().then((result) => {
-                  if (!result.ok) {
-                    addToast({
-                      type: 'warning',
-                      title: t('desktop.open_in_browser_failed', {
-                        defaultValue: 'Could not open your browser',
-                      }),
-                      message: result.reason,
-                    });
-                  }
-                });
-              }}
-              className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-content-primary hover:bg-surface-secondary transition-colors"
-            >
-              <Globe size={14} className="text-content-tertiary shrink-0" />
-              <span className="flex-1 text-left">
-                {t('desktop.open_in_browser', { defaultValue: 'Open in your browser' })}
-              </span>
-              <ExternalLink size={11} className="text-content-quaternary shrink-0" />
-            </button>
-          )}
-
-          <div className="my-1 border-t border-border-light" role="separator" />
-
-          {/* Feedback / report flows */}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={handleFeedback}
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-content-primary hover:bg-surface-secondary transition-colors"
-          >
-            <MessageSquarePlus size={14} className="text-content-tertiary shrink-0" />
-            <span>{t('feedback.title', { defaultValue: 'Send feedback' })}</span>
-          </button>
-          {/* Bug-reporting lives in the dedicated Bug menu (the bug-icon button
-              next to this one), which already offers a pre-filled GitHub issue,
-              the web form, an email channel and a log download. Keeping those
-              flows out of here leaves Help for docs and general feedback and
-              gives bug reporting a single, obvious home. */}
-          <a
-            role="menuitem"
-            href="mailto:info@datadrivenconstruction.io?subject=OpenConstructionERP%20Issue%20Report"
-            onClick={() => setOpen(false)}
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-content-primary hover:bg-surface-secondary transition-colors"
-          >
-            <Mail size={14} className="text-content-tertiary shrink-0" />
-            <span>{t('header.email_issues', { defaultValue: 'Email the team' })}</span>
-          </a>
-        </div>
-      )}
-    </div>
-  );
-}
-
 /* ── Language Switcher Dropdown ─────────────────────────────────────────── */
 
 function LanguageSwitcher({
@@ -1526,6 +1327,7 @@ function UserMenu() {
   const navigate = useNavigate();
   const logout = useAuthStore((s) => s.logout);
   const userEmail = useAuthStore((s) => s.userEmail);
+  const isAdmin = useAuthStore((s) => s.userRole) === 'admin';
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const userInitial = userEmail ? userEmail.charAt(0).toUpperCase() : 'U';
@@ -1600,14 +1402,29 @@ function UserMenu() {
             <User size={14} className="text-content-tertiary" />
             {t('auth.profile', 'Profile')}
           </button>
-          <button
-            role="menuitem"
-            onClick={() => { setOpen(false); navigate('/settings'); }}
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-content-primary hover:bg-surface-secondary transition-colors"
-          >
-            <Settings size={14} className="text-content-tertiary" />
-            {t('nav.settings', 'Settings')}
-          </button>
+          {/* The sidebar carries no configuration rows; admins reach system
+              settings and user management from here, everyone else only
+              their own profile. */}
+          {isAdmin && (
+            <>
+              <button
+                role="menuitem"
+                onClick={() => { setOpen(false); navigate('/settings'); }}
+                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-content-primary hover:bg-surface-secondary transition-colors"
+              >
+                <Settings size={14} className="text-content-tertiary" />
+                {t('nav.settings', 'Settings')}
+              </button>
+              <button
+                role="menuitem"
+                onClick={() => { setOpen(false); navigate('/users'); }}
+                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-content-primary hover:bg-surface-secondary transition-colors"
+              >
+                <Users size={14} className="text-content-tertiary" />
+                {t('sidebar.admin_grid.users', 'Users')}
+              </button>
+            </>
+          )}
           <div className="my-1 border-t border-border-light" role="separator" />
           <button
             role="menuitem"

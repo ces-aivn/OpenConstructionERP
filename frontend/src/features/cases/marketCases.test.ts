@@ -44,24 +44,13 @@ describe('resolveHomeMarket, the language table', () => {
   it('answers the country a language declares, through the shared helper', () => {
     // The language step is `homeMarketForLanguage` itself, not a second table:
     // whatever the catalogue leads with for a language, this leads with too.
-    for (const [language, market] of [
-      ['de', 'DE'],
-      ['es', 'ES'],
-      ['es-MX', 'MX'],
-      ['pt-BR', 'BR'],
-      ['zh', 'CN'],
-      ['hi', 'IN'],
-      ['ru', 'RU'],
-      ['ar', 'SA'],
-      ['en-US', 'US'],
-      // Hungarian answered 'nearest' through the fallback table while the
-      // language sat on disk unregistered; it declares Hungary since it was
-      // offered, so it is the language step that answers now.
-      ['hu', 'HU'],
-    ] as const) {
-      expect(resolve(language), language).toEqual({ market, source: 'language' });
-      expect(homeMarketForLanguage(language, MARKETS), language).toBe(market);
-    }
+    // The build offers only Vietnamese and US English, so the registry declares
+    // a country for just those two. Vietnam has no cases in the catalogue, so
+    // Vietnamese answers nothing and the hub keeps the catalogue order.
+    expect(resolve('en-US')).toEqual({ market: 'US', source: 'language' });
+    expect(homeMarketForLanguage('en-US', MARKETS)).toBe('US');
+    expect(resolve('vi')).toEqual({ market: null, source: null });
+    expect(homeMarketForLanguage('vi', MARKETS)).toBeNull();
   });
 
   it('keeps es-MX and es-CL apart: Mexico is a market, Spain is only the closest one', () => {
@@ -137,9 +126,9 @@ describe('resolveHomeMarket, the language table', () => {
   it('a pack that names no single market, or a market with no cases, is skipped', () => {
     // `xx` is what a cross-region pack declares; a French pack names a market
     // the catalogue has nothing for. Neither may produce an empty card.
-    expect(resolve('de', 'xx')).toEqual({ market: 'DE', source: 'language' });
-    expect(resolve('de', 'fr')).toEqual({ market: 'DE', source: 'language' });
-    expect(resolve('de', '')).toEqual({ market: 'DE', source: 'language' });
+    expect(resolve('en-US', 'xx')).toEqual({ market: 'US', source: 'language' });
+    expect(resolve('en-US', 'fr')).toEqual({ market: 'US', source: 'language' });
+    expect(resolve('en-US', '')).toEqual({ market: 'US', source: 'language' });
   });
 
   it('answers nothing for a language that reaches no market', () => {

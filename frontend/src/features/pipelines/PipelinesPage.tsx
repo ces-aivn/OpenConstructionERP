@@ -16,7 +16,7 @@
  *
  * Server state via React Query (`api.ts`); local graph state via the Zustand
  * store. Live run = polling `GET /runs/{run_id}` (no websocket).
- * Empty canvas → `EmptyState`. Onboarding via the shared `OnboardingTour`.
+ * Empty canvas → `EmptyState`.
  */
 import { FolderOpen, Info, LayoutTemplate, Workflow } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -24,8 +24,7 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { BetaBanner, EmptyState, OnboardingTour } from '@/shared/ui';
-import type { TourStep } from '@/shared/ui';
+import { BetaBanner, EmptyState } from '@/shared/ui';
 import { getErrorMessage } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
 
@@ -469,46 +468,6 @@ export function PipelinesPage() {
     setLibraryOpen(true);
   }, []);
 
-  // The shared OnboardingTour resolves `title`/`description` via its internal
-  // STEP_DEFAULTS map and falls back to the raw value when a key is unknown —
-  // so we pass already-translated strings (we may not edit locale files).
-  const tourSteps: TourStep[] = useMemo(
-    () => [
-      {
-        target: '[data-tour="pipeline-palette"]',
-        title: t('pipeline.tour.palette_title', {
-          defaultValue: 'Pick your steps',
-        }),
-        description: t('pipeline.tour.palette_body', {
-          defaultValue:
-            'Drag a step from here onto the canvas, or just click it to drop it in the middle.',
-        }),
-        position: 'right',
-      },
-      {
-        target: '[data-tour="pipeline-canvas"]',
-        title: t('pipeline.tour.canvas_title', {
-          defaultValue: 'Connect the steps',
-        }),
-        description: t('pipeline.tour.canvas_body', {
-          defaultValue:
-            'Drag from one step output dot to the next step input. Colours show the data type.',
-        }),
-        position: 'bottom',
-      },
-      {
-        target: '[data-testid="pipeline-run"]',
-        title: t('pipeline.tour.run_title', { defaultValue: 'Run it' }),
-        description: t('pipeline.tour.run_body', {
-          defaultValue:
-            'Press Run to execute the pipeline and watch each step light up live.',
-        }),
-        position: 'bottom',
-      },
-    ],
-    [t],
-  );
-
   const isRunning =
     Boolean(activeRunId) &&
     !isTerminalRunStatus(runDetailQuery.data?.status);
@@ -681,7 +640,6 @@ export function PipelinesPage() {
         onOpenSaved={openSaved}
       />
 
-      <OnboardingTour steps={tourSteps} />
     </div>
   );
 }

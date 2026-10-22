@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { apiGet, apiPost, apiDelete, type Page } from '@/shared/lib/api';
+import { apiGet, apiDelete, type Page } from '@/shared/lib/api';
 import { fetchProjectList } from '@/shared/lib/projectList';
 import { APP_VERSION } from '@/shared/lib/version';
 import { useToastStore } from '@/stores/useToastStore';
@@ -15,7 +15,6 @@ import { useMeOnboardingQueryKey } from '@/app/layout/meOnboardingQuery';
 import { fmtList, fmtFixed } from '@/shared/lib/formatters';
 import { SUPPORTED_LANGUAGES } from '@/app/i18n';
 import { uploadDocument, fetchDocuments, type DocumentItem } from '@/features/documents/api';
-import { CostDatabaseInvite } from '@/features/costs/CostDatabaseInvite';
 import {
   FolderPlus,
   ArrowRight,
@@ -26,18 +25,13 @@ import {
   BarChart3,
   Database,
   Sparkles,
-  Cpu,
   FileSpreadsheet,
   CheckCircle2,
-  Download,
-  X,
-  Building2,
   Loader2,
   DollarSign,
   FileText,
   Calendar,
   Upload,
-  ExternalLink,
   AlertTriangle,
   TrendingUp,
   Users,
@@ -53,8 +47,6 @@ import { Card, CardHeader, CardContent, Button, Badge, Skeleton, ActivityFeed as
 import { dashboardGuide } from './dashboardGuide';
 import { pricedPositions, type PositionCounts } from './pricedPositions';
 import { MultiCurrencyTotal } from '@/shared/ui/MultiCurrencyTotal';
-import { WhatsNewCard } from '@/shared/ui/WhatsNewCard';
-import { DashboardCasesCard } from './DashboardCasesCard';
 import { CompactProjectCard } from './components/CompactProjectCard';
 import { type ProjectPin } from './components/DashboardProjectsMap';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
@@ -131,12 +123,6 @@ const InspectionsQualityCard = lazy(() =>
 const PunchListQualityCard = lazy(() =>
   import('./PunchListQualityCard').then((m) => ({ default: m.PunchListQualityCard })),
 );
-const RegionalPackCard = lazy(() =>
-  import('./RegionalPackCard').then((m) => ({ default: m.RegionalPackCard })),
-);
-const DashboardMarketCasesCard = lazy(() =>
-  import('./DashboardMarketCasesCard').then((m) => ({ default: m.DashboardMarketCasesCard })),
-);
 const ValidationPortfolioCard = lazy(() =>
   import('./ValidationPortfolioCard').then((m) => ({ default: m.ValidationPortfolioCard })),
 );
@@ -169,7 +155,7 @@ const WIDGET_NULL_FALLBACK = new Set<string>([
  * card sharing a row with a tall one does not: stretched to the height of the
  * market cases card beside it, the regional pack card was mostly empty frame.
  */
-const WIDGET_NO_STRETCH = new Set<string>(['regional_pack']);
+const WIDGET_NO_STRETCH = new Set<string>();
 
 /**
  * Placeholder shown in a widget's grid cell while its code-split chunk (and
@@ -313,546 +299,11 @@ interface BoqCurrencyBreakdown {
   multi_currency?: boolean;
 }
 
-interface RegionStat {
-  region: string;
-  count: number;
-}
-
-interface OnboardingStep {
-  id: number;
-  icon: React.ReactNode;
-  titleKey: string;
-  titleDefault: string;
-  descKey: string;
-  descDefault: string;
-  buttonKey: string;
-  buttonDefault: string;
-  done: boolean;
-  disabled: boolean;
-  onClick: () => void;
-}
-
 interface SystemStatusData {
   api: { status: string; version: string };
   database: { status: string; engine?: string; error?: string };
   vector_db: { status: string; engine: string; collections?: number; vectors?: number };
   ai: { providers: { name: string; configured: boolean }[]; configured: boolean };
-}
-
-interface DemoCatalogEntry {
-  demo_id: string;
-  name: string;
-  description: string;
-  country: string;
-  currency: string;
-  budget: string;
-  type: string;
-  sections: number;
-  positions: number;
-}
-
-interface DemoInstallResult {
-  project_id: string;
-  project_name: string;
-  demo_id: string;
-  sections: number;
-  positions: number;
-  markups: number;
-  grand_total: number;
-  currency: string;
-  schedule_months: number;
-}
-
-const COUNTRY_FLAGS: Record<string, string> = {
-  DE: '\uD83C\uDDE9\uD83C\uDDEA',
-  GB: '\uD83C\uDDEC\uD83C\uDDE7',
-  AE: '\uD83C\uDDE6\uD83C\uDDEA',
-  FR: '\uD83C\uDDEB\uD83C\uDDF7',
-};
-
-const DEMO_TYPE_COLORS: Record<string, string> = {
-  Residential: '#2563eb',
-  Commercial: '#7c3aed',
-  Healthcare: '#dc2626',
-  Industrial: '#ca8a04',
-  Education: '#16a34a',
-};
-
-/* ── Import Demo Modal ─────────────────────────────────────────────────── */
-
-function ImportDemoModal({
-  open,
-  onClose,
-}: {
-  open: boolean;
-  onClose: () => void;
-}) {
-  const { t } = useTranslation();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const addToast = useToastStore((s) => s.addToast);
-  const [installingId, setInstallingId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [open, onClose]);
-
-  const { data: catalog } = useQuery({
-    queryKey: ['demo-catalog'],
-    queryFn: () => apiGet<DemoCatalogEntry[]>('/demo/catalog'),
-    enabled: open,
-    retry: false,
-  });
-
-  const installMutation = useMutation({
-    mutationFn: (demoId: string) =>
-      apiPost<DemoInstallResult>(`/demo/install/${demoId}`),
-    onSuccess: (result) => {
-      void queryClient.invalidateQueries({ queryKey: ['projects'] });
-      onClose();
-      navigate(`/projects/${result.project_id}`);
-    },
-    onError: (err: Error) => {
-      addToast({ type: 'error', title: t('demo.install_failed', { defaultValue: 'Failed to install demo' }), message: err.message });
-    },
-    onSettled: () => {
-      setInstallingId(null);
-    },
-  });
-
-  const handleInstall = useCallback(
-    (demoId: string) => {
-      setInstallingId(demoId);
-      installMutation.mutate(demoId);
-    },
-    [installMutation],
-  );
-
-  if (!open) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/70 backdrop-blur-lg"
-        aria-hidden="true"
-        onClick={onClose}
-      />
-
-      {/* Modal */}
-      <div role="dialog" aria-modal="true" aria-labelledby="demo-modal-title" className="relative z-10 w-full max-w-2xl mx-4 rounded-xl bg-surface-primary shadow-2xl border border-border-light animate-card-in">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border-light">
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-oe-blue-subtle">
-              <Download size={16} className="text-oe-blue" strokeWidth={2} />
-            </div>
-            <div>
-              <h3 id="demo-modal-title" className="text-base font-semibold text-content-primary">
-                {t('demo.modal_title', 'Import Demo Project')}
-              </h3>
-              <p className="text-xs text-content-tertiary">
-                {t('demo.modal_subtitle', 'Install a complete project with BOQ, schedule, budget, and tendering')}
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-content-tertiary hover:bg-surface-secondary transition-colors"
-            aria-label={t('common.close', { defaultValue: 'Close' })}
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        {/* Demo cards */}
-        <div className="p-6 space-y-3 max-h-[60vh] overflow-y-auto">
-          {!catalog ? (
-            <div className="space-y-3">
-              {[1, 2, 3].map((i) => (
-                <Skeleton key={i} height={80} className="w-full" rounded="lg" />
-              ))}
-            </div>
-          ) : (
-            catalog.map((demo) => {
-              const isInstalling = installingId === demo.demo_id;
-              const typeColor = DEMO_TYPE_COLORS[demo.type] || '#6b7280';
-              return (
-                <div
-                  key={demo.demo_id}
-                  className="flex items-center gap-4 rounded-lg border border-border-light p-4 transition-all hover:border-oe-blue/30 hover:bg-surface-secondary/50"
-                >
-                  {/* Icon + flag */}
-                  <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-surface-secondary">
-                    <Building2
-                      size={20}
-                      strokeWidth={1.5}
-                      style={{ color: typeColor }}
-                    />
-                    <span className="absolute -bottom-1 -right-1 text-sm leading-none">
-                      {COUNTRY_FLAGS[demo.country] || ''}
-                    </span>
-                  </div>
-
-                  {/* Info */}
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold text-content-primary truncate">
-                        {demo.name}
-                      </span>
-                      <Badge variant="blue" size="sm">
-                        {demo.budget}
-                      </Badge>
-                    </div>
-                    <p className="mt-0.5 text-xs text-content-tertiary line-clamp-1">
-                      {demo.description}
-                    </p>
-                    <div className="mt-1 flex items-center gap-3 text-2xs text-content-quaternary">
-                      <span>{demo.type}</span>
-                      <span>{demo.sections} {t('demo.sections', { defaultValue: 'sections' })}</span>
-                      <span>{demo.positions} {t('demo.positions', { defaultValue: 'positions' })}</span>
-                      <span>{demo.currency}</span>
-                    </div>
-                  </div>
-
-                  {/* Install button */}
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={installingId !== null}
-                    onClick={() => handleInstall(demo.demo_id)}
-                    icon={
-                      isInstalling ? (
-                        <Loader2 size={13} className="animate-spin" />
-                      ) : (
-                        <Download size={13} />
-                      )
-                    }
-                  >
-                    {isInstalling
-                      ? t('demo.installing', 'Installing...')
-                      : t('demo.install', 'Install')}
-                  </Button>
-                </div>
-              );
-            })
-          )}
-
-          {installMutation.isError && (
-            <div className="rounded-lg bg-red-50 p-3 text-xs text-red-700">
-              {t('demo.install_error', 'Failed to install demo project. Please try again.')}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ── Onboarding Steps ──────────────────────────────────────────────────── */
-
-function OnboardingSteps({
-  projects,
-  regionStats,
-  boqs,
-  vectorCount,
-}: {
-  projects?: ProjectSummary[];
-  regionStats?: RegionStat[];
-  boqs?: BOQWithTotal[];
-  vectorCount?: number;
-}) {
-  const { t } = useTranslation();
-  const navigate = useNavigate();
-  const [demoModalOpen, setDemoModalOpen] = useState(false);
-
-  const hasDatabase = Boolean(regionStats && regionStats.length > 0);
-  const hasProjects = Boolean(projects && projects.length > 0);
-  const hasBoqs = Boolean(boqs && boqs.length > 0);
-  const hasVectors = Boolean(vectorCount && vectorCount > 0);
-  const hasQuantities = Boolean(boqs && boqs.some((b) => b.hasPricedPositions));
-
-  const aiConfigured = (() => {
-    try {
-      return Boolean(localStorage.getItem('oe_ai_provider'));
-    } catch {
-      return false;
-    }
-  })();
-
-  const completedCount = [
-    hasDatabase,
-    hasVectors,
-    aiConfigured,
-    hasProjects,
-    hasBoqs,
-    hasQuantities,
-  ].filter(Boolean).length;
-
-  const TOTAL_STEPS = 6;
-
-  const steps: OnboardingStep[] = [
-    {
-      id: 1,
-      icon: <Database size={22} strokeWidth={1.5} />,
-      titleKey: 'dashboard.step_load_db',
-      titleDefault: 'Load Cost Database',
-      descKey: 'dashboard.step_load_db_desc',
-      descDefault: 'Import regional pricing data with 55,000+ items',
-      buttonKey: 'dashboard.import_database',
-      buttonDefault: 'Import Database',
-      done: hasDatabase,
-      disabled: false,
-      onClick: () => navigate('/costs/import'),
-    },
-    {
-      id: 2,
-      icon: <Sparkles size={22} strokeWidth={1.5} />,
-      titleKey: 'dashboard.step_ai_search',
-      titleDefault: 'Enable AI Search',
-      descKey: 'dashboard.step_ai_search_desc',
-      descDefault: 'Generate vector embeddings for semantic cost matching',
-      buttonKey: 'dashboard.configure',
-      buttonDefault: 'Configure',
-      done: hasVectors,
-      disabled: !hasDatabase,
-      onClick: () => navigate('/costs/import'),
-    },
-    {
-      id: 3,
-      icon: <Cpu size={22} strokeWidth={1.5} />,
-      titleKey: 'dashboard.step_connect_ai',
-      titleDefault: 'Connect AI',
-      descKey: 'dashboard.step_connect_ai_desc',
-      descDefault: 'Add your API keys for AI-powered estimation',
-      buttonKey: 'dashboard.add_api_keys',
-      buttonDefault: 'Add API Keys',
-      done: aiConfigured,
-      disabled: false,
-      onClick: () => navigate('/settings'),
-    },
-    {
-      id: 4,
-      icon: <FolderPlus size={22} strokeWidth={1.5} />,
-      titleKey: 'dashboard.step_create_project',
-      titleDefault: 'Create Project',
-      descKey: 'dashboard.step_create_project_desc',
-      descDefault: 'Start your first construction estimation project',
-      buttonKey: 'dashboard.new_project',
-      buttonDefault: 'New Project',
-      done: hasProjects,
-      disabled: false,
-      onClick: () => navigate('/projects/new'),
-    },
-    {
-      id: 5,
-      icon: <FileSpreadsheet size={22} strokeWidth={1.5} />,
-      titleKey: 'dashboard.step_build_boq',
-      titleDefault: 'Build Your BOQ',
-      descKey: 'dashboard.step_build_boq_desc',
-      descDefault: 'Create a Bill of Quantities with AI assistance',
-      buttonKey: 'dashboard.create_boq',
-      buttonDefault: 'Create BOQ',
-      done: hasBoqs,
-      disabled: !hasProjects,
-      onClick: () => navigate(hasProjects ? '/projects' : '/projects/new'),
-    },
-    {
-      id: 6,
-      icon: <BarChart3 size={22} strokeWidth={1.5} />,
-      titleKey: 'dashboard.step_set_quantities',
-      titleDefault: 'Set Quantities',
-      descKey: 'dashboard.step_set_quantities_desc',
-      descDefault: 'Add quantities and unit rates to your BOQ positions',
-      buttonKey: 'dashboard.open_boq',
-      buttonDefault: 'Open BOQ',
-      done: hasQuantities,
-      disabled: !hasBoqs,
-      onClick: () => {
-        if (boqs && boqs.length > 0) {
-          navigate(`/boq/${boqs[0]!.id}`);
-        } else {
-          navigate('/projects');
-        }
-      },
-    },
-  ];
-
-  return (
-    <div>
-      {/* Nothing imported yet, so the checklist opens with the one thing that
-          unblocks the rest. Same invitation the /costs page shows, in its band
-          density, and it leaves on its own the moment `hasDatabase` turns true
-          - no second query, no permanent advertisement. */}
-      {!hasDatabase && (
-        <div className="mb-5 animate-card-in" style={{ animationDelay: '60ms' }}>
-          <CostDatabaseInvite
-            variant="compact"
-            onImport={() => navigate('/costs/import')}
-          />
-        </div>
-      )}
-
-      {/* Section header */}
-      <div
-        className="mb-5 flex items-center justify-between animate-card-in"
-        style={{ animationDelay: '80ms' }}
-      >
-        <div className="flex items-center gap-3">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-oe-blue-subtle">
-            <Zap size={14} className="text-oe-blue" strokeWidth={2} />
-          </div>
-          <h2 className="text-lg font-semibold text-content-primary">
-            {t('dashboard.getting_started', { defaultValue: 'Getting Started' })}
-          </h2>
-          <Badge variant="blue" size="sm">
-            {completedCount}/{TOTAL_STEPS}
-          </Badge>
-        </div>
-      </div>
-
-      {/* Progress bar */}
-      <div
-        className="mb-5 animate-card-in"
-        style={{ animationDelay: '100ms' }}
-      >
-        <div className="h-1.5 w-full rounded-full bg-surface-secondary overflow-hidden">
-          <div
-            className="h-full rounded-full transition-all duration-slow ease-oe"
-            style={{
-              width: `${(completedCount / TOTAL_STEPS) * 100}%`,
-              background: 'linear-gradient(90deg, var(--oe-blue), #5856d6)',
-            }}
-          />
-        </div>
-      </div>
-
-      {/* Step cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        {steps.map((step, index) => (
-          <div
-            key={step.id}
-            className="animate-card-in"
-            style={{ animationDelay: `${120 + index * 60}ms` }}
-          >
-            <Card
-              padding="none"
-              hoverable={!step.disabled}
-              className={`relative overflow-hidden h-full flex flex-col ${step.done ? 'opacity-75' : ''} ${step.disabled ? 'opacity-50' : ''}`}
-            >
-              {/* Completed overlay checkmark */}
-              {step.done && (
-                <div className="absolute top-3 right-3 z-10">
-                  <div className="flex h-6 w-6 items-center justify-center rounded-full bg-semantic-success">
-                    <CheckCircle2 size={14} className="text-content-inverse" strokeWidth={2.5} />
-                  </div>
-                </div>
-              )}
-
-              <div className="flex flex-1 flex-col p-5">
-                {/* Step number + icon row */}
-                <div className="mb-4 flex items-center gap-3">
-                  <div
-                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
-                      step.done
-                        ? 'bg-semantic-success-bg text-semantic-success'
-                        : 'bg-oe-blue-subtle text-oe-blue-text'
-                    }`}
-                  >
-                    {step.id}
-                  </div>
-                  <div
-                    className={`${step.done ? 'text-semantic-success' : 'text-content-tertiary'}`}
-                  >
-                    {step.icon}
-                  </div>
-                </div>
-
-                {/* Title */}
-                <h4 className="text-sm font-semibold text-content-primary leading-snug">
-                  {t(step.titleKey, { defaultValue: step.titleDefault })}
-                </h4>
-
-                {/* Description */}
-                <p className="mt-1.5 flex-1 text-xs leading-relaxed text-content-tertiary">
-                  {t(step.descKey, { defaultValue: step.descDefault })}
-                </p>
-
-                {/* CTA button(s) */}
-                <div className="mt-4">
-                  {step.id === 4 && !step.done ? (
-                    <div className="flex gap-1.5">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={step.onClick}
-                        className="flex-[3]"
-                        icon={<ArrowRight size={13} strokeWidth={2} />}
-                        iconPosition="right"
-                      >
-                        {t(step.buttonKey, { defaultValue: step.buttonDefault })}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setDemoModalOpen(true)}
-                        className="flex-1 !px-2"
-                        title={t('demo.import_demo', 'Import Demo')}
-                        icon={<Download size={13} strokeWidth={2} />}
-                      >
-                        {t('dashboard.demo', { defaultValue: 'Demo' })}
-                      </Button>
-                    </div>
-                  ) : (
-                    <Button
-                      variant={step.done ? 'ghost' : 'secondary'}
-                      size="sm"
-                      disabled={step.disabled}
-                      onClick={step.onClick}
-                      className="w-full"
-                      icon={
-                        step.done ? (
-                          <CheckCircle2 size={13} strokeWidth={2} />
-                        ) : (
-                          <ArrowRight size={13} strokeWidth={2} />
-                        )
-                      }
-                      iconPosition="right"
-                    >
-                      {step.done
-                        ? t('dashboard.completed', { defaultValue: 'Completed' })
-                        : t(step.buttonKey, { defaultValue: step.buttonDefault })}
-                    </Button>
-                  )}
-                </div>
-              </div>
-
-              {/* Bottom accent line */}
-              <div
-                className="h-0.5 w-full"
-                style={{
-                  background: step.done
-                    ? 'var(--oe-success)'
-                    : step.disabled
-                      ? 'var(--oe-border-light)'
-                      : 'linear-gradient(90deg, var(--oe-blue), #5856d6)',
-                  opacity: step.done ? 1 : step.disabled ? 0.3 : 0.6,
-                }}
-              />
-            </Card>
-          </div>
-        ))}
-      </div>
-
-      {/* Demo import modal */}
-      <ImportDemoModal open={demoModalOpen} onClose={() => setDemoModalOpen(false)} />
-    </div>
-  );
 }
 
 /* ── KPI Ribbon ────────────────────────────────────────────────────────── */
@@ -1748,17 +1199,6 @@ function SystemStatusSummary({
   const { t } = useTranslation();
   const navigate = useNavigate();
 
-  // The same catalogue the sidebar reads, under its key and route, so one
-  // request serves both. No catch inside the queryFn: this entry is shared,
-  // and a cached empty list would reach the Modules page as a real answer.
-  // A failed read falls back to 0 below instead.
-  const { data: modules, isError: modulesFailed } = useQuery({
-    queryKey: ['system-modules'],
-    queryFn: () => apiGet<unknown[]>('/v1/modules/'),
-    retry: false,
-    staleTime: 60_000,
-  });
-
   // `/v1/users/` requires the `users.list` permission (manager and above
   // since v2.0.0 BUG-327/386 security hardening). Skip the fetch for roles
   // without it so the team-count badge doesn't log a red 403. This used to
@@ -1778,7 +1218,6 @@ function SystemStatusSummary({
   // catalogue) reports them through isError, so we can safely treat
   // `undefined` as "loading" and render a skeleton pulse instead of a
   // misleading "0" on a cold server. `null` = pending.
-  const moduleCount = Array.isArray(modules) ? modules.length : modulesFailed ? 0 : null;
   const projectCount = projects ? projects.length : null;
   const boqBadgeCount = boqsLoading ? null : boqCount ?? 0;
   const userCount = canListUsers ? (usersList ? usersList.length : null) : 0;
@@ -1801,14 +1240,6 @@ function SystemStatusSummary({
       to: '/boq',
     },
     {
-      icon: <Cpu size={12} strokeWidth={2} />,
-      value: moduleCount,
-      label: t('dashboard.ss_modules', { defaultValue: 'Modules' }),
-      color: 'text-[#0891b2]',
-      bg: 'bg-[#0891b2]/10',
-      to: '/modules',
-    },
-    {
       icon: <Users size={12} strokeWidth={2} />,
       value: userCount,
       label: t('dashboard.ss_users', { defaultValue: 'Users' }),
@@ -1816,7 +1247,8 @@ function SystemStatusSummary({
       bg: 'bg-[#16a34a]/10',
       to: '/users',
     },
-  ];
+    // Without `users.list` the count is a meaningless 0, so the chip is left out.
+  ].filter((b) => b.to !== '/users' || canListUsers);
 
   return (
     <div
@@ -2113,9 +1545,6 @@ function DashboardPageInner() {
   const [showAllActivity, setShowAllActivity] = useState(false);
   const [customizing, setCustomizing] = useState(false);
   const [showUpdateWelcome, setShowUpdateWelcome] = useState(false);
-  const [marketCasesExpanded, setMarketCasesExpanded] = useState(() =>
-    localStorage.getItem('oe_dashboard_cases_collapsed') !== 'true',
-  );
 
   // Single rollup-context read - every widget on this page shares this one
   // fetch via the provider mounted above. Replaces the per-project fan-out
@@ -2251,15 +1680,9 @@ function DashboardPageInner() {
         if (localStorage.getItem('oe_onboarding_completed') === 'true') return;
         return; // cannot determine — do nothing
       }
-      if (!onboardingState.completed) {
-        // Server says NOT completed — clear any stale localStorage flags
-        // (e.g. from a previous install) and redirect to the wizard.
-        localStorage.removeItem('oe_onboarding_completed');
-        localStorage.removeItem('oe_onboarding_completed_version');
-        localStorage.removeItem('oe_lang_explicit');
-        navigate('/onboarding', { replace: true });
-        return;
-      }
+      // The VN/US build never sends anyone to the first-run wizard; an admin
+      // can still open /onboarding directly to provision regional data.
+      if (!onboardingState.completed) return;
       // Server says completed — sync localStorage and check version.
       localStorage.setItem('oe_onboarding_completed', 'true');
       const completedVersion = localStorage.getItem('oe_onboarding_completed_version');
@@ -2285,25 +1708,6 @@ function DashboardPageInner() {
     retry: false,
     staleTime: 30_000,
   });
-
-  const { data: regionStats } = useQuery({
-    queryKey: ['costs', 'regions', 'stats'],
-    queryFn: () => apiGet<RegionStat[]>('/v1/costs/regions/stats/').catch(() => []),
-    retry: false,
-  });
-
-  // Fetch system status for vector DB count (used in onboarding steps).
-  // Shares the ``['system-status']`` cache with the SystemStatus panel
-  // below - same 60s staleTime, no polling interval, so the two observers
-  // never fire competing fetches against the expensive status endpoint.
-  const { data: systemStatus } = useQuery({
-    queryKey: ['system-status'],
-    queryFn: () => apiGet<SystemStatusData>('/system/status'),
-    retry: false,
-    staleTime: 60_000,
-  });
-
-  const vectorCount = systemStatus?.vector_db?.vectors ?? 0;
 
   // ── allBoqs / allSchedules - derived from the rollup payload, NOT a
   // per-project fan-out (v4.6.2 N+1 nuke 2026-05-24). The wave-2 widgets
@@ -2459,7 +1863,6 @@ function DashboardPageInner() {
   }));
 
   const widgetNodes: Record<string, ReactNode> = {
-    cases_learn: <DashboardCasesCard />,
     continue_work: lastBoq ? (
       <button
         type="button"
@@ -2600,10 +2003,6 @@ function DashboardPageInner() {
 
     quick_upload: <QuickUploadCard projects={projects} />,
 
-    onboarding: (
-      <OnboardingSteps projects={projects} regionStats={regionStats} boqs={allBoqs} vectorCount={vectorCount} />
-    ),
-
     next_steps: (
       <NextSteps
         projects={projects}
@@ -2685,40 +2084,6 @@ function DashboardPageInner() {
     // always resolves to something. A deployment with no pack applied is the
     // case it most needs to speak up in, so a self-hiding version would go
     // silent exactly where it is needed.
-    regional_pack: <RegionalPackCard />,
-    // Same rule: never in WIDGET_NULL_FALLBACK. It waits for the pack answer
-    // so the market it leads with is decided once, and the grid's skeleton
-    // stands in meanwhile rather than a card that flips.
-    // Wrapped in a collapsible shell with localStorage persistence so users
-    // can fold the card when it takes too much vertical space on the dashboard.
-    cases_market: (
-      <div className="rounded-xl border border-border-light bg-surface-primary/70 overflow-hidden">
-        <button
-          type="button"
-          onClick={() => {
-            setMarketCasesExpanded((prev) => {
-              const next = !prev;
-              try {
-                localStorage.setItem('oe_dashboard_cases_collapsed', next ? 'false' : 'true');
-              } catch { /* storage unavailable */ }
-              return next;
-            });
-          }}
-          className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-surface-secondary/50 transition-colors"
-        >
-          <MapPin size={16} className="text-oe-blue shrink-0" />
-          <span className="text-sm font-semibold text-content-primary">
-            {t('dashboard.market_cases.title', { defaultValue: 'Cases for your market' })}
-          </span>
-          <ChevronDown
-            size={16}
-            className={`ml-auto text-content-tertiary transition-transform duration-200 ${marketCasesExpanded ? '' : '-rotate-90'}`}
-          />
-        </button>
-        {marketCasesExpanded && <DashboardMarketCasesCard />}
-      </div>
-    ),
-
     weather_site: <WeatherSiteWidget projects={projects} />,
     labour_cost: <LabourCostWidget />,
     latest_photos: <LatestSitePhotosCard />,
@@ -2735,11 +2100,6 @@ function DashboardPageInner() {
           active (env OE_PARTNER_PACK or first installed). Dismissable
           per session; reappears on next browser launch. */}
       <PartnerLogoBadge variant="dashboard" />
-      {/* "What's new in vX.Y.Z" release-notes card. Self-gates on a
-          localStorage `oe_whats_new_seen_<version>` flag so it only
-          appears once per release per browser. Sits above the hero so
-          the user sees release highlights before the dashboard hero. */}
-      <WhatsNewCard />
       {/* ─── 1. Hero · row A - greeting + primary actions ────────────────
           Compressed from the previous 6-row hero (audit 2026-05-11): the
           greeting and the 3 CTAs share a single line on desktop; row B
@@ -2851,42 +2211,6 @@ function DashboardPageInner() {
 
       {/* ─── 2. Hero · row B - thin meta-strip ───────────────────────── */}
       <div className="flex items-center flex-wrap gap-x-4 gap-y-2 pl-2 animate-stagger-in" style={{ animationDelay: '140ms' }}>
-        {/* DDC attribution - slim inline link with tiny logo */}
-        <a
-          href="https://datadrivenconstruction.io/?utm_source=erp"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="group/ddc inline-flex items-center gap-1.5 text-[11px] text-content-tertiary hover:text-content-secondary transition-colors"
-        >
-          <img
-            src="/brand/ddc-logo.webp"
-            alt="DataDrivenConstruction"
-            className="h-3.5 w-auto opacity-60 group-hover/ddc:opacity-100 transition-opacity"
-          />
-          <span className="hidden sm:inline">
-            {t('dashboard.developed_by_short', { defaultValue: 'by DataDrivenConstruction' })}
-          </span>
-        </a>
-
-        <span aria-hidden className="h-3 w-px bg-border-light" />
-
-        {/* Open-source pill - slimmer (was a heavy gradient card) */}
-        <a
-          href="https://github.com/datadrivenconstruction/OpenConstructionERP"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="group/oss inline-flex items-center gap-2 text-xs font-medium text-content-secondary hover:text-content-primary transition-colors"
-        >
-          <span className="relative flex h-2 w-2 shrink-0">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
-          </span>
-          <span>{t('dashboard.open_source_badge', { defaultValue: 'Open-source construction ERP' })}</span>
-          <ExternalLink size={11} className="text-content-quaternary group-hover/oss:text-oe-blue transition-colors" />
-        </a>
-
-        <span aria-hidden className="h-3 w-px bg-border-light" />
-
         {/* System status pills */}
         <SystemStatusSummary
           projects={projects}
@@ -2894,10 +2218,6 @@ function DashboardPageInner() {
           boqsLoading={rollup.isLoading}
         />
       </div>
-
-      {/* Start here: Cases (learn by example) is now a registry widget
-          (id 'cases_learn') rendered inside the grid loop below, so it can be
-          hidden or narrowed from Customize like every other card. */}
 
       {/* ─── Customize panel (collapsible) - same manager as Settings ─── */}
       {customizing && (

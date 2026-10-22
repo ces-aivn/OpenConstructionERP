@@ -224,9 +224,12 @@ beforeEach(() => {
 
 describe("market shelf order", () => {
   it("leads with the reader's own market, marks it, and keeps every other market", () => {
-    renderHub("de");
+    // The build offers Vietnamese and US English. A US English reader's own
+    // market is the United States; a Vietnamese reader has no cases for Vietnam
+    // in the catalogue and so gets no home market.
+    renderHub("en-US");
     const shelf = tiles();
-    expect(marketOf(shelf[0]!)).toBe("DE");
+    expect(marketOf(shelf[0]!)).toBe("US");
     expect(shelf[0]!.getAttribute("data-home")).toBe("true");
     expect(shelf[0]!.textContent).toContain("Your market");
     // One home market, not one per language the reader might also speak.

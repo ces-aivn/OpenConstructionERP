@@ -52,7 +52,6 @@ import {
   HardHat,
   Users,
   HelpCircle,
-  Route,
   AlertOctagon,
   CircleDot,
   FileCheck,
@@ -100,7 +99,6 @@ import {
   FileWarning,
   Flag,
   Wrench,
-  MonitorPlay,
 } from 'lucide-react';
 
 
@@ -208,30 +206,10 @@ export const LEARN_GROUP_ID = 'grp_learn';
 // The locale keys are added by a later pass; until then the English
 // default renders. Item labelKeys reuse the existing locale strings.
 export const navGroups: NavGroup[] = [
-  // ── 0. LEARN (videos and cases) ────────────────────────────────────
-  // The two ways into the product for somebody new: watch it, or walk a
-  // guided case in the app. The sidebar does not render this group in the
-  // loop with the others: it draws it as its own card above everything else,
-  // Pinned included, in Simple, Advanced and workspace menus alike, and lets
-  // the user hide the whole card from its header and bring it back from the
-  // foot of the menu (see `LearnSection` in Sidebar.tsx). Hiding goes through
-  // the same `hiddenGroups` list as the Edit-menu section toggles, keyed by
-  // LEARN_GROUP_ID, so the "{N} hidden" chip counts it too.
-  //
-  // It stays in the catalogue rather than living in the sidebar alone, so the
-  // route-icon map and the case editor's screen picker keep seeing both rows.
-  // Cases (playbooks) moved here from Overview.
-  {
-    id: LEARN_GROUP_ID,
-    labelKey: 'sidebar.group.learn',
-    defaultLabel: 'Learn',
-    defaultOpen: true,
-    items: [
-      { labelKey: 'nav.videos', defaultLabel: 'Video guides', to: '/videos', icon: MonitorPlay },
-      { labelKey: 'nav.cases', to: '/cases', icon: Route },
-      { labelKey: 'nav.packs', defaultLabel: 'Packs', to: '/packs', icon: PackageOpen },
-    ],
-  },
+  // ── 0. LEARN ─────────────────────────────────────────────────────
+  // Removed in the VN/US build: no video guides or guided cases. Packs moved
+  // to Cost Data. LEARN_GROUP_ID is kept for the Sidebar code that looks the
+  // group up; with no such group the Learn card simply does not render.
   // ── 1. OVERVIEW (always visible) ───────────────────────────────────
   // The few entry points every user touches every session.
   {
@@ -303,6 +281,7 @@ export const navGroups: NavGroup[] = [
       { labelKey: 'nav.cost_match', to: '/cost-match', icon: Link2 },
       { labelKey: 'nav.fx', to: '/fx', icon: Wallet },
       { labelKey: 'nav.benchmarks', to: '/benchmarks', icon: BarChart3, moduleKey: 'cost-benchmark', advancedOnly: true },
+      { labelKey: 'nav.packs', defaultLabel: 'Packs', to: '/packs', icon: PackageOpen },
     ],
   },
   // ── 4. ESTIMATING ──────────────────────────────────────────────────
@@ -1000,3 +979,55 @@ export const navGroups: NavGroup[] = [
 // `regional` category and publish no nav rows at all, which is exactly the
 // case here — reading the category as the sidebar wiring is what made this
 // group look alive.
+
+// ── CesCons sidebar ─────────────────────────────────────────────────────
+// The sidebar offers only day-to-day company operations, regrouped below.
+// Each row is taken from `navGroups` by route, so its label, icon and module
+// gate stay defined once; `navGroups` itself stays complete because route
+// icons, page titles and search still resolve every screen. Every row shows
+// in Simple mode as well: this menu has no Advanced-only tier.
+const SIDEBAR_LAYOUT: { id: string; labelKey: string; defaultLabel: string; routes: string[] }[] = [
+  {
+    id: 'ops_overview', labelKey: 'sidebar.group.overview', defaultLabel: 'Overview',
+    routes: ['/', '/projects', '/files', '/inbox', '/timeline'],
+  },
+  {
+    id: 'ops_estimating', labelKey: 'sidebar.group.estimating', defaultLabel: 'Estimating',
+    routes: ['/boq', '/takeoff?tab=measurements', '/quantities', '/costs', '/catalog'],
+  },
+  {
+    id: 'ops_scheduling', labelKey: 'sidebar.group.scheduling', defaultLabel: 'Scheduling',
+    routes: ['/schedule', '/tasks'],
+  },
+  {
+    id: 'ops_cost_control', labelKey: 'sidebar.group.cost_control', defaultLabel: 'Cost Control & Risk',
+    routes: ['/cost-control', '/progress', '/risks'],
+  },
+  {
+    id: 'ops_contracts', labelKey: 'sidebar.group.contracts_procurement', defaultLabel: 'Contracts & Procurement',
+    routes: ['/contracts', '/subcontractors', '/procurement', '/tendering', '/changeorders'],
+  },
+  {
+    id: 'ops_site', labelKey: 'sidebar.group.site_ops', defaultLabel: 'Site',
+    routes: ['/daily-diary', '/field-reports', '/photos', '/safety', '/inspections', '/punchlist', '/issues'],
+  },
+  {
+    id: 'ops_communication', labelKey: 'sidebar.group.communication_records', defaultLabel: 'Communication & Records',
+    routes: ['/contacts', '/meetings', '/rfi', '/submittals', '/transmittals', '/correspondence'],
+  },
+  {
+    id: 'ops_finance', labelKey: 'sidebar.group.finance_reports', defaultLabel: 'Finance & Reports',
+    routes: ['/finance', '/reports'],
+  },
+];
+
+const ROW_BY_ROUTE = new Map(navGroups.flatMap((group) => group.items.map((item) => [item.to, item] as const)));
+
+export const sidebarNavGroups: NavGroup[] = SIDEBAR_LAYOUT.map(({ routes, ...group }, index) => ({
+  ...group,
+  defaultOpen: index === 0,
+  items: routes.flatMap((route) => {
+    const item = ROW_BY_ROUTE.get(route);
+    return item ? [{ ...item, advancedOnly: false }] : [];
+  }),
+}));

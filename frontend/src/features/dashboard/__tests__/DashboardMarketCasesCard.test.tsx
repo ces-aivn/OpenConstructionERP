@@ -160,21 +160,23 @@ beforeEach(() => {
 
 describe('DashboardMarketCasesCard, the market it leads with', () => {
   it('leads with the market the reader language speaks for, and draws only its cases', async () => {
-    language.tag = 'de';
+    // en-US is the one shipped language that names a market with cases. A
+    // language that names none (de, es, ...) is no longer offered, so the card
+    // would open on the largest shelf entry as a manual pick instead.
+    language.tag = 'en-US';
     await renderCard();
 
-    expect(card().getAttribute('data-market')).toBe('DE');
-    expect(card().getAttribute('data-source')).toBe('language');
+    expect(card().getAttribute('data-market')).toBe('US');
+    // jsdom's navigator is en-US, so the browser's own region answers before
+    // the language does. Both name the same market, and the source says which.
+    expect(card().getAttribute('data-source')).toBe('region');
 
     const markets = tileMarkets();
     expect(markets.length).toBeGreaterThan(0);
-    expect(new Set(markets)).toEqual(new Set(['DE']));
+    expect(new Set(markets)).toEqual(new Set(['US']));
     // The card is a window on a bigger shelf: the way out names the whole
-    // count, so a reader can see there is more than the tiles show. The name
-    // comes from the same helper the card uses, which is also the assertion
-    // that a German reader is offered "Deutschland" and not "Germany".
-    expect(regionDisplayName('DE', 'de')).not.toBe('Germany');
-    expect(screen.getByRole('button', { name: allCasesLabel('DE') })).toBeTruthy();
+    // count, so a reader can see there is more than the tiles show.
+    expect(screen.getByRole('button', { name: allCasesLabel('US') })).toBeTruthy();
   });
 
   it('lets the pack a reader applied outrank the language they read in', async () => {

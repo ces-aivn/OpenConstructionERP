@@ -66,6 +66,7 @@ vi.mock('@/features/projects/useProjectProfile', () => ({
 
 import { Sidebar } from './Sidebar';
 import { meOnboardingQueryKey } from './meOnboardingQuery';
+import { sidebarNavGroups } from './navCatalog';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useModuleStore } from '@/stores/useModuleStore';
 import { useViewModeStore } from '@/stores/useViewModeStore';
@@ -125,10 +126,6 @@ const litHrefs = (): string[] =>
 
 const moreExpanded = () => screen.getByTestId('sidebar-more-modules').getAttribute('aria-expanded');
 
-// The Learn card (Videos, Cases, Packs) sits above everything else in every mode,
-// workspace included, until the user hides it.
-const LEARN = ['/videos', '/cases', '/packs'];
-
 const GC_WORKSPACE = [
   '/',
   '/inbox',
@@ -147,45 +144,43 @@ const GC_WORKSPACE = [
   '/closeout',
 ];
 
-// Simple mode as it has always been: the groups without `hideInSimple`, minus
-// their `advancedOnly` rows. Written out rather than derived from the catalogue,
-// because deriving it would restate the rule under test.
-const TODAYS_SIMPLE = [
-  ...LEARN,
-  '/',
-  '/projects',
-  '/files',
-  '/inbox',
-  '/timeline',
-  '/takeoff?tab=measurements',
-  '/dwg-takeoff',
-  '/bim',
-  // Quantity rules, back in Takeoff for the simple view (it had no menu
-  // path there at all).
-  '/bim/rules',
-  '/quantities',
-  '/costs',
-  '/catalog',
-  '/cost-explorer',
-  '/assemblies',
-  '/cost-match',
-  '/fx',
-  '/boq',
-  '/templates',
-  '/regional-exchange',
-  '/match-elements',
-  '/project-intelligence',
-  '/rom-estimate',
-  '/methodologies',
-  '/sheets',
-  '/geo',
-  '/pointcloud',
-  '/contracts',
-  '/payment-clock',
-  '/tax-withholding',
-  '/tax-rates',
-  '/einvoice-clearance',
+// The curated sidebar (navCatalog `sidebarNavGroups`): eight groups, in this
+// order, each with these rows. Only the first group is open by default, so a
+// new user's menu starts with the overview rows and nothing else.
+const CURATED_ORDER = [
+  'ops_overview',
+  'ops_estimating',
+  'ops_scheduling',
+  'ops_cost_control',
+  'ops_contracts',
+  'ops_site',
+  'ops_communication',
+  'ops_finance',
 ];
+
+const CURATED: Record<string, string[]> = {
+  ops_overview: ['/', '/projects', '/files', '/inbox', '/timeline'],
+  ops_estimating: ['/boq', '/takeoff?tab=measurements', '/quantities', '/costs', '/catalog'],
+  ops_scheduling: ['/schedule', '/tasks'],
+  ops_cost_control: ['/cost-control', '/progress', '/risks'],
+  ops_contracts: ['/contracts', '/subcontractors', '/procurement', '/tendering', '/changeorders'],
+  ops_site: ['/daily-diary', '/field-reports', '/photos', '/safety', '/inspections', '/punchlist', '/issues'],
+  ops_communication: ['/contacts', '/meetings', '/rfi', '/submittals', '/transmittals', '/correspondence'],
+  ops_finance: ['/finance', '/reports'],
+};
+
+/** Simple mode with no workspace: the overview group, which is the only open one. */
+const SIMPLE_DEFAULT = CURATED.ops_overview!;
+/** Every curated row, in menu order. */
+const ALL_CURATED = CURATED_ORDER.flatMap((id) => CURATED[id]!);
+
+/** Open every curated group, through the collapse state the menu reads on mount. */
+function expandAllGroups(): void {
+  localStorage.setItem(
+    'oe_sidebar_collapsed_v2',
+    JSON.stringify(Object.fromEntries(CURATED_ORDER.map((id) => [id, false]))),
+  );
+}
 
 beforeEach(() => {
   localStorage.clear();
@@ -206,23 +201,24 @@ describe('Simple mode with a general contractor profile', () => {
 
     const workspace = await screen.findByTestId('sidebar-workspace');
     expect(menuHrefs(workspace)).toEqual(GC_WORKSPACE);
-    expect(menuHrefs()).toEqual([...LEARN, ...GC_WORKSPACE]);
+    expect(menuHrefs()).toEqual(GC_WORKSPACE);
     expect(screen.getByText('General Contractor')).toBeTruthy();
 
     const more = screen.getByTestId('sidebar-more-modules');
     expect(more.getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('reveals every other screen under More modules without listing a workspace row twice', async () => {
+  it('reveals every other curated screen under More modules without listing a workspace row twice', async () => {
     serverSays('general_contractor');
+    expandAllGroups();
     renderAt('/');
 
     fireEvent.click(await screen.findByTestId('sidebar-more-modules'));
 
     const hrefs = menuHrefs();
-    expect(hrefs.slice(0, LEARN.length + GC_WORKSPACE.length)).toEqual([...LEARN, ...GC_WORKSPACE]);
-    // Screens Simple mode hid outright are now one click away...
-    for (const route of ['/rfi', '/finance', '/variations', '/fx', '/geo', '/crm']) {
+    expect(hrefs.slice(0, GC_WORKSPACE.length)).toEqual(GC_WORKSPACE);
+    // Curated screens the workspace does not hold are one click away...
+    for (const route of ['/rfi', '/reports', '/procurement', '/cost-control', '/risks', '/photos', '/meetings']) {
       expect(hrefs).toContain(route);
     }
     // ...and the workspace's own rows appear once, in the workspace.
@@ -260,7 +256,7 @@ describe('Simple mode with a general contractor profile', () => {
     renderAt('/');
 
     await waitFor(() => expect(screen.queryByTestId('sidebar-workspace')).toBeNull());
-    expect(menuHrefs()).toEqual(TODAYS_SIMPLE);
+    expect(menuHrefs()).toEqual(SIMPLE_DEFAULT);
     expect(localStorage.getItem('oe_company_type')).toBe('estimator');
   });
 
@@ -270,7 +266,7 @@ describe('Simple mode with a general contractor profile', () => {
     renderAt('/', { completed: true, company_type: 'general_contractor' });
 
     await waitFor(() => expect(screen.queryByTestId('sidebar-workspace')).toBeNull());
-    expect(menuHrefs()).toEqual(TODAYS_SIMPLE);
+    expect(menuHrefs()).toEqual(SIMPLE_DEFAULT);
   });
 
   it('drops a cached profile the server does not have', async () => {
@@ -280,7 +276,7 @@ describe('Simple mode with a general contractor profile', () => {
 
     await waitFor(() => expect(localStorage.getItem('oe_company_type')).toBeNull());
     expect(screen.queryByTestId('sidebar-workspace')).toBeNull();
-    expect(menuHrefs()).toEqual(TODAYS_SIMPLE);
+    expect(menuHrefs()).toEqual(SIMPLE_DEFAULT);
   });
 
   it('reaches a browser the wizard never ran in', async () => {
@@ -328,11 +324,11 @@ describe('on a browser two people share', () => {
 
     await waitFor(() => expect(api.apiGet).toHaveBeenCalledWith('/v1/users/me/onboarding/'));
     expect(screen.queryByTestId('sidebar-workspace')).toBeNull();
-    expect(menuHrefs()).toEqual(TODAYS_SIMPLE);
+    expect(menuHrefs()).toEqual(SIMPLE_DEFAULT);
 
     await act(async () => answer({ completed: true, company_type: null }));
     expect(screen.queryByTestId('sidebar-workspace')).toBeNull();
-    expect(menuHrefs()).toEqual(TODAYS_SIMPLE);
+    expect(menuHrefs()).toEqual(SIMPLE_DEFAULT);
     expect(client.getQueryData(meOnboardingQueryKey('user-b'))).toMatchObject({ company_type: null });
   });
 });
@@ -404,7 +400,7 @@ describe('without a workspace, or in Advanced mode', () => {
     await waitFor(() => expect(api.apiGet).toHaveBeenCalledWith('/v1/users/me/onboarding/'));
     expect(screen.queryByTestId('sidebar-workspace')).toBeNull();
     expect(screen.queryByTestId('sidebar-more-modules')).toBeNull();
-    expect(menuHrefs()).toEqual(TODAYS_SIMPLE);
+    expect(menuHrefs()).toEqual(SIMPLE_DEFAULT);
   });
 
   it('Simple mode with no profile at all is what it always was', async () => {
@@ -412,24 +408,27 @@ describe('without a workspace, or in Advanced mode', () => {
     renderAt('/');
 
     await waitFor(() => expect(api.apiGet).toHaveBeenCalledWith('/v1/users/me/onboarding/'));
-    expect(menuHrefs()).toEqual(TODAYS_SIMPLE);
+    expect(menuHrefs()).toEqual(SIMPLE_DEFAULT);
   });
 
-  it('Advanced mode ignores the workspace and shows the whole catalogue', async () => {
+  it('Advanced mode ignores the workspace and shows the whole curated catalogue', async () => {
     useViewModeStore.getState().setMode('advanced');
     serverSays('general_contractor');
+    expandAllGroups();
     renderAt('/');
 
     await waitFor(() => expect(api.apiGet).toHaveBeenCalledWith('/v1/users/me/onboarding/'));
     expect(screen.queryByTestId('sidebar-workspace')).toBeNull();
     expect(screen.queryByTestId('sidebar-more-modules')).toBeNull();
-    const hrefs = menuHrefs();
-    const head = [...LEARN, '/', '/projects', '/files', '/inbox', '/timeline'];
-    expect(hrefs.slice(0, head.length)).toEqual(head);
-    for (const route of ['/subcontractors', '/changeorders', '/finance', '/fx', '/geo']) {
-      expect(hrefs).toContain(route);
+    expect(menuHrefs()).toEqual(ALL_CURATED);
+    expect(menuHrefs()).not.toContain('/finance?tab=budgets');
+  });
+
+  it('the sidebar is the eight curated groups, in order, with the rows written out', () => {
+    expect(sidebarNavGroups.map((group) => group.id)).toEqual(CURATED_ORDER);
+    for (const group of sidebarNavGroups) {
+      expect(group.items.map((item) => item.to), group.id).toEqual(CURATED[group.id]);
     }
-    expect(hrefs).not.toContain('/finance?tab=budgets');
   });
 });
 
@@ -501,29 +500,32 @@ describe('on an installation whose pack names a company profile', () => {
     expect(workspace.querySelector('[data-testid^="sidebar-workspace-section-"]')).toBeNull();
   });
 
-  it('keeps the screens of other trades out from under More modules, and only for that profile', async () => {
+  it('lists no trade-specific screen under More modules, for either profile', async () => {
+    const TRADE_ROUTES = ['/formwork', '/rebar-schedule', '/property-dev', '/geo', '/funding', '/rom-estimate'];
     serverSaysWithPack(null, 'mep_contractor');
+    expandAllGroups();
     renderAt('/');
     fireEvent.click(await screen.findByTestId('sidebar-more-modules'));
 
     const hrefs = menuHrefs();
-    for (const route of ['/formwork', '/rebar-schedule', '/property-dev', '/geo', '/funding', '/rom-estimate']) {
+    for (const route of TRADE_ROUTES) {
       expect(hrefs, route).not.toContain(route);
     }
-    // The rest of the catalogue is still one click away.
-    for (const route of ['/changeorders', '/field-reports', '/costs', '/crm', '/fx']) {
+    // The rest of the curated catalogue is still one click away.
+    for (const route of ['/changeorders', '/field-reports', '/costs', '/reports']) {
       expect(hrefs, route).toContain(route);
     }
     cleanup();
-    // "More modules" remembers it was opened, so a second click would shut it.
     localStorage.clear();
 
-    // The different case: a general contractor, same installation, keeps them.
     serverSaysWithPack('general_contractor', 'mep_contractor');
+    expandAllGroups();
     renderAt('/');
     fireEvent.click(await screen.findByTestId('sidebar-more-modules'));
-    await waitFor(() => expect(menuHrefs()).toContain('/formwork'));
-    expect(menuHrefs()).toContain('/geo');
+    await waitFor(() => expect(menuHrefs()).toContain('/changeorders'));
+    for (const route of TRADE_ROUTES) {
+      expect(menuHrefs(), route).not.toContain(route);
+    }
   });
 
   it('changes nothing when the pack names no profile', async () => {
@@ -532,6 +534,6 @@ describe('on an installation whose pack names a company profile', () => {
 
     await waitFor(() => expect(api.apiGet).toHaveBeenCalledWith('/v1/partner-pack/current'));
     expect(screen.queryByTestId('sidebar-workspace')).toBeNull();
-    expect(menuHrefs()).toEqual(TODAYS_SIMPLE);
+    expect(menuHrefs()).toEqual(SIMPLE_DEFAULT);
   });
 });

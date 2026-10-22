@@ -84,7 +84,9 @@ describe('homeMarketForLanguage', () => {
     // FIEBDC-3 and Spanish site paperwork. Leading with them for a Mexican,
     // Chilean or Colombian reader would name a law that does not apply where
     // they work, which is worse than showing them nothing in particular.
-    expect(homeMarketForLanguage('es', MARKETS)).toBe('ES');
+    // Spanish is not offered in this build, so the bare `es` declares nothing
+    // and reaches nothing. The property that matters is the one below.
+    expect(homeMarketForLanguage('es', MARKETS)).toBeNull();
     for (const code of ['es-MX', 'es-CL', 'es-CO']) {
       expect(homeMarketForLanguage(code, MARKETS), code).not.toBe('ES');
     }

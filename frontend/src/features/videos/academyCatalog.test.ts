@@ -14,7 +14,6 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { matchRoutes, type RouteObject } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import { SUPPORTED_LANGUAGES } from '@/app/i18n';
 import { getAllModuleRoutes } from '@/modules/_registry';
 import { PLAYBOOKS } from '@/features/cases/playbooks';
 import { modulesForPlaybook } from '@/features/cases/playbookModules';
@@ -135,11 +134,13 @@ describe('the video catalogue', () => {
     expect(start[0]!.status).toBe('published');
   });
 
-  it('speaks a language the interface offers, the same as its series', () => {
-    const offered = new Set<string>(SUPPORTED_LANGUAGES.map((l) => l.code));
+  it('tags every video with the language of its series', () => {
+    // Videos in languages this build no longer offers are kept on purpose: the
+    // dashboard strip shows them with a "not yet available in your language"
+    // tag rather than hiding them, so the language is checked against the
+    // series, not against the interface picker.
     const series = new Map(ACADEMY_CATALOG.series.map((s) => [s.id, s]));
     for (const v of videos) {
-      expect(offered.has(v.language), `${v.id} language ${v.language}`).toBe(true);
       expect(v.language, v.id).toBe(series.get(v.series)!.language);
     }
   });
