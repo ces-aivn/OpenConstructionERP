@@ -164,11 +164,13 @@ describe('the bid chart', () => {
     );
     const bars = [...view.container.querySelectorAll('rect')]
       .map((r) => r.getAttribute('fill') ?? '')
-      .filter((f) => /--oe-success|--oe-error|--color-oe-blue/.test(f));
+      .filter((f) => /--oe-success|--oe-warning-strong|--color-oe-blue/.test(f));
     // In bid order: Alpha is the highest, Beta (3000) the lowest complete
-    // bid, and Gamma (990) is cheaper only by the line it left out.
+    // bid, and Gamma (990) is cheaper only by the line it left out. The
+    // highest is orange, not red, so it is not told from the lowest by a
+    // red-green difference alone.
     expect(bars).toHaveLength(3);
-    expect(bars[0]).toContain('--oe-error');
+    expect(bars[0]).toContain('--oe-warning-strong');
     expect(bars[1]).toContain('--oe-success');
     expect(bars[2]).toContain('--color-oe-blue');
   });

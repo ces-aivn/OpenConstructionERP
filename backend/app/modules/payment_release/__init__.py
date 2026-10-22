@@ -19,8 +19,10 @@ V18 are the ``payment_release`` rule set (V15 is in ``cost_chain``).
 
 async def on_startup() -> None:
     """Register the module's permissions and its rule set. Idempotent."""
+    from app.modules.payment_release.claim_rules import register_claim_rules
     from app.modules.payment_release.permissions import register_payment_release_permissions
     from app.modules.payment_release.validators import register_payment_release_rules
 
     register_payment_release_permissions()
     register_payment_release_rules()
+    register_claim_rules()

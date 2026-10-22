@@ -130,6 +130,9 @@ _LABELS: dict[str, dict[str, dict[str, str]]] = {
             "error": "Error or omission",
             "non_conformance": "Non-conformance",
             "value_engineering": "Value engineering",
+            "weather_force_majeure": "Weather / force majeure",
+            "site_access_delay": "Late site handover",
+            "acceleration": "Acceleration",
         },
         "tr": {
             "client_request": "İşveren talebi",
@@ -139,6 +142,9 @@ _LABELS: dict[str, dict[str, dict[str, str]]] = {
             "error": "Hata veya eksiklik",
             "non_conformance": "Uygunsuzluk",
             "value_engineering": "Değer mühendisliği",
+            "weather_force_majeure": "Hava koşulları / mücbir sebep",
+            "site_access_delay": "Sahanın geç teslimi",
+            "acceleration": "Hızlandırma",
         },
     },
     "instrument": {

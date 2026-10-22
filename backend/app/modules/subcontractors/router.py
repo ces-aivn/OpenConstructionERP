@@ -40,6 +40,7 @@ from app.core.file_signature import require as require_signature
 from app.core.storage import module_uploads_dir
 from app.dependencies import (
     CurrentUserId,
+    CurrentUserPayload,
     RequirePermission,
     SessionDep,
     accessible_project_ids,
@@ -220,25 +221,71 @@ async def list_subcontractors(
         trade_category=trade_category,
         active_only=active_only,
     )
+    states = await svc.insurance_states(rows)
     return SubcontractorListResponse(
-        items=[SubcontractorResponse.model_validate(r) for r in rows],
+        items=[_with_insurance(r, states.get(r.id)) for r in rows],
         total=total,
         offset=offset,
         limit=limit,
     )
 
 
+_APPROVE_PREQUALIFICATION = "subcontractors.approve_prequalification"
+
+
+async def _require_prequal_approver(payload: dict[str, Any], *, approves: bool, reason: str | None) -> None:
+    """Approving a prequalification, or overriding its insurance rule, is the approver's call.
+
+    The dedicated approve action is manager-only; creating or editing a firm
+    straight into ``approved``, or stating the reason to approve it without
+    insurance, is the same decision through another door and needs the same
+    permission.
+    """
+    if not approves and not (reason or "").strip():
+        return
+    try:
+        await RequirePermission(_APPROVE_PREQUALIFICATION)(payload)
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "prequal_approval_permission_required",
+                "error": "prequal_approval_permission_required",
+                "field": "prequalification_status" if approves else "prequal_override_reason",
+                "params": {"permission": _APPROVE_PREQUALIFICATION},
+                "message": (
+                    "Approving a subcontractor's prequalification, or approving it without insurance, "
+                    f"needs the {_APPROVE_PREQUALIFICATION} permission. Save the firm as pending and "
+                    "ask an approver."
+                ),
+            },
+        ) from None
+
+
 @router.post("/subcontractors/", response_model=SubcontractorResponse, status_code=201)
 async def create_subcontractor(
     data: SubcontractorCreate,
     user_id: CurrentUserId,
+    payload: CurrentUserPayload,
     session: SessionDep,
     _perm: None = Depends(RequirePermission("subcontractors.create")),
 ) -> SubcontractorResponse:
-    """Create a new subcontractor."""
+    """Create a new subcontractor.
+
+    Creating it already ``approved``, or with ``prequal_override_reason``,
+    needs ``subcontractors.approve_prequalification`` (403
+    ``prequal_approval_permission_required``).
+    """
+    await _require_prequal_approver(
+        payload,
+        approves=data.prequalification_status == "approved",
+        reason=data.prequal_override_reason,
+    )
     svc = SubcontractorService(session)
     entity = await svc.create_subcontractor(data, user_id=user_id)
-    return SubcontractorResponse.model_validate(entity)
+    return _with_insurance(entity, await svc.insurance_state_of(entity))
 
 
 @router.get("/subcontractors/{sub_id}", response_model=SubcontractorResponse)
@@ -251,7 +298,7 @@ async def get_subcontractor(
     """Return a single subcontractor."""
     svc = SubcontractorService(session)
     entity = await svc.get_subcontractor(sub_id)
-    return SubcontractorResponse.model_validate(entity)
+    return _with_insurance(entity, await svc.insurance_state_of(entity))
 
 
 @router.patch("/subcontractors/{sub_id}", response_model=SubcontractorResponse)
@@ -259,13 +306,34 @@ async def update_subcontractor(
     sub_id: uuid.UUID,
     data: SubcontractorUpdate,
     session: SessionDep,
-    _user: CurrentUserId,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
     _perm: None = Depends(RequirePermission("subcontractors.update")),
 ) -> SubcontractorResponse:
-    """Update a subcontractor."""
+    """Update a subcontractor.
+
+    Setting the prequalification to ``approved`` while the firm holds no valid
+    insurance is refused with ``prequal_approval_needs_insurance`` unless
+    ``prequal_override_reason`` states why. Moving a firm into ``approved``,
+    or sending ``prequal_override_reason``, needs
+    ``subcontractors.approve_prequalification`` (403
+    ``prequal_approval_permission_required``); other edits of an approved firm
+    do not.
+    """
     svc = SubcontractorService(session)
-    entity = await svc.update_subcontractor(sub_id, data)
-    return SubcontractorResponse.model_validate(entity)
+    current = await svc.get_subcontractor(sub_id)
+    await _require_prequal_approver(
+        payload,
+        approves=data.prequalification_status == "approved" and current.prequalification_status != "approved",
+        reason=data.prequal_override_reason,
+    )
+    entity = await svc.update_subcontractor(sub_id, data, user_id=user_id)
+    return _with_insurance(entity, await svc.insurance_state_of(entity))
+
+
+def _with_insurance(entity: Any, insurance_state: str | None) -> SubcontractorResponse:
+    """A subcontractor as returned, carrying its insurance state as judged today."""
+    return SubcontractorResponse.model_validate(entity).model_copy(update={"insurance_state": insurance_state})
 
 
 @router.delete("/subcontractors/{sub_id}", status_code=204)
@@ -528,11 +596,21 @@ async def approve_prequalification(
     user_id: CurrentUserId,
     session: SessionDep,
     notes: str | None = Query(default=None),
+    override_reason: str | None = Query(default=None, max_length=2000),
     _perm: None = Depends(RequirePermission("subcontractors.approve_prequalification")),
 ) -> PrequalificationResponse:
-    """Approve a prequalification application."""
+    """Approve a prequalification application.
+
+    Refused with ``prequal_approval_needs_insurance`` while the subcontractor
+    holds no valid insurance, unless ``override_reason`` states why.
+    """
     svc = SubcontractorService(session)
-    entity = await svc.approve_prequalification(prequal_id, reviewer_id=user_id, notes=notes)
+    entity = await svc.approve_prequalification(
+        prequal_id,
+        reviewer_id=user_id,
+        notes=notes,
+        override_reason=override_reason,
+    )
     return PrequalificationResponse.model_validate(entity)
 
 

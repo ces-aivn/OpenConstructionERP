@@ -1,13 +1,18 @@
 # DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 # Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
-"""The award record (Vergabevermerk) assembled from the procedure itself.
+"""The award record assembled from the procedure itself.
 
-German public procurement asks the contracting authority to keep a written
-record of the award procedure: VOB/A section 20 below the EU threshold, VgV
-section 8 above it. The record names the individual stages, the measures taken
-and the reasons for the individual decisions, so that a review body can follow
-how the award was reached. Its point is that it is written while the procedure
-runs rather than reconstructed once the contract is signed.
+A buyer keeps a written record of how a tender was awarded: the stages, the
+measures taken and the reasons for each decision, so that whoever reviews it
+later can follow how the award was reached. Its point is that it is written
+while the procedure runs rather than reconstructed once the contract is signed.
+
+Which rules the record answers to depends on the project's country, and the
+record says which (see :func:`legal_framework_for`): Vietnam's Law on Bidding
+No. 22/2023/QH15, a private US procurement with no statutory form, the German
+Vergabevermerk (VOB/A section 20, VgV section 8), or no named body of rules at
+all. The sections are the same in every case; only the wording around them
+changes, and that wording lives with the reader (screen or PDF), not here.
 
 Almost everything such a record has to state this module already holds: the
 package and the part of the bill it was raised over, the firms invited and when
@@ -87,6 +92,61 @@ _ISSUED_STATUSES: frozenset[str] = frozenset({"issued", "collecting", "evaluatin
 
 # Bid statuses that mean the bid was taken out of the evaluation.
 _EXCLUDED_BID_STATUSES: frozenset[str] = frozenset({"rejected", "excluded", "disqualified"})
+
+# ── Which body of rules the record is worded against ─────────────────────────
+FRAMEWORK_VN = "vn"
+FRAMEWORK_US = "us"
+FRAMEWORK_DE = "de"
+FRAMEWORK_NEUTRAL = "neutral"
+
+_FRAMEWORK_BY_COUNTRY: dict[str, str] = {"VN": FRAMEWORK_VN, "US": FRAMEWORK_US, "DE": FRAMEWORK_DE}
+
+# The alpha-3 codes a project form is likely to carry for the markets served.
+_ALPHA3_TO_ALPHA2: dict[str, str] = {"VNM": "VN", "USA": "US", "DEU": "DE"}
+
+
+def normalise_country(value: object) -> str | None:
+    """An ISO alpha-2 code for a country written as a code or a name, else ``None``.
+
+    ``"VN"``, ``"vn"``, ``"VNM"``, ``"Vietnam"``, ``"Viet Nam"`` and
+    ``"Việt Nam"`` are all Vietnam; ``"US"``, ``"USA"``, ``"United States"``
+    are the United States.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    upper = text.upper()
+    if upper in _ALPHA3_TO_ALPHA2:
+        return _ALPHA3_TO_ALPHA2[upper]
+    if len(upper) == 2 and upper.isalpha():
+        return upper
+    from app.core.country_resolver import resolve_country_code  # noqa: PLC0415
+
+    folded = " ".join(text.split())
+    if folded.lower() == "việt nam":
+        return "VN"
+    return resolve_country_code(folded)
+
+
+def project_country_code(country_code: object, region: object) -> str | None:
+    """The country a project is in, from its country code and its region text.
+
+    The code wins when it is set, with one exception. Rows written before the
+    column became nullable carry ``DE`` as a default nobody chose, so where the
+    region names a different country the region is taken: a project whose
+    region reads "Vietnam" is not a German procurement because of a default.
+    """
+    code = normalise_country(country_code)
+    from_region = normalise_country(region)
+    if code == "DE" and from_region and from_region != "DE":
+        return from_region
+    return code or from_region
+
+
+def legal_framework_for(country_code: str | None) -> str:
+    """The body of procurement rules the award record is worded against."""
+    return _FRAMEWORK_BY_COUNTRY.get((country_code or "").upper(), FRAMEWORK_NEUTRAL)
+
 
 # Where the stored human statements live inside the package metadata. The same
 # extensible-per-package store that already carries recipients, addenda and the
@@ -498,6 +558,10 @@ def append_note(
 
 
 __all__ = [
+    "FRAMEWORK_DE",
+    "FRAMEWORK_NEUTRAL",
+    "FRAMEWORK_US",
+    "FRAMEWORK_VN",
     "METADATA_KEY",
     "REASONING_SECTIONS",
     "SECTION_ORDER",
@@ -508,5 +572,8 @@ __all__ = [
     "STATE_RECORDED",
     "append_note",
     "build_award_record",
+    "legal_framework_for",
+    "normalise_country",
+    "project_country_code",
     "read_notes",
 ]

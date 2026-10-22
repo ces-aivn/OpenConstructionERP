@@ -565,10 +565,37 @@ def generate_rejection_letter_pdf(
     return pdf_bytes
 
 
-# ── Award record (Vergabevermerk) ────────────────────────────────────────────
+# ── Award record ─────────────────────────────────────────────────────────────
 # The filed document itself. Labels are English like every other PDF this
-# module produces; "Vergabevermerk" appears as the document's own name, which is
-# what an authority files it under.
+# module produces. The document's name and the rules it cites follow the
+# project's country (``legal_framework`` on the record): only a German project
+# files it as a "Vergabevermerk" under VOB/A and VgV.
+
+# framework -> (header word, document title, sentence naming the rules)
+_RECORD_FRAMEWORK_TEXT: dict[str, tuple[str, str, str]] = {
+    "vn": (
+        "AWARD RECORD",
+        "Award record of the contractor selection",
+        "Prepared with reference to the Law on Bidding No. 22/2023/QH15 of Vietnam "
+        "(Luật Đấu thầu số 22/2023/QH15) and its implementing decrees.",
+    ),
+    "us": (
+        "AWARD RECORD",
+        "Award record of the bid procurement",
+        "A private procurement: no statutory award form applies. The record documents the "
+        "competitive process for the owner's files, the lender and any later audit.",
+    ),
+    "de": (
+        "VERGABEVERMERK",
+        "Award record of the procurement procedure",
+        "Kept as the Vergabevermerk under VOB/A section 20 and VgV section 8.",
+    ),
+    "neutral": (
+        "AWARD RECORD",
+        "Award record of the procurement procedure",
+        "",
+    ),
+}
 
 _RECORD_SECTION_TITLES: dict[str, str] = {
     "subject": "1. Subject of the procurement",
@@ -671,14 +698,17 @@ def generate_award_record_pdf(*, record: dict[str, Any], package_ref: str) -> by
     buffer = io.BytesIO()
     styles = _build_styles()
     package_name = str(record.get("package_name") or "")
+    framework = str(record.get("legal_framework") or "neutral")
+    header_word, doc_title, rules_sentence = _RECORD_FRAMEWORK_TEXT.get(framework, _RECORD_FRAMEWORK_TEXT["neutral"])
     letterhead = _letterhead()
-    doc = _document(buffer, f"Vergabevermerk - {package_name}", letterhead_on_first_page=letterhead is not None)
+    doc_name = "Vergabevermerk" if framework == "de" else "Award record"
+    doc = _document(buffer, f"{doc_name} - {package_name}", letterhead_on_first_page=letterhead is not None)
 
     flow: list[Any] = []
     if letterhead is not None:
         flow.append(letterhead)
-    flow.extend(_header_block(styles, "VERGABEVERMERK", package_ref, letterhead=letterhead))
-    flow.append(Paragraph("Award record of the procurement procedure", styles["doc_title"]))
+    flow.extend(_header_block(styles, header_word, package_ref, letterhead=letterhead))
+    flow.append(Paragraph(doc_title, styles["doc_title"]))
 
     gaps = [g for g in (record.get("gaps") or []) if isinstance(g, dict)]
     head_rows = [
@@ -697,11 +727,13 @@ def generate_award_record_pdf(*, record: dict[str, Any], package_ref: str) -> by
         Paragraph(
             "This record is assembled from the procurement procedure as it was carried out. The facts "
             "below are read from the procedure itself; the statements are those recorded by the "
-            "contracting authority at the time. Sections still open at this stage are named as such "
+            "buyer at the time. Sections still open at this stage are named as such "
             "rather than left blank.",
             styles["body"],
         )
     )
+    if rules_sentence:
+        flow.append(Paragraph(html.escape(rules_sentence), styles["body"]))
 
     if gaps:
         flow.append(Paragraph("<b>Still open at this stage</b>", styles["body"]))

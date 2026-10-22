@@ -55,6 +55,8 @@ import { AwardRecordPanel } from './AwardRecordPanel';
 import { BidLinkCell, bidInvitationsQueryKey } from './BidLinkCell';
 import { BidPortalMarks } from './BidPortalMarks';
 import { LevelingMatrix } from './LevelingMatrix';
+import { PackageScopeModal, PackageScopePicker } from './PackageScopePicker';
+import { isEmailShaped, isNonNegativeAmount, recipientFailureText, tenderingErrorMessage } from './tenderingErrors';
 import { cellRate, classifyCell, pricedRates, recommend, unpricedLineCount } from './analysis';
 import { localizedUnitCode } from '@/shared/lib/unitLabels';
 import { awardPreview, awardPreviewMessage, awardRatesMessage, type AwardResult } from './awardRates';
@@ -65,6 +67,7 @@ import {
   removeRecipient,
   distributePackage,
   getPackageScope,
+  createPackageFromBoq,
   type Recipient,
   type DistributeResponse,
 } from './api';
@@ -479,11 +482,13 @@ function SelectDropdown({
 function CreatePackageDialog({
   projectId,
   boqs,
+  currency,
   onClose,
   onCreated,
 }: {
   projectId: string;
   boqs: BOQ[];
+  currency?: string;
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -492,6 +497,10 @@ function CreatePackageDialog({
   const [boqId, setBoqId] = useState('');
   const [description, setDescription] = useState('');
   const [deadline, setDeadline] = useState('');
+  // The part of the bill the package covers. Bids are compared against the
+  // budget of these rows, so a steel package is not measured against the
+  // whole bill. Nothing picked means the whole bill.
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
 
   const addToast = useToastStore((s) => s.addToast);
 
@@ -505,20 +514,21 @@ function CreatePackageDialog({
 
   const createMutation = useMutation({
     mutationFn: () =>
-      apiPost<TenderPackage>('/v1/tendering/packages/', {
+      createPackageFromBoq<TenderPackage>({
         project_id: projectId,
         boq_id: boqId,
-        name,
-        description,
+        package_name: name.trim(),
+        package_description: description,
         deadline: deadline || null,
+        position_ids: [...picked],
       }),
     onSuccess: () => {
       onCreated();
       onClose();
       addToast({ type: 'success', title: t('toasts.package_created', { defaultValue: 'Tender package created' }) });
     },
-    onError: (error: Error) => {
-      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: error.message });
+    onError: (error: unknown) => {
+      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: tenderingErrorMessage(error, t) });
     },
   });
 
@@ -565,7 +575,10 @@ function CreatePackageDialog({
         <WideModalField label={t('tendering.source_boq', 'Source BOQ')} required>
           <SelectDropdown
             value={boqId}
-            onChange={setBoqId}
+            onChange={(next) => {
+              setBoqId(next);
+              setPicked(new Set());
+            }}
             options={boqs.map((b) => ({ value: b.id, label: b.name }))}
             placeholder={t('tendering.select_boq', 'Select a BOQ...')}
           />
@@ -590,6 +603,18 @@ function CreatePackageDialog({
             placeholder={t('tendering.description_placeholder', 'Brief description of the package scope...')}
           />
         </WideModalField>
+        {boqId && (
+          <WideModalField
+            label={t('tendering.scope_label', { defaultValue: 'Positions in this package' })}
+            hint={t('tendering.scope_hint', {
+              defaultValue:
+                'Pick the sections or single positions this package covers. Bids are compared against the budget of these positions only.',
+            })}
+            span={2}
+          >
+            <PackageScopePicker boqId={boqId} picked={picked} onChange={setPicked} currency={currency} />
+          </WideModalField>
+        )}
       </WideModalSection>
     </WideModal>
   );
@@ -626,12 +651,17 @@ function AddBidDialog({
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
 
+  // Checked here first so the reader is told beside the field, in their own
+  // language; the server refuses the same values with a coded error.
+  const amountInvalid = !isNonNegativeAmount(totalAmount);
+  const emailInvalid = contactEmail.trim() !== '' && !isEmailShaped(contactEmail);
+
   const createMutation = useMutation({
     mutationFn: () =>
       apiPost<BidData>(`/v1/tendering/packages/${packageId}/bids/`, {
         company_name: companyName,
-        contact_email: contactEmail,
-        total_amount: totalAmount || '0',
+        contact_email: contactEmail.trim(),
+        total_amount: totalAmount.trim() || '0',
         currency,
         submitted_at: new Date().toISOString().slice(0, 10),
         status: 'submitted',
@@ -642,8 +672,8 @@ function AddBidDialog({
       onClose();
       addToast({ type: 'success', title: t('toasts.bid_submitted', { defaultValue: 'Bid submitted' }) });
     },
-    onError: (error: Error) => {
-      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: error.message });
+    onError: (error: unknown) => {
+      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: tenderingErrorMessage(error, t) });
     },
   });
 
@@ -664,7 +694,7 @@ function AddBidDialog({
           </Button>
           <Button
             variant="primary"
-            disabled={!companyName.trim()}
+            disabled={!companyName.trim() || amountInvalid || emailInvalid}
             loading={createMutation.isPending}
             onClick={() => createMutation.mutate()}
           >
@@ -704,8 +734,16 @@ function AddBidDialog({
             value={contactEmail}
             onChange={(e) => setContactEmail(e.target.value)}
             placeholder="contact@example.com"
+            aria-invalid={emailInvalid}
             className={fieldCls}
           />
+          {emailInvalid && (
+            <p className="mt-1 text-xs text-semantic-error" data-testid="bid-email-error">
+              {t('api_errors.invalid_email', {
+                defaultValue: 'Enter a valid email address, for example name@company.com.',
+              })}
+            </p>
+          )}
         </WideModalField>
         <WideModalField
           label={
@@ -716,11 +754,21 @@ function AddBidDialog({
         >
           <input
             type="number"
+            min={0}
+            step="any"
             value={totalAmount}
             onChange={(e) => setTotalAmount(e.target.value)}
             placeholder="0"
+            aria-invalid={amountInvalid}
             className={fieldCls}
           />
+          {amountInvalid && (
+            <p className="mt-1 text-xs text-semantic-error" data-testid="bid-amount-error">
+              {t('api_errors.amount_negative', {
+                defaultValue: 'Amounts must be zero or more. A bid cannot be negative.',
+              })}
+            </p>
+          )}
         </WideModalField>
         <WideModalField label={t('tendering.notes', 'Notes')} span={2}>
           <textarea
@@ -1083,10 +1131,11 @@ function DistributionPanel({ packageId }: { packageId: string }) {
       setManualCompany('');
       setManualEmail('');
     },
-    onError: (error: Error) => {
-      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: error.message });
+    onError: (error: unknown) => {
+      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: tenderingErrorMessage(error, t) });
     },
   });
+  const manualEmailInvalid = manualEmail.trim() !== '' && !isEmailShaped(manualEmail);
 
   const removeMutation = useMutation({
     mutationFn: (recipientId: string) => removeRecipient(packageId, recipientId),
@@ -1169,12 +1218,20 @@ function DistributionPanel({ packageId }: { packageId: string }) {
               value={manualEmail}
               onChange={(e) => setManualEmail(e.target.value)}
               placeholder="contact@example.com"
+              aria-invalid={manualEmailInvalid}
               className={fieldCls}
             />
+            {manualEmailInvalid && (
+              <p className="mt-1 text-xs text-semantic-error" data-testid="recipient-email-error">
+                {t('api_errors.invalid_email', {
+                  defaultValue: 'Enter a valid email address, for example name@company.com.',
+                })}
+              </p>
+            )}
           </div>
           <Button
             variant="secondary"
-            disabled={!manualCompany.trim() || !manualEmail.trim() || addMutation.isPending}
+            disabled={!manualCompany.trim() || !manualEmail.trim() || manualEmailInvalid || addMutation.isPending}
             loading={addMutation.isPending}
             onClick={() =>
               addMutation.mutate({ company_name: manualCompany.trim(), email: manualEmail.trim() })
@@ -1216,8 +1273,10 @@ function DistributionPanel({ packageId }: { packageId: string }) {
                       {r.company_name}
                     </span>
                     <span className="block truncate text-xs text-content-tertiary">{r.email}</span>
-                    {r.status === 'failed' && r.last_error && (
-                      <span className="block truncate text-xs text-semantic-error">{r.last_error}</span>
+                    {r.status === 'failed' && (r.last_error_code || r.last_error) && (
+                      <span className="block truncate text-xs text-semantic-error" title={r.last_error ?? undefined}>
+                        {recipientFailureText(r.last_error_code, t)}
+                      </span>
                     )}
                     {r.status === 'sent' && r.sent_at && (
                       <span className="block truncate text-xs text-content-tertiary">
@@ -1379,6 +1438,7 @@ function PackageDetail({
   const addToast = useToastStore((s) => s.addToast);
   const { confirm, ...confirmProps } = useConfirm();
   const [showAddBid, setShowAddBid] = useState(false);
+  const [showScope, setShowScope] = useState(false);
   // Sub-tab on the package detail view — bids/comparison ↔ distribution ↔
   // addenda ↔ leveling matrix ↔ award record. Defaults to "bids" so existing
   // muscle memory keeps working; the other tabs are additive. The award record
@@ -1721,6 +1781,28 @@ function PackageDetail({
             {/* A package over one trade is compared against that trade, not
                 against the whole bill. That was already true of the numbers
                 and invisible on the screen. */}
+            {/* The budget every bid on this package is compared against, and
+                the way to narrow it to the package's own lines. */}
+            {scope && pkg.boq_id && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-content-secondary" data-testid="package-scope-line">
+                <span>
+                  {scope.covers_whole_bill
+                    ? t('tendering.scope_whole_bill_budget', {
+                        defaultValue: 'Covers the whole bill. Comparison budget {{amount}}.',
+                        amount: formatCurrency(scope.budget_total ?? 0, currency),
+                      })
+                    : t('tendering.scope_part_budget', {
+                        defaultValue: 'Comparison budget of this package {{amount}}.',
+                        amount: formatCurrency(scope.budget_total ?? 0, currency),
+                      })}
+                </span>
+                {pkg.status !== 'awarded' && pkg.status !== 'closed' && (
+                  <Button variant="ghost" size="sm" type="button" onClick={() => setShowScope(true)}>
+                    {t('tendering.scope_change', { defaultValue: 'Change scope' })}
+                  </Button>
+                )}
+              </div>
+            )}
             {scope && !scope.covers_whole_bill && scope.sections.length > 0 && (
               <p
                 className="mt-2 text-xs text-content-tertiary"
@@ -2229,6 +2311,15 @@ function PackageDetail({
       })()}
 
       {/* Add bid dialog */}
+      {showScope && pkg.boq_id && (
+        <PackageScopeModal
+          packageId={packageId}
+          boqId={pkg.boq_id}
+          scope={scope}
+          currency={currency}
+          onClose={() => setShowScope(false)}
+        />
+      )}
       {showAddBid && (
         <AddBidDialog
           packageId={packageId}
@@ -2630,6 +2721,7 @@ export function TenderingPage() {
         <CreatePackageDialog
           projectId={selectedProjectId}
           boqs={boqs || []}
+          currency={currency}
           onClose={() => setShowCreateDialog(false)}
           onCreated={handlePackageCreated}
         />

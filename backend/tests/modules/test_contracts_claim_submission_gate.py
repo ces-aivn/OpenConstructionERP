@@ -23,9 +23,11 @@ from fastapi import HTTPException
 
 from app.core.validation.engine import rule_registry
 from app.modules.contracts import claim_context
-from app.modules.contracts.models import Contract, ContractLine, ProgressClaimLine
+from app.modules.contracts.models import Contract, ContractLine, ProgressClaim, ProgressClaimLine
+from app.modules.contracts.schemas import AutoGenerateClaimRequest
 from app.modules.contracts.service import ContractsService
 from app.modules.contracts.validators import PAY_APPLICATION_RULE_SET, register_contracts_validation_rules
+from app.modules.payment_release.claim_rules import register_claim_rules
 from app.modules.projects.models import Project
 from app.modules.users.models import User
 from tests._pg import transactional_session
@@ -38,6 +40,10 @@ OWNER_ID = uuid.uuid4()
 @pytest_asyncio.fixture
 async def session():
     register_contracts_validation_rules()
+    # An install also runs the payment release module's rule in this set, the
+    # one that refuses a claim asking for nothing. Registered here so the
+    # outcome does not depend on whether another test loaded that module.
+    register_claim_rules()
     async with transactional_session() as s:
         s.add(User(id=OWNER_ID, email=f"claim-gate-{uuid.uuid4().hex[:8]}@test.io", hashed_password="x"))
         await s.flush()
@@ -74,6 +80,13 @@ async def _contract(s) -> tuple[Contract, ContractLine]:
     return contract, line
 
 
+async def _bill(svc: ContractsService, claim: ProgressClaim, line: ContractLine) -> ProgressClaim:
+    """Put work done on the claim, so it asks for an amount like a real one."""
+    return await svc.auto_generate_claim_lines(
+        claim.id, AutoGenerateClaimRequest(completion={str(line.id): Decimal("40")})
+    )
+
+
 def _payload(contract_id: uuid.UUID, number: str, start: str, end: str) -> SimpleNamespace:
     return SimpleNamespace(
         contract_id=contract_id,
@@ -108,9 +121,10 @@ async def test_creating_and_editing_a_claim_keeps_its_dates_in_step(session) -> 
 
 async def test_the_report_names_the_previous_claim_in_period_order(session) -> None:
     svc = ContractsService(session)
-    contract, _line = await _contract(session)
+    contract, line = await _contract(session)
     # Created out of order on purpose: "previous" is by period, not by insert.
     april = await svc.create_progress_claim(_payload(contract.id, "PC-2", "2026-03-28", "2026-04-30"))
+    await _bill(svc, april, line)
     await svc.create_progress_claim(_payload(contract.id, "PC-1", "2026-03-01", "2026-03-31"))
 
     report = await svc.validate_claim(april.id)
@@ -155,8 +169,9 @@ async def test_a_blocking_finding_keeps_the_claim_in_draft(session) -> None:
 
 async def test_a_clean_claim_submits(session) -> None:
     svc = ContractsService(session)
-    contract, _line = await _contract(session)
+    contract, line = await _contract(session)
     claim = await svc.create_progress_claim(_payload(contract.id, "PC-1", "2026-03-01", "2026-03-31"))
+    await _bill(svc, claim, line)
     submitted = await svc.transition_claim(claim.id, "submitted")
     assert submitted.status == "submitted"
 
@@ -178,8 +193,9 @@ async def test_with_no_other_module_registered_the_claim_is_checked_and_submits(
     # The install without the subcontractors module: nothing registered.
     monkeypatch.setattr(claim_context, "_providers", {})
     svc = ContractsService(session)
-    contract, _line = await _contract(session)
+    contract, line = await _contract(session)
     claim = await svc.create_progress_claim(_payload(contract.id, "PC-1", "2026-03-01", "2026-03-31"))
+    await _bill(svc, claim, line)
 
     context = await svc.claim_rule_context(claim)
     assert set(context) == {

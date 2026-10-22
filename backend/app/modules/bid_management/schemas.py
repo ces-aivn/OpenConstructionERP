@@ -40,7 +40,7 @@ class BidPackageCreate(BaseModel):
     submission_deadline: str | None = Field(default=None, max_length=40)
     decision_due_by: str | None = Field(default=None, max_length=40)
     currency: str = Field(..., min_length=1, max_length=10)
-    total_budget_estimate: Decimal = Decimal("0")
+    total_budget_estimate: Decimal = Field(default=Decimal("0"), ge=0)
     status: str = Field(default="draft", pattern=_PACKAGE_STATUS)
     confidentiality_level: str = Field(default="limited", pattern=_CONFIDENTIALITY)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -60,7 +60,7 @@ class BidPackageUpdate(BaseModel):
     submission_deadline: str | None = Field(default=None, max_length=40)
     decision_due_by: str | None = Field(default=None, max_length=40)
     currency: str | None = Field(default=None, max_length=10)
-    total_budget_estimate: Decimal | None = None
+    total_budget_estimate: Decimal | None = Field(default=None, ge=0)
     status: str | None = Field(default=None, pattern=_PACKAGE_STATUS)
     confidentiality_level: str | None = Field(default=None, pattern=_CONFIDENTIALITY)
     metadata: dict[str, Any] | None = None
@@ -107,7 +107,7 @@ class BidPackageLineItemCreate(BaseModel):
     code: str = Field(default="", max_length=64)
     description: str = ""
     unit: str = Field(default="", max_length=20)
-    quantity: Decimal = Decimal("0")
+    quantity: Decimal = Field(default=Decimal("0"), ge=0)
     alternative_allowed: bool = False
     order_index: int = 0
     parent_line_id: UUID | None = None
@@ -124,7 +124,7 @@ class BidPackageLineItemUpdate(BaseModel):
     code: str | None = Field(default=None, max_length=64)
     description: str | None = None
     unit: str | None = Field(default=None, max_length=20)
-    quantity: Decimal | None = None
+    quantity: Decimal | None = Field(default=None, ge=0)
     alternative_allowed: bool | None = None
     order_index: int | None = None
     parent_line_id: UUID | None = None
@@ -294,7 +294,7 @@ class BidSubmissionCreate(BaseModel):
     invitation_id: UUID
     bidder_id: UUID
     submitted_at: str | None = Field(default=None, max_length=40)
-    total_amount: Decimal = Decimal("0")
+    total_amount: Decimal = Field(default=Decimal("0"), ge=0)
     currency: str = Field(default="", max_length=10)
     notes_to_owner: str = ""
     exclusions: list[str] = Field(default_factory=list)
@@ -308,7 +308,7 @@ class BidSubmissionUpdate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     submitted_at: str | None = Field(default=None, max_length=40)
-    total_amount: Decimal | None = None
+    total_amount: Decimal | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, max_length=10)
     notes_to_owner: str | None = None
     exclusions: list[str] | None = None
@@ -351,8 +351,8 @@ class BidSubmissionLineCreate(BaseModel):
 
     submission_id: UUID
     line_item_id: UUID
-    unit_price: Decimal = Decimal("0")
-    quantity_priced: Decimal = Decimal("0")
+    unit_price: Decimal = Field(default=Decimal("0"), ge=0)
+    quantity_priced: Decimal = Field(default=Decimal("0"), ge=0)
     alternative_offered: bool = False
     alternative_description: str = ""
     comment: str = ""
@@ -365,8 +365,8 @@ class BidSubmissionLineUpdate(BaseModel):
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    unit_price: Decimal | None = None
-    quantity_priced: Decimal | None = None
+    unit_price: Decimal | None = Field(default=None, ge=0)
+    quantity_priced: Decimal | None = Field(default=None, ge=0)
     alternative_offered: bool | None = None
     alternative_description: str | None = None
     comment: str | None = None
@@ -563,7 +563,7 @@ class BidAwardCreate(BaseModel):
 
     package_id: UUID
     awarded_bidder_id: UUID
-    awarded_amount: Decimal = Decimal("0")
+    awarded_amount: Decimal = Field(default=Decimal("0"), ge=0)
     currency: str = Field(default="", max_length=10)
     decision_summary: str = ""
     decision_signed_by: str | None = Field(default=None, max_length=36)
@@ -576,7 +576,7 @@ class BidAwardUpdate(BaseModel):
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    awarded_amount: Decimal | None = None
+    awarded_amount: Decimal | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, max_length=10)
     decision_summary: str | None = None
     decision_signed_by: str | None = Field(default=None, max_length=36)

@@ -369,6 +369,78 @@ def lien_waiver_blocked(
 # UI still nudges to finish prequalification while pending.
 _AWARD_BARRED_PREQUAL_STATES: frozenset[str] = frozenset({"rejected", "suspended"})
 
+#: The machine code of the refusal to approve a prequalification while the
+#: subcontractor holds no valid insurance. The UI translates it under
+#: ``api_errors.<code>``.
+PREQUAL_NEEDS_INSURANCE_CODE = "prequal_approval_needs_insurance"
+#: Where the reason for approving without insurance is kept on the vendor row.
+PREQUAL_OVERRIDE_METADATA_KEY = "prequal_approval_override"
+
+
+def insurance_cover_state(
+    subcontractor: object | None,
+    certificates: Sequence[Certificate],
+    *,
+    as_at: date,
+) -> str:
+    """Whether a subcontractor is insured on ``as_at``: ``valid``, ``expired``, ``revoked`` or ``missing``.
+
+    The certificate register decides wherever it holds any insurance row, the
+    same authority :func:`subcontractor_award_block` uses. Only when it holds
+    none is the denormalised ``insurance_expiry_date`` on the vendor row read,
+    and then a date still in the future counts as cover, a past one as
+    expired and no date as nothing on file.
+    """
+    insurance = [c for c in certificates if c.cert_type == "insurance"]
+    if insurance:
+        findings = evaluate_required_certificates(insurance, as_at=as_at, required_types=("insurance",))
+        return findings[0].state if findings else "valid"
+    expiry = getattr(subcontractor, "insurance_expiry_date", None) if subcontractor is not None else None
+    if expiry is None:
+        return "missing"
+    return "valid" if expiry >= as_at else "expired"
+
+
+def prequal_approval_override(
+    insurance_state: str,
+    override_reason: str | None,
+    *,
+    field_name: str,
+    actor_id: str | None,
+) -> dict[str, Any] | None:
+    """Allow an approval, refuse it, or record why it was allowed without insurance.
+
+    Returns ``None`` when the subcontractor is insured, so nothing needs
+    recording. Without insurance the approval needs a stated reason: with one
+    the returned record says who overrode the rule, when, why and what the
+    insurance state was; without one a 422 carrying a stable code and the
+    field to fill is raised.
+    """
+    if insurance_state == "valid":
+        return None
+    reason = (override_reason or "").strip()
+    if not reason:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": PREQUAL_NEEDS_INSURANCE_CODE,
+                "error": PREQUAL_NEEDS_INSURANCE_CODE,
+                "field": field_name,
+                "params": {"insurance_state": insurance_state},
+                "message": (
+                    "This subcontractor has no valid insurance on file, so prequalification "
+                    "cannot be approved. Record a valid insurance certificate, or state the "
+                    "reason for approving without one."
+                ),
+            },
+        )
+    return {
+        "reason": reason,
+        "insurance_state": insurance_state,
+        "by": actor_id,
+        "at": datetime.now(UTC).isoformat(),
+    }
+
 
 def _expired_reason(finding: ComplianceFinding) -> str:
     """Render one lapsed document as a reason string naming it and its date.
@@ -809,6 +881,18 @@ class SubcontractorService:
                     status_code=status.HTTP_409_CONFLICT,
                     detail=(f"A subcontractor with this tax_id already exists for country {data.country or '?'}."),
                 )
+        # A new firm has no certificate on file yet, so approving it at
+        # creation is approving it without insurance and needs a reason.
+        override = (
+            prequal_approval_override(
+                insurance_cover_state(None, [], as_at=date.today()),
+                getattr(data, "prequal_override_reason", None),
+                field_name="prequal_override_reason",
+                actor_id=user_id,
+            )
+            if data.prequalification_status == "approved"
+            else None
+        )
         entity = Subcontractor(
             contact_id=data.contact_id,
             legal_name=data.legal_name,
@@ -822,6 +906,7 @@ class SubcontractorService:
             website=data.website,
             notes=data.notes,
             created_by=user_id,
+            metadata_={PREQUAL_OVERRIDE_METADATA_KEY: override} if override else {},
         )
         try:
             await self.subs.create(entity)
@@ -836,6 +921,8 @@ class SubcontractorService:
             {"subcontractor_id": str(entity.id), "legal_name": entity.legal_name},
             source_module="subcontractors",
         )
+        if override:
+            await self._log_insurance_override(entity.id, None, override)
         logger.info(
             "subcontractor.created id=%s name=%s by=%s",
             entity.id,
@@ -854,9 +941,23 @@ class SubcontractorService:
         self,
         sub_id: uuid.UUID,
         data: SubcontractorUpdate,
+        user_id: str | None = None,
     ) -> Subcontractor:
         current = await self.get_subcontractor(sub_id)
         fields = data.model_dump(exclude_unset=True)
+        # The reason is a statement about this approval, not a column.
+        override_reason = fields.pop("prequal_override_reason", None)
+        override: dict[str, Any] | None = None
+        prior_status = current.prequalification_status
+        if fields.get("prequalification_status") == "approved" and prior_status != "approved":
+            override = prequal_approval_override(
+                await self.insurance_state_of(current),
+                override_reason,
+                field_name="prequal_override_reason",
+                actor_id=user_id,
+            )
+            if override:
+                fields["metadata_"] = {**(current.metadata_ or {}), PREQUAL_OVERRIDE_METADATA_KEY: override}
         # Defence-in-depth: even if a future schema regression re-introduces
         # ``rating_score`` on the update payload, the service must never
         # accept it through this gate.
@@ -882,8 +983,53 @@ class SubcontractorService:
                 )
         if fields:
             await self.subs.update_fields(sub_id, **fields)
+        if override:
+            await self._log_insurance_override(sub_id, prior_status, override)
         entity = await self.get_subcontractor(sub_id)
         return entity
+
+    async def insurance_state_of(self, subcontractor: Subcontractor, *, as_at: date | None = None) -> str:
+        """The insurance state of one subcontractor, read from its certificates."""
+        certificates = await self.certs.list_by_subcontractor(subcontractor.id)
+        return insurance_cover_state(subcontractor, certificates, as_at=as_at or date.today())
+
+    async def insurance_states(
+        self,
+        subcontractors: Sequence[Subcontractor],
+        *,
+        as_at: date | None = None,
+    ) -> dict[uuid.UUID, str]:
+        """The insurance state of each subcontractor on a page, in one certificate query."""
+        if not subcontractors:
+            return {}
+        certificates = await self.certs.list_for_subcontractors([s.id for s in subcontractors])
+        by_sub: dict[uuid.UUID, list[Certificate]] = {}
+        for cert in certificates:
+            by_sub.setdefault(cert.subcontractor_id, []).append(cert)
+        ref = as_at or date.today()
+        return {s.id: insurance_cover_state(s, by_sub.get(s.id, []), as_at=ref) for s in subcontractors}
+
+    async def _log_insurance_override(
+        self,
+        subcontractor_id: uuid.UUID,
+        prior_status: str | None,
+        override: dict[str, Any],
+    ) -> None:
+        """Put an approval given without insurance on the audit trail, with its reason."""
+        from app.core.audit_log import log_activity as _log_activity
+
+        await _log_activity(
+            self.session,
+            actor_id=override.get("by"),
+            entity_type="subcontractor",
+            entity_id=str(subcontractor_id),
+            action="prequal_approved_without_insurance",
+            from_status=prior_status,
+            to_status="approved",
+            reason=override["reason"],
+            metadata={PREQUAL_OVERRIDE_METADATA_KEY: override},
+            module="subcontractors",
+        )
 
     async def delete_subcontractor(self, sub_id: uuid.UUID) -> None:
         """Delete a subcontractor. Refused once they hold any agreement.
@@ -1030,6 +1176,7 @@ class SubcontractorService:
         prequal_id: uuid.UUID,
         reviewer_id: str,
         notes: str | None = None,
+        override_reason: str | None = None,
     ) -> PrequalificationApplication:
         entity = await self.prequal.get_by_id(prequal_id)
         if entity is None:
@@ -1043,11 +1190,26 @@ class SubcontractorService:
         # ``update_fields``.
         current_status = entity.status
         subcontractor_id = entity.subcontractor_id
+        # A submitted application passes through `under_review` on its way, so
+        # the state machine stays linear; the move is checked here and made
+        # only once every check below has passed.
+        reviewed_status = "under_review" if current_status == "submitted" else current_status
+        _assert_transition(reviewed_status, "approved", _PREQUAL_TRANSITIONS, "prequalification")
+        # Approval is refused while the firm holds no valid insurance, unless
+        # the reviewer states why it is approved anyway. Checked before any
+        # write, so a refusal leaves the application where it was.
+        subcontractor = await self.get_subcontractor(subcontractor_id)
+        sub_prior_status = subcontractor.prequalification_status
+        sub_metadata = dict(subcontractor.metadata_ or {})
+        override = prequal_approval_override(
+            await self.insurance_state_of(subcontractor),
+            override_reason,
+            field_name="override_reason",
+            actor_id=reviewer_id,
+        )
         if current_status == "submitted":
-            # Auto-move through `under_review` so the state machine stays linear.
             await self.prequal.update_fields(prequal_id, status="under_review")
             current_status = "under_review"
-        _assert_transition(current_status, "approved", _PREQUAL_TRANSITIONS, "prequalification")
         prior_status = current_status
         await self.prequal.update_fields(
             prequal_id,
@@ -1057,10 +1219,12 @@ class SubcontractorService:
             decision_notes=notes,
         )
         # Cascade: parent subcontractor is now approved.
-        await self.subs.update_fields(
-            subcontractor_id,
-            prequalification_status="approved",
-        )
+        sub_fields: dict[str, Any] = {"prequalification_status": "approved"}
+        if override:
+            sub_fields["metadata_"] = {**sub_metadata, PREQUAL_OVERRIDE_METADATA_KEY: override}
+        await self.subs.update_fields(subcontractor_id, **sub_fields)
+        if override:
+            await self._log_insurance_override(subcontractor_id, sub_prior_status, override)
         await self.session.refresh(entity)
 
         # Epic H - universal audit trail.

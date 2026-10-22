@@ -88,6 +88,13 @@ REASON_CATEGORY_LABELS: dict[str, str] = {
     "error": "Correction of an error or omission",
     "non_conformance": "Correction of a non-conformance",
     "value_engineering": "Value engineering proposal",
+    # Delay events a contractor claims time (and often money) for. Weather and
+    # force majeure is the commonest excusable delay on site; late handover of
+    # the site and an instruction to accelerate are the other two causes the
+    # register had no word for, so they were filed under "client request".
+    "weather_force_majeure": "Exceptional weather or force majeure",
+    "site_access_delay": "Late handover of the site or work area",
+    "acceleration": "Instruction to accelerate the works",
 }
 
 # Insertion order is the order the chooser offers, so keep the common causes first.

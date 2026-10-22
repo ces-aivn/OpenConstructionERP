@@ -1,0 +1,12 @@
+{
+  "common": {
+    "ok": "OK"
+  },
+  "pay_application": {
+    "amount_positive": {
+      "fail": "Hồ sơ đề nghị thanh toán {claim} không đề nghị khoản nào: giá trị kỳ này và số tiền còn phải trả đều bằng {amount}",
+      "suggestion": "Nhập khối lượng hoàn thành trong kỳ trên các dòng bảng giá trị hợp đồng (SOV), hoặc tạo dòng từ tiến độ đã ghi nhận, trước khi gửi",
+      "suggestion_no_schedule": "Hợp đồng chưa có bảng giá trị hợp đồng (SOV). Thêm các dòng SOV trên hợp đồng (từ BOQ hoặc nhập tay), ghi nhận khối lượng hoàn thành, rồi tạo các dòng của đợt thanh toán"
+    }
+  }
+}

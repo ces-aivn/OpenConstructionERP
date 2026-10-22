@@ -13,6 +13,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic_core import PydanticCustomError
 
 # Pragmatic email regex - RFC 5322 is impractical to validate at the
 # schema layer, so we apply the same shape check the frontend ``type=email``
@@ -35,6 +36,53 @@ def _serialise_money(v: Decimal | None) -> str | None:
     if not v.is_finite():
         return "0"
     return format(v, "f")
+
+
+# ── Coded validation errors ──────────────────────────────────────────────────
+# A refused value carries a stable error ``type`` beside its ``loc``, so the
+# client words it in the reader's language (``api_errors.<type>``) instead of
+# printing the English ``msg`` meant for API callers.
+
+
+def _check_email_shape(value: str, field: str) -> str:
+    """Refuse a non-empty string that does not look like an email address."""
+    if value and not _EMAIL_RE.match(value):
+        raise PydanticCustomError("invalid_email", "{field} must be a valid email address", {"field": field})
+    return value
+
+
+def _parse_amount(value: object, field: str) -> Decimal:
+    """Parse a money or quantity value and refuse anything below zero.
+
+    A bid is a price somebody offers to do the work for. A negative one is a
+    typing mistake, and stored it reads as the cheapest bid on every screen.
+    """
+    if isinstance(value, bool):
+        raise PydanticCustomError("amount_not_a_number", "{field} must be a number", {"field": field})
+    try:
+        amount = value if isinstance(value, Decimal) else Decimal(str(value).strip())
+    except (InvalidOperation, ValueError, TypeError):
+        raise PydanticCustomError("amount_not_a_number", "{field} must be a number", {"field": field}) from None
+    if not amount.is_finite():
+        raise PydanticCustomError("amount_not_a_number", "{field} must be a number", {"field": field})
+    if amount < 0:
+        raise PydanticCustomError("amount_negative", "{field} must be zero or more", {"field": field})
+    return amount
+
+
+def _check_amount_text(value: str | None, field: str) -> str | None:
+    """Validate a money amount the bid stores as text, keeping the text as sent.
+
+    Empty means "not stated yet" and is stored as ``"0"``, which is what the
+    column's default has always held for it.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return "0"
+    _parse_amount(text, field)
+    return text
 
 
 # ── Package schemas ──────────────────────────────────────────────────────────
@@ -117,6 +165,14 @@ class BidLineItem(BaseModel):
     unit_rate: Decimal = Decimal("0")
     total: float = 0.0
 
+    @field_validator("quantity", "unit_rate", "total", mode="before")
+    @classmethod
+    def _not_negative(cls, v: Any, info: Any) -> Any:
+        if v is None or v == "":
+            return v
+        _parse_amount(v, f"line_items.{info.field_name}")
+        return v
+
     @field_serializer("unit_rate", when_used="json")
     def _ser_unit_rate(self, v: Decimal) -> str | None:
         return _serialise_money(v)
@@ -143,9 +199,12 @@ class BidCreate(BaseModel):
         # Optional field - empty stays empty. Anything non-empty must look
         # like an email so we don't accept garbage strings the buyer can
         # later try to send notifications to (Wave 12 audit).
-        if v and not _EMAIL_RE.match(v):
-            raise ValueError("contact_email must be a valid email address")
-        return v
+        return _check_email_shape(v, "contact_email")
+
+    @field_validator("total_amount")
+    @classmethod
+    def _check_total(cls, v: str) -> str:
+        return _check_amount_text(v, "total_amount") or "0"
 
 
 class BidUpdate(BaseModel):
@@ -166,9 +225,12 @@ class BidUpdate(BaseModel):
     @field_validator("contact_email")
     @classmethod
     def _check_email(cls, v: str | None) -> str | None:
-        if v and not _EMAIL_RE.match(v):
-            raise ValueError("contact_email must be a valid email address")
-        return v
+        return _check_email_shape(v, "contact_email") if v else v
+
+    @field_validator("total_amount")
+    @classmethod
+    def _check_total(cls, v: str | None) -> str | None:
+        return _check_amount_text(v, "total_amount")
 
 
 class BidResponse(BaseModel):
@@ -311,10 +373,27 @@ class CreatePackageFromBOQData(BaseModel):
     project_id: UUID
     boq_id: UUID
     section_ids: list[UUID] = Field(default_factory=list)
+    # Individual bill rows to put in scope, beside or instead of whole
+    # sections: a steel package raised over the one steel line of a structure
+    # section. A row brings its descendants with it. Sections and rows are
+    # unioned; both empty means the whole bill.
+    position_ids: list[UUID] = Field(default_factory=list)
     package_name: str = Field(..., min_length=1, max_length=255)
     package_description: str = ""
     deadline: str | None = Field(default=None, max_length=100)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PackageScopeUpdate(BaseModel):
+    """Re-draw the part of the bill a package covers.
+
+    Same picking rules as ``CreatePackageFromBOQData``: whole top-level rows in
+    ``section_ids``, single rows (with their descendants) in ``position_ids``,
+    both empty for the whole bill.
+    """
+
+    section_ids: list[UUID] = Field(default_factory=list)
+    position_ids: list[UUID] = Field(default_factory=list)
 
 
 class PackageScopeSection(BaseModel):
@@ -350,6 +429,15 @@ class PackageScopeResponse(BaseModel):
     included_position_count: int = 0
     boq_position_count: int = 0
     sections: list[PackageScopeSection] = Field(default_factory=list)
+    # The rows the package declares, so a scope editor can show what is ticked.
+    # Empty when the package declares no scope (the whole bill).
+    position_ids: list[str] = Field(default_factory=list)
+    # The package's own budget: the bill rows in scope, summed off the live bill.
+    budget_total: Decimal = Decimal("0")
+
+    @field_serializer("budget_total", when_used="json")
+    def _ser_budget_total(self, v: Decimal) -> str | None:
+        return _serialise_money(v)
 
 
 # ── Distribution (issue the package to subcontractors) ───────────────────────
@@ -378,7 +466,7 @@ class RecipientCreate(BaseModel):
     @classmethod
     def _check_email(cls, v: str) -> str:
         if not _EMAIL_RE.match(v):
-            raise ValueError("email must be a valid email address")
+            raise PydanticCustomError("invalid_email", "{field} must be a valid email address", {"field": "email"})
         return v
 
 
@@ -393,6 +481,10 @@ class RecipientResponse(BaseModel):
     status: str = "pending"
     sent_at: str | None = None
     last_error: str | None = None
+    # A stable code for ``last_error`` (missing_email, missing_recipient_id,
+    # delivery_failed), so the screen words the failure in the reader's
+    # language; ``last_error`` keeps the mail server's own reason.
+    last_error_code: str | None = None
     created_at: str = ""
 
 
@@ -420,6 +512,8 @@ class DistributeResultEntry(BaseModel):
     email: str
     status: str  # "sent" | "failed" | "skipped"
     detail: str = ""
+    # Stable code for a failed or skipped entry; see RecipientResponse.
+    code: str = ""
 
 
 class DistributeResponse(BaseModel):
@@ -566,6 +660,12 @@ class AwardRecordResponse(BaseModel):
     package_id: UUID
     package_name: str
     project_name: str = ""
+    # The project's country (ISO alpha-2) when it names one, and the body of
+    # procurement rules the record is worded against: ``vn`` (Law on Bidding
+    # No. 22/2023/QH15), ``us`` (private procurement, no statutory form),
+    # ``de`` (Vergabevermerk under VOB/A and VgV) or ``neutral``.
+    country_code: str | None = None
+    legal_framework: str = "neutral"
     # The package's lifecycle status, which is the stage the record stands at.
     stage: str = ""
     currency: str = ""

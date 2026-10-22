@@ -150,6 +150,10 @@ class ContractCreate(ContractPaymentTermFields):
     # authored template must already be published; a built-in resolves to
     # version 0.
     template_code: str | None = Field(default=None, max_length=80)
+    # The bill of quantities the schedule of values is drawn from: one line
+    # per priced position, each linked to its position so the contract can be
+    # billed from progress. Left out, the schedule is entered by hand later.
+    sov_boq_id: UUID | None = None
 
 
 class ContractUpdate(ContractPaymentTermFields):
@@ -390,6 +394,32 @@ class ContractLineBulkCreate(BaseModel):
     """Bulk-insert SoV lines for a contract."""
 
     lines: list[ContractLineCreate] = Field(default_factory=list)
+
+
+class ContractSovFromBoqRequest(BaseModel):
+    """Draw schedule of values lines from a bill of quantities of the contract's project.
+
+    ``position_ids`` limits the draw to those rows and every row under them;
+    left out, the whole bill is drawn.
+    """
+
+    boq_id: UUID
+    position_ids: list[UUID] | None = Field(default=None, max_length=5000)
+
+
+class ContractSovFromBoqResponse(BaseModel):
+    """What drawing the schedule from a bill wrote."""
+
+    lines: list[ContractLineResponse] = Field(default_factory=list)
+    created: int = 0
+    # Priced positions some schedule line already links to; drawing again skips them.
+    already_linked: int = 0
+    # The cost model's single lump-sum line, removed once real lines replace it.
+    removed_placeholder: int = 0
+    # Sum of every schedule line now on the contract, and the contract sum, so
+    # the screen can say when they differ.
+    sov_total: Decimal = Decimal("0")
+    contract_total_value: Decimal = Decimal("0")
 
 
 class ContractCloneRequest(BaseModel):
@@ -869,6 +899,9 @@ class ProgressClaimLineCreate(BaseModel):
     cumulative_completed_value: Decimal = Field(default=Decimal("0"))
     assessed_qty: Decimal = Field(default=Decimal("0"))
     certified_qty: Decimal = Field(default=Decimal("0"))
+    # Materials delivered for this line and not yet installed, as a period-end
+    # balance (G703 column F).
+    materials_stored_value: Decimal = Field(default=Decimal("0"), ge=0)
 
 
 class ProgressClaimLineUpdate(BaseModel):
@@ -878,6 +911,7 @@ class ProgressClaimLineUpdate(BaseModel):
     cumulative_completed_value: Decimal | None = None
     assessed_qty: Decimal | None = None
     certified_qty: Decimal | None = None
+    materials_stored_value: Decimal | None = Field(default=None, ge=0)
 
 
 class ProgressClaimLineResponse(BaseModel):
@@ -901,6 +935,16 @@ class ProgressClaimLineResponse(BaseModel):
     retention_rate: Decimal | None = None
     assessed_qty: Decimal
     certified_qty: Decimal
+    # The continuation-sheet row of this line, from its schedule of values
+    # line: C scheduled value, D work billed by the earlier claims, G work
+    # and stored materials to date, G/C and H balance to finish, rounded in
+    # the claim's currency. Null when the
+    # schedule line could not be read.
+    scheduled_value: Decimal | None = None
+    previous_value: Decimal | None = None
+    total_completed_stored: Decimal | None = None
+    percent_complete: Decimal | None = None
+    balance_to_finish: Decimal | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -1777,6 +1821,12 @@ class ContractTemplateResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     clauses: list[TemplateClauseResponse] | None = None
     clause_count: int | None = None
+    # What a built-in says about the contract drawn from it. An authored
+    # template answers with the empty values.
+    country_code: str | None = None
+    contract_types: list[str] = Field(default_factory=list)
+    default_terms: dict[str, Any] = Field(default_factory=dict)
+    advance_tiers: list[list[Any]] = Field(default_factory=list)
 
 
 class TemplateCatalogueEntry(BaseModel):
@@ -1801,6 +1851,14 @@ class TemplateCatalogueEntry(BaseModel):
     status: str
     derived_from_builtin: str | None = None
     template_id: UUID | None = None
+    # The market the paper is written for, the contract types it fits (the
+    # first is the one a form pre-selects), the terms it fills in where the
+    # author states none, and a minimum advance by contract value as
+    # ``[upper bound or null, percent]`` rows. Empty for authored paper.
+    country_code: str | None = None
+    contract_types: list[str] = Field(default_factory=list)
+    default_terms: dict[str, Any] = Field(default_factory=dict)
+    advance_tiers: list[list[Any]] = Field(default_factory=list)
 
 
 # ── E-signature bridge ───────────────────────────────────────────────────

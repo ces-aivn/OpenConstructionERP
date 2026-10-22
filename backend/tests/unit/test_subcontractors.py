@@ -422,6 +422,7 @@ def _make_service() -> Any:
 @pytest.mark.asyncio
 async def test_prequalification_workflow_happy_path() -> None:
     from app.modules.subcontractors.schemas import (
+        CertificateCreate,
         PrequalificationCreate,
         SubcontractorCreate,
     )
@@ -443,6 +444,14 @@ async def test_prequalification_workflow_happy_path() -> None:
         submitted = await svc.submit_prequalification(prequal.id)
         assert submitted.status == "submitted"
 
+        # Approval needs the firm insured on the day it is given.
+        await svc.record_certificate(
+            CertificateCreate(
+                subcontractor_id=sub.id,
+                cert_type="insurance",
+                valid_until=date.today() + timedelta(days=365),
+            ),
+        )
         approved = await svc.approve_prequalification(
             prequal.id,
             reviewer_id="reviewer-1",

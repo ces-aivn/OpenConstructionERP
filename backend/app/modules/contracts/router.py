@@ -44,6 +44,7 @@ from app.dependencies import (
     SessionDep,
     verify_project_access,
 )
+from app.modules.contracts.aia import build_g703_line
 from app.modules.contracts.compliance_packs import list_rule_packs
 from app.modules.contracts.models import (
     Contract,
@@ -104,6 +105,8 @@ from app.modules.contracts.schemas import (
     ContractSecurityUpdate,
     ContractSigningSessionOpen,
     ContractSigningSessionResponse,
+    ContractSovFromBoqRequest,
+    ContractSovFromBoqResponse,
     ContractTemplateCreate,
     ContractTemplateForkRequest,
     ContractTemplateResponse,
@@ -163,7 +166,12 @@ from app.modules.contracts.schemas import (
     TemplateClauseSetRequest,
     VatRegimesResponse,
 )
-from app.modules.contracts.service import PERCENT_REGRESSED_META_KEY, ContractsService
+from app.modules.contracts.service import (
+    PERCENT_REGRESSED_META_KEY,
+    ContractsService,
+    compliance_counts,
+    compliance_nothing_checked,
+)
 
 router = APIRouter(tags=["contracts"])
 logger = logging.getLogger(__name__)
@@ -256,6 +264,46 @@ def _line_to_response(item: ContractLine, *, billed: bool = False) -> ContractLi
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
+
+
+async def _claim_line_responses(
+    session,
+    claim: ProgressClaim,
+    items: list[ProgressClaimLine],
+) -> list[ProgressClaimLineResponse]:
+    """Claim lines with their continuation-sheet row (C, D, G, G/C, H) filled in.
+
+    Worked out by the same ``build_g703_line`` the payment application prints,
+    so the line table and the application never disagree on a figure.
+    """
+    ids = {it.contract_line_id for it in items}
+    contract_lines: dict[uuid.UUID, ContractLine] = {}
+    if ids:
+        rows = await session.execute(select(ContractLine).where(ContractLine.id.in_(ids)))
+        contract_lines = {ln.id: ln for ln in rows.scalars()}
+    currency = claim.currency or ""
+    if not currency:
+        contract = await session.get(Contract, claim.contract_id)
+        currency = (contract.currency if contract is not None else "") or ""
+    out: list[ProgressClaimLineResponse] = []
+    for index, item in enumerate(items, start=1):
+        response = ProgressClaimLineResponse.model_validate(item)
+        contract_line = contract_lines.get(item.contract_line_id)
+        if contract_line is not None:
+            row = build_g703_line(
+                contract_line,
+                item,
+                line_number=index,
+                retainage_percent=Decimal("0"),
+                currency=currency,
+            )
+            response.scheduled_value = row["scheduled_value"]
+            response.previous_value = row["previous_value"]
+            response.total_completed_stored = row["total_completed_stored"]
+            response.percent_complete = row["percent_complete"]
+            response.balance_to_finish = row["balance_to_finish"]
+        out.append(response)
+    return out
 
 
 def _claim_to_response(item: ProgressClaim) -> ProgressClaimResponse:
@@ -621,11 +669,10 @@ async def preview_compliance_gate(
         "status": report.status.value,
         "score": report.score,
         "blocked": report.has_errors,
-        "counts": {
-            "errors": len(report.errors),
-            "warnings": len(report.warnings),
-            "passed": len(report.passed_rules),
-        },
+        "counts": compliance_counts(report),
+        # Nothing ran: the packs reach no rule, or the rules had nothing to
+        # check. The screen says so instead of reporting a pass.
+        "nothing_checked": compliance_nothing_checked(report),
         "errors": [_serialise(r) for r in report.errors],
         "warnings": [_serialise(r) for r in report.warnings],
     }
@@ -795,6 +842,37 @@ async def bulk_create_contract_lines(
         )
     lines = await service.bulk_create_lines(contract_id, items)
     return [_line_to_response(ln) for ln in lines]
+
+
+@router.post(
+    "/contracts/{contract_id}/lines/from-boq",
+    response_model=ContractSovFromBoqResponse,
+    status_code=201,
+)
+async def draw_contract_lines_from_boq(
+    contract_id: uuid.UUID,
+    payload: ContractSovFromBoqRequest,
+    session: SessionDep,
+    user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("contracts.create")),
+) -> ContractSovFromBoqResponse:
+    """Draw the schedule of values from a bill of quantities of the contract's project.
+
+    One line per priced position, each linked to its position so "Populate
+    from progress" can bill it. Positions already linked are skipped, so a
+    second draw adds only what is new. Draft contracts only.
+    """
+    await _verify_contract_access(session, contract_id, user_id)
+    service = ContractsService(session)
+    result = await service.build_sov_from_boq(contract_id, payload.boq_id, payload.position_ids)
+    return ContractSovFromBoqResponse(
+        lines=[_line_to_response(ln) for ln in result["lines"]],
+        created=result["created"],
+        already_linked=result["already_linked"],
+        removed_placeholder=result["removed_placeholder"],
+        sov_total=result["sov_total"],
+        contract_total_value=result["contract_total_value"],
+    )
 
 
 @router.patch(
@@ -1464,10 +1542,10 @@ async def list_claim_lines(
     user_id: CurrentUserId,
     _perm: None = Depends(RequirePermission("contracts.read")),
 ) -> list[ProgressClaimLineResponse]:
-    await _verify_claim_access(session, claim_id, user_id)
+    claim = await _verify_claim_access(session, claim_id, user_id)
     repo = ProgressClaimLineRepository(session)
     items = await repo.list_for_claim(claim_id)
-    return [ProgressClaimLineResponse.model_validate(it) for it in items]
+    return await _claim_line_responses(session, claim, list(items))
 
 
 @router.post(
@@ -1502,6 +1580,14 @@ async def create_claim_line(
             fields["period_completed_value"] = derived
     # Column D and the running total are derived, never client-authored: the
     # same "claims before this one" the generators use, plus this period.
+    # On a schedule of values the amount is the schedule's to measure: work
+    # and stored materials to date stop at the line's scheduled value.
+    await service.assert_claim_line_within_schedule(
+        claim,
+        data.contract_line_id,
+        period_value=fields["period_completed_value"],
+        stored_value=fields["materials_stored_value"],
+    )
     fields.update(
         await service.claim_line_running_totals(claim, data.contract_line_id, fields["period_completed_value"])
     )
@@ -1510,7 +1596,7 @@ async def create_claim_line(
     # Totals and retention follow the lines, so a hand-added line bills.
     await service.roll_claim_retention(claim.id, gross_follows_lines=True)
     await session.refresh(obj)
-    return ProgressClaimLineResponse.model_validate(obj)
+    return (await _claim_line_responses(session, claim, [obj]))[0]
 
 
 @router.patch(
@@ -1555,6 +1641,12 @@ async def update_claim_line(
             if derived is not None:
                 fields["period_completed_value"] = derived
         period_value = fields.get("period_completed_value", obj.period_completed_value)
+        await service.assert_claim_line_within_schedule(
+            claim,
+            obj.contract_line_id,
+            period_value=period_value,
+            stored_value=fields.get("materials_stored_value", obj.materials_stored_value),
+        )
         fields.update(await service.claim_line_running_totals(claim, obj.contract_line_id, period_value))
         await repo.update_fields(line_id, **fields)
         await session.refresh(obj)
@@ -1567,7 +1659,7 @@ async def update_claim_line(
                 await service.record_percent_regressed(claim, kept)
         await service.roll_claim_retention(claim.id, gross_follows_lines=True)
         await session.refresh(obj)
-    return ProgressClaimLineResponse.model_validate(obj)
+    return (await _claim_line_responses(session, claim, [obj]))[0]
 
 
 @router.delete(

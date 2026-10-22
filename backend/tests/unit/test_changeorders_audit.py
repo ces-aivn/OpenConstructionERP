@@ -491,4 +491,5 @@ async def test_start_approval_chain_rejects_submitter_in_chain() -> None:
     with pytest.raises(HTTPException) as exc_info:
         await service.start_approval_chain(order.id, [other, submitter, other])
     assert exc_info.value.status_code == 403
-    assert "four-eyes" in exc_info.value.detail.lower()
+    assert exc_info.value.detail["code"] == "change_order_submitter_in_chain"
+    assert "four-eyes" in exc_info.value.detail["message"].lower()

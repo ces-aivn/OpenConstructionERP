@@ -57,6 +57,7 @@ import { RatingStars } from './RatingStars';
 import { ScorecardTile } from './ScorecardTile';
 import { LienWaiverPanel } from './LienWaiverPanel';
 import { AwardEligibilityBanner } from './AwardEligibilityBanner';
+import { PREQUAL_STATUSES, approvalNeedsInsuranceOverride, prequalStatusLabel } from './prequalStatus';
 import { subcontractorsGuide } from './subcontractorsGuide';
 import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/features/insights';
 import { buildSubcontractorsInsights } from './subcontractorsInsights';
@@ -81,6 +82,7 @@ import {
   blockSubcontractor,
   unblockSubcontractor,
   type Subcontractor,
+  type InsuranceState,
   type PrequalStatus,
   type Agreement,
   type AgreementStatus,
@@ -172,11 +174,18 @@ function insuranceStatus(
 
 function InsuranceChip({
   expiry,
+  serverState,
 }: {
   expiry: string | null | undefined;
+  /** The server's verdict from the certificate register, where the response carries it. */
+  serverState?: InsuranceState | null;
 }) {
   const { t } = useTranslation();
-  const state = insuranceStatus(expiry);
+  // The register is the authority: a live certificate is cover even when the
+  // vendor row carries no date, and a lapsed or revoked one is not.
+  let state = insuranceStatus(expiry);
+  if (serverState === 'valid' && state === 'red') state = 'green';
+  else if (serverState && serverState !== 'valid') state = 'red';
   const cfg: Record<
     'red' | 'amber' | 'green',
     { variant: 'success' | 'warning' | 'error'; label: string }
@@ -195,13 +204,18 @@ function InsuranceChip({
     },
     red: {
       variant: 'error',
-      label: expiry
-        ? t('subcontractors.insurance_expired', {
-            defaultValue: 'Insurance expired',
-          })
-        : t('subcontractors.insurance_missing', {
-            defaultValue: 'No insurance',
-          }),
+      label:
+        serverState === 'revoked'
+          ? t('subcontractors.insurance_revoked', {
+              defaultValue: 'Insurance revoked',
+            })
+          : serverState === 'expired' || (serverState == null && expiry)
+            ? t('subcontractors.insurance_expired', {
+                defaultValue: 'Insurance expired',
+              })
+            : t('subcontractors.insurance_missing', {
+                defaultValue: 'No insurance',
+              }),
     },
   };
   const c = cfg[state];
@@ -537,13 +551,11 @@ export function SubcontractorsPage() {
           <option value="">
             {t('common.all_statuses', { defaultValue: 'All statuses' })}
           </option>
-          {(['pending', 'approved', 'suspended', 'rejected'] as PrequalStatus[]).map(
-            (s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ),
-          )}
+          {PREQUAL_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {prequalStatusLabel(t, s)}
+            </option>
+          ))}
         </select>
       </div>
 
@@ -686,11 +698,11 @@ function SubcontractorTable({
               </td>
               <td className="px-4 py-2">
                 <Badge variant={PREQUAL_VARIANT[r.prequalification_status]} dot>
-                  {r.prequalification_status}
+                  {prequalStatusLabel(t, r.prequalification_status)}
                 </Badge>
               </td>
               <td className="px-4 py-2">
-                <InsuranceChip expiry={r.insurance_expiry_date} />
+                <InsuranceChip expiry={r.insurance_expiry_date} serverState={r.insurance_state} />
               </td>
               <td className="px-4 py-2">
                 <RatingStars score={r.rating_score} />
@@ -1025,7 +1037,7 @@ function DetailDrawer({ id, onClose }: { id: string; onClose: () => void }) {
                 label={t('subcontractors.col_status', { defaultValue: 'Status' })}
                 value={
                   <Badge variant={PREQUAL_VARIANT[sub.prequalification_status]} dot>
-                    {sub.prequalification_status}
+                    {prequalStatusLabel(t, sub.prequalification_status)}
                   </Badge>
                 }
               />
@@ -1037,7 +1049,7 @@ function DetailDrawer({ id, onClose }: { id: string; onClose: () => void }) {
                 label={t('subcontractors.col_insurance', {
                   defaultValue: 'Insurance',
                 })}
-                value={<InsuranceChip expiry={sub.insurance_expiry_date} />}
+                value={<InsuranceChip expiry={sub.insurance_expiry_date} serverState={sub.insurance_state} />}
               />
               <KV
                 label={t('subcontractors.prequal_score_label', {
@@ -2064,6 +2076,14 @@ function SubcontractorFormModal({
   const [form, setForm] = useState<SubcontractorFormState>(() =>
     _toFormState(existing),
   );
+  const [overrideReason, setOverrideReason] = useState('');
+  // Approving a firm that holds no valid insurance needs a stated reason; the
+  // server refuses the approval without one. A firm already approved keeps
+  // its status without being asked again.
+  const needsOverride =
+    form.prequalification_status === 'approved' &&
+    existing?.prequalification_status !== 'approved' &&
+    approvalNeedsInsuranceOverride(existing);
 
   // Escape/backdrop dismissal + body scroll lock + initial focus are all
   // handled by <WideModal>; the `busy` prop disables them during in-flight
@@ -2079,9 +2099,19 @@ function SubcontractorFormModal({
       });
       return;
     }
+    if (needsOverride && !overrideReason.trim()) {
+      addToast({
+        type: 'error',
+        title: t('subcontractors.prequal_override_required', {
+          defaultValue: 'State why this subcontractor is approved without valid insurance.',
+        }),
+      });
+      return;
+    }
     setBusy(true);
     try {
       const payload = _toPayload(form);
+      if (needsOverride) payload.prequal_override_reason = overrideReason.trim();
       if (mode === 'edit' && existing) {
         // Diff against the original so server-managed columns (rating,
         // timestamps, etc.) aren't touched when only the trade name was
@@ -2103,6 +2133,9 @@ function SubcontractorFormModal({
             if (!eq) diffRecord[k] = b;
           },
         );
+        if (payload.prequal_override_reason && diff.prequalification_status) {
+          diff.prequal_override_reason = payload.prequal_override_reason;
+        }
         if (Object.keys(diff).length === 0) {
           // Nothing changed — close without surprising the user with a
           // toast that says "updated" when nothing actually changed.
@@ -2241,7 +2274,7 @@ function SubcontractorFormModal({
             onChange={(e) => set('country', e.target.value)}
             className={inputCls}
             maxLength={2}
-            placeholder="DE / GB / US"
+            placeholder="VN / US"
           />
         </WideModalField>
         <WideModalField
@@ -2289,15 +2322,40 @@ function SubcontractorFormModal({
             }
             className={inputCls}
           >
-            {(['pending', 'approved', 'suspended', 'rejected'] as PrequalStatus[]).map(
-              (s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ),
-            )}
+            {PREQUAL_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {prequalStatusLabel(t, s)}
+              </option>
+            ))}
           </select>
         </WideModalField>
+        {needsOverride && (
+          <WideModalField
+            label={t('subcontractors.prequal_override_reason', {
+              defaultValue: 'Reason for approving without insurance',
+            })}
+            required
+          >
+            <p
+              className="mb-2 rounded-lg border border-semantic-warning/40 bg-semantic-warning/10 px-3 py-2 text-xs text-content-primary"
+              role="alert"
+              data-testid="prequal-insurance-warning"
+            >
+              {t('subcontractors.prequal_no_insurance_warning', {
+                defaultValue:
+                  'This subcontractor has no valid insurance on file. Record a valid insurance certificate before approving, or state why it is approved without one. The reason is kept on the audit trail.',
+              })}
+            </p>
+            <textarea
+              value={overrideReason}
+              onChange={(e) => setOverrideReason(e.target.value)}
+              rows={2}
+              maxLength={2000}
+              className={clsx(inputCls, 'h-auto py-2')}
+              data-testid="prequal-override-reason"
+            />
+          </WideModalField>
+        )}
       </WideModalSection>
 
       <WideModalSection

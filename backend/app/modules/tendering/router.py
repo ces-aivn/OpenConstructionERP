@@ -55,6 +55,7 @@ from app.modules.tendering.schemas import (
     PackageCreate,
     PackageResponse,
     PackageScopeResponse,
+    PackageScopeUpdate,
     PackageUpdate,
     PackageWithBidsResponse,
     RecipientCreate,
@@ -370,6 +371,27 @@ async def get_package_scope(
     """
     await _verify_package_owner(service, session, package_id, user_id, payload)
     return await service.package_scope(package_id)
+
+
+@router.put("/packages/{package_id}/scope", response_model=PackageScopeResponse)
+async def set_package_scope(
+    package_id: uuid.UUID,
+    data: PackageScopeUpdate,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
+    service: TenderingService = Depends(_get_service),
+    _perm: None = Depends(RequirePermission("tendering.update")),
+) -> PackageScopeResponse:
+    """Re-draw the sections and rows of the bill this package covers.
+
+    The comparison budget, the levelling reference and the award record's
+    estimated value all follow the scope, so this is how a package raised over
+    the whole bill is put back on its own lines. Refused once the package is
+    awarded or closed.
+    """
+    await _verify_package_owner(service, session, package_id, user_id, payload)
+    return await service.set_package_scope(package_id, data)
 
 
 @router.patch("/packages/{package_id}", response_model=PackageResponse)

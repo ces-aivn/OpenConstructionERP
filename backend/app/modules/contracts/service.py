@@ -27,7 +27,7 @@ from sqlalchemy import select as sa_select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.currency_registry import money_quantum
+from app.core.currency_registry import money_quantum, sentence_amount
 from app.core.events import event_bus, publish_after_commit
 from app.core.i18n import get_locale
 from app.core.json_merge import merge_metadata
@@ -56,7 +56,7 @@ from app.modules.contracts.country_defaults import (
     country_measures_retention_gross,
     forget_overridden,
     has_subdivision_rows,
-    normalise_country,
+    project_country_code,
     resolve_contract_defaults,
     subcontract_retention_default,
     subdivision_from_address,
@@ -139,6 +139,7 @@ from app.modules.contracts.retention import (
 )
 from app.modules.contracts.retention import percent_complete as retention_percent_complete
 from app.modules.contracts.sov_adjustments import ADJUSTS_LINE_META_KEY
+from app.modules.contracts.template_library import LIBRARY_TEMPLATES, minimum_advance_percent
 from app.modules.contracts.vat_regime_rules import VAT_REGIME_CONTEXT_KEY, stated_regime
 
 logger = logging.getLogger(__name__)
@@ -410,6 +411,156 @@ def clamp_eot_days_granted(days_claimed: int, days_granted: int, decision: str) 
 # ── Pure validators / calculators ─────────────────────────────────────────
 
 
+#: Optional type terms that are figures when sent: checked like the required ones.
+_NUMERIC_OPTIONAL_TERMS: tuple[str, ...] = (
+    "fee_percent",
+    "max_fee",
+    "target_cost",
+    "gmp_cap",
+    "gainshare_split_pct",
+    "tm_nte_cap",
+    "advance_payment_percent",
+    "performance_security_percent",
+    "warranty_retention_percent",
+    "warranty_period_months",
+)
+
+#: Terms that are a percentage and so cannot run past 100.
+_PERCENT_TERMS: frozenset[str] = frozenset(
+    {
+        "gainshare_split_pct",
+        "advance_payment_percent",
+        "performance_security_percent",
+        "warranty_retention_percent",
+    }
+)
+
+#: How a unit-price contract's rates behave: fixed for the life of the
+#: contract, or adjusted for price changes (Vietnam's "đơn giá cố định" and
+#: "đơn giá điều chỉnh", Nghị định 37/2015/NĐ-CP, Điều 15).
+PRICE_BASES: tuple[str, ...] = ("fixed", "adjustable")
+
+
+def compliance_counts(report: ValidationReport) -> dict[str, int]:
+    """The headline counts of a compliance run, with how many rules ran at all.
+
+    ``evaluated`` is the number of rule results that are real checks, so a
+    gate whose packs reach no rule, or whose rules find nothing to look at,
+    reads 0 there instead of looking like a clean pass.
+    """
+    return {
+        "errors": len(report.errors),
+        "warnings": len(report.warnings),
+        "passed": len(report.passed_rules),
+        "evaluated": sum(1 for r in report.results if not getattr(r, "is_engine_error", False)),
+    }
+
+
+def compliance_nothing_checked(report: ValidationReport) -> bool:
+    """Whether a compliance run checked nothing: no rule ran, or every set is unimplemented."""
+    return compliance_counts(report)["evaluated"] == 0
+
+
+def contract_term_problems(
+    contract_type: str,
+    terms: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Every problem with ``terms`` for ``contract_type``, one dict per problem.
+
+    Each problem carries a stable ``code`` the client translates, the
+    ``field`` it is about (``terms.<key>``) and the ``params`` its message is
+    filled from, so a form can mark the field instead of printing a sentence.
+    """
+    problems: list[dict[str, Any]] = []
+    if contract_type not in CONTRACT_TYPES:
+        return [
+            {
+                "code": "contract_type_unknown",
+                "field": "contract_type",
+                "params": {"contract_type": contract_type},
+                "message": f"unknown contract_type: {contract_type}",
+            }
+        ]
+
+    terms = terms or {}
+    required = _REQUIRED_TERM_FIELDS.get(contract_type, ())
+    figures: dict[str, Decimal] = {}
+    for key in (*required, *(k for k in _NUMERIC_OPTIONAL_TERMS if k not in required)):
+        value = terms.get(key)
+        params = {"term": key, "contract_type": contract_type}
+        if value in (None, ""):
+            if key in required:
+                problems.append(
+                    {
+                        "code": "contract_term_required",
+                        "field": f"terms.{key}",
+                        "params": params,
+                        "message": f"missing required term: {key}",
+                    }
+                )
+            continue
+        try:
+            figure = Decimal(str(value))
+            if not figure.is_finite():
+                raise InvalidOperation
+        except (ValueError, ArithmeticError):
+            problems.append(
+                {
+                    "code": "contract_term_not_numeric",
+                    "field": f"terms.{key}",
+                    "params": params,
+                    "message": f"term {key} must be numeric",
+                }
+            )
+            continue
+        if figure < 0:
+            problems.append(
+                {
+                    "code": "contract_term_negative",
+                    "field": f"terms.{key}",
+                    "params": params,
+                    "message": f"term {key} must be non-negative",
+                }
+            )
+            continue
+        if key in _PERCENT_TERMS and figure > DEC_HUNDRED:
+            problems.append(
+                {
+                    "code": "contract_term_over_100",
+                    "field": f"terms.{key}",
+                    "params": params,
+                    "message": f"term {key} cannot exceed 100 percent",
+                }
+            )
+            continue
+        figures[key] = figure
+
+    # The cap sits above the target by design: savings are shared below the
+    # target and the contractor carries the cost above the cap.
+    if contract_type == "gmp" and "gmp_cap" in figures and "target_cost" in figures:
+        if figures["gmp_cap"] < figures["target_cost"]:
+            problems.append(
+                {
+                    "code": "contract_gmp_below_target",
+                    "field": "terms.gmp_cap",
+                    "params": {"term": "gmp_cap", "contract_type": contract_type},
+                    "message": "gmp_cap must not be below target_cost",
+                }
+            )
+
+    basis = terms.get("price_basis")
+    if basis not in (None, "") and basis not in PRICE_BASES:
+        problems.append(
+            {
+                "code": "contract_price_basis_unknown",
+                "field": "terms.price_basis",
+                "params": {"term": "price_basis", "allowed": ", ".join(PRICE_BASES)},
+                "message": f"price_basis must be one of: {', '.join(PRICE_BASES)}",
+            }
+        )
+    return problems
+
+
 def validate_contract_terms(
     contract_type: str,
     terms: dict[str, Any] | None,
@@ -419,24 +570,34 @@ def validate_contract_terms(
     Returns:
         (ok, errors) where ``ok`` is True iff the terms dict is well-formed.
     """
-    errors: list[str] = []
-    if contract_type not in CONTRACT_TYPES:
-        errors.append(f"unknown contract_type: {contract_type}")
-        return False, errors
-
-    required = _REQUIRED_TERM_FIELDS.get(contract_type, ())
-    terms = terms or {}
-    for key in required:
-        value = terms.get(key)
-        if value in (None, ""):
-            errors.append(f"missing required term: {key}")
-        else:
-            try:
-                if Decimal(str(value)) < 0:
-                    errors.append(f"term {key} must be non-negative")
-            except (ValueError, ArithmeticError):
-                errors.append(f"term {key} must be numeric")
+    errors = [problem["message"] for problem in contract_term_problems(contract_type, terms)]
     return len(errors) == 0, errors
+
+
+def invalid_contract_terms_error(problems: list[dict[str, Any]]) -> HTTPException:
+    """The 400 a contract with bad type terms is refused with.
+
+    ``error`` and ``details`` keep the shape older clients read. ``code``,
+    ``field`` and ``params`` name the first problem so the shared client
+    translates it, and ``fields`` lists every problem so a form marks each
+    field at fault.
+    """
+    first = problems[0]
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "error": "invalid_contract_terms",
+            "code": first["code"],
+            "field": first["field"],
+            "params": first["params"],
+            "message": "; ".join(problem["message"] for problem in problems),
+            "details": [problem["message"] for problem in problems],
+            "fields": [
+                {"field": problem["field"], "code": problem["code"], "params": problem["params"]}
+                for problem in problems
+            ],
+        },
+    )
 
 
 def _explicit_payment_terms(data: Any) -> dict[str, Any]:
@@ -1300,15 +1461,17 @@ class ContractsService:
         user_id: str | None = None,
     ) -> Contract:
         """Create a new contract; validates type-specific terms."""
-        ok, errors = validate_contract_terms(data.contract_type, data.terms)
-        if not ok:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "error": "invalid_contract_terms",
-                    "details": errors,
-                },
-            )
+        # A built-in template states the terms its form usually carries (an
+        # advance, a performance security, a warranty period); those the
+        # author left out start from it, and anything sent wins.
+        template_terms = builtin_template_default_terms(
+            getattr(data, "template_code", None), data.contract_type, data.total_value
+        )
+        if template_terms:
+            data.terms = {**template_terms, **(data.terms or {})}
+        problems = contract_term_problems(data.contract_type, data.terms)
+        if problems:
+            raise invalid_contract_terms_error(problems)
         # A payment certificate configuration is checked where it is written,
         # so a contract cannot store one that only fails when the first
         # certificate is opened.
@@ -1321,6 +1484,12 @@ class ContractsService:
         # actually saw. A built-in resolves to version 0, which reads as "not a
         # versioned template" and keeps the pair populated either way.
         template_code, template_version = await self.resolve_template_for_contract(getattr(data, "template_code", None))
+        # The bill the schedule of values is drawn from is checked before the
+        # contract is written, so a wrong bill refuses the whole create rather
+        # than leaving a contract behind with no schedule.
+        sov_boq_id = getattr(data, "sov_boq_id", None)
+        if sov_boq_id is not None:
+            await self._boq_of_project(sov_boq_id, data.project_id)
 
         # Payment terms the author left out start from the usual figures of the
         # project's country, and the contract records which ones did. A
@@ -1374,6 +1543,11 @@ class ContractsService:
                 detail=f"A contract with code '{data.code}' already exists.",
             ) from exc
 
+        await self._provision_type_configuration(contract)
+        if sov_boq_id is not None:
+            await self.build_sov_from_boq(contract.id, sov_boq_id)
+            await self.session.refresh(contract)
+
         logger.info(
             "Contract created: %s (%s) project=%s",
             contract.code,
@@ -1382,19 +1556,78 @@ class ContractsService:
         )
         return contract
 
+    async def _provision_type_configuration(self, contract: Contract) -> None:
+        """Write the fee and gainshare rows a new contract's type terms state.
+
+        A cost-plus claim reads its fee from the fee structure and a GMP
+        contract its target and cap from the gainshare configuration. A
+        contract created with ``fee_percent`` in its terms and no fee row would
+        bill a zero fee, and a GMP contract would answer its gainshare preview
+        with "no configuration", so the rows are written from the same figures
+        the terms were validated on. A contract that already has a row keeps it.
+        """
+        terms = contract.terms or {}
+
+        def figure(key: str) -> Decimal | None:
+            value = terms.get(key)
+            if value in (None, ""):
+                return None
+            return Decimal(str(value))
+
+        added = False
+        fee_percent = figure("fee_percent")
+        if contract.contract_type in ("cost_plus", "gmp") and fee_percent is not None:
+            if await self.fee_repo.get_for_contract(contract.id) is None:
+                added = True
+                self.session.add(
+                    FeeStructure(
+                        contract_id=contract.id,
+                        fee_type="percent_of_cost",
+                        fee_percent=fee_percent,
+                        fee_fixed_amount=None,
+                        sliding_scale=[],
+                        max_fee=figure("max_fee"),
+                    )
+                )
+        if contract.contract_type == "gmp":
+            target, cap = figure("target_cost"), figure("gmp_cap")
+            if (
+                target is not None
+                and cap is not None
+                and await self.gainshare_repo.get_for_contract(contract.id) is None
+            ):
+                contractor_share = figure("gainshare_split_pct")
+                contractor_share = Decimal("50") if contractor_share is None else contractor_share
+                added = True
+                self.session.add(
+                    GainshareConfiguration(
+                        contract_id=contract.id,
+                        target_cost=target,
+                        gmp_cap=cap,
+                        savings_split_owner_pct=DEC_HUNDRED - contractor_share,
+                        savings_split_contractor_pct=contractor_share,
+                        overrun_responsibility="contractor",
+                    )
+                )
+        # Flushed only when a row was written, so a contract of another type
+        # costs no round trip.
+        if added:
+            await self.session.flush()
+
     async def project_country(self, project_id: uuid.UUID) -> str | None:
         """The project's ISO country, normalised, or None when it names none.
 
-        Only ``country_code`` is read. ``Project.region`` defaults to "DACH",
-        so reading it would hand a German default to every project that never
-        chose a market, which is the thing country defaults exist to stop.
+        ``country_code`` wins; without it a region or address that names one
+        country ("Vietnam", "VN") answers (see :func:`project_country_code`).
+        A multi-country region such as the "DACH" default names no country, so
+        a project that never chose a market still gets no one's defaults.
         """
         from app.modules.projects.models import Project  # noqa: PLC0415
 
         project = await self.session.get(Project, project_id)
         if project is None:
             return None
-        return normalise_country(getattr(project, "country_code", None)) or None
+        return project_country_code(project) or None
 
     async def vat_regimes_for_project(self, project_id: uuid.UUID, on: date) -> dict[str, Any]:
         """The VAT regimes a contract on this project may state on ``on``, with their rates.
@@ -1488,7 +1721,7 @@ class ContractsService:
         project = await self.session.get(Project, project_id)
         if project is None:
             return None
-        country = normalise_country(getattr(project, "country_code", None)) or None
+        country = project_country_code(project) or None
         return subdivision_from_address(country, getattr(project, "address", None))
 
     async def project_works(self, project_id: uuid.UUID) -> str | None:
@@ -1678,15 +1911,9 @@ class ContractsService:
         if "terms" in fields or "contract_type" in fields:
             contract_type = fields.get("contract_type", contract.contract_type)
             terms = fields.get("terms", contract.terms)
-            ok, errors = validate_contract_terms(contract_type, terms)
-            if not ok:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "error": "invalid_contract_terms",
-                        "details": errors,
-                    },
-                )
+            problems = contract_term_problems(contract_type, terms)
+            if problems:
+                raise invalid_contract_terms_error(problems)
             if "terms" in fields:
                 hakedis_document.check_terms(await self.project_country(contract.project_id), terms)
         if "code" in fields:
@@ -2213,11 +2440,8 @@ class ContractsService:
             "status": report.status.value,
             "score": report.score,
             "blocked": blocked,
-            "counts": {
-                "errors": len(report.errors),
-                "warnings": len(report.warnings),
-                "passed": len(report.passed_rules),
-            },
+            "counts": compliance_counts(report),
+            "nothing_checked": compliance_nothing_checked(report),
             "errors": [_serialise(r) for r in report.errors],
             "warnings": [_serialise(r) for r in report.warnings],
         }
@@ -2262,11 +2486,8 @@ class ContractsService:
             "rule_sets": report.rule_sets_applied,
             "status": report.status.value,
             "score": report.score,
-            "counts": {
-                "errors": len(report.errors),
-                "warnings": len(report.warnings),
-                "passed": len(report.passed_rules),
-            },
+            "counts": compliance_counts(report),
+            "nothing_checked": compliance_nothing_checked(report),
             "errors": [_serialise(r) for r in report.errors],
             "warnings": [_serialise(r) for r in report.warnings],
         }
@@ -2419,7 +2640,7 @@ class ContractsService:
             # Read by the public works rules: the law that binds a contract
             # follows the project's country and whether its client is public.
             "project": {
-                "country_code": getattr(project, "country_code", None),
+                "country_code": project_country_code(project) or None,
                 "works": getattr(project, "works", None),
             },
             "ld_clauses": [
@@ -3200,6 +3421,187 @@ class ContractsService:
         await self._assert_line_may_change(line)
         await self.line_repo.delete(line_id)
 
+    async def _boq_of_project(self, boq_id: uuid.UUID, project_id: uuid.UUID) -> Any:
+        """The bill ``boq_id``, refused unless it belongs to ``project_id``.
+
+        The progress bridge reads readings by project, so lines drawn from
+        another project's bill would be linked to positions that never bill.
+        """
+        from app.modules.boq.models import BOQ  # noqa: PLC0415
+
+        boq = await self.session.get(BOQ, boq_id)
+        if boq is None or boq.project_id != project_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "error": "sov_boq_not_in_project",
+                    "code": "sov_boq_not_in_project",
+                    "field": "boq_id",
+                    "params": {},
+                    "message": "The bill of quantities is not in this contract's project.",
+                },
+            )
+        return boq
+
+    async def build_sov_from_boq(
+        self,
+        contract_id: uuid.UUID,
+        boq_id: uuid.UUID,
+        position_ids: list[uuid.UUID] | None = None,
+    ) -> dict[str, Any]:
+        """Write one schedule of values line per priced position of a bill, each linked to its position.
+
+        Only while the contract is a draft, like every other schedule write.
+        A position some line already links to is left alone, so drawing the
+        same bill twice adds nothing, and lines typed in by hand stay. The
+        lump-sum line the cost model puts on a contract with no schedule is
+        removed once real lines replace it, unless a claim billed on it.
+
+        A position priced in another currency is converted into the contract
+        currency through the project's FX table; a currency without a rate is
+        refused (422 ``sov_currency_rate_missing``). The contract's value is
+        never written here: it is the agreed price, and a bill's direct cost
+        (without its markups) is not one. The contract screen shows the
+        schedule total beside it when the two differ.
+        """
+        from app.modules.boq.models import Position  # noqa: PLC0415
+        from app.modules.boq.service import _is_section, _position_currency, _project_fx_map  # noqa: PLC0415
+        from app.modules.contracts.sov_from_boq import (  # noqa: PLC0415
+            BOQ_ID_META_KEY,
+            SOURCE_BOQ,
+            SOURCE_META_KEY,
+            MissingExchangeRate,
+            billable_positions,
+            sov_line_specs,
+        )
+        from app.modules.projects.models import Project  # noqa: PLC0415
+
+        await self._assert_contract_lines_editable(contract_id)
+        contract = await self.get_contract(contract_id)
+        await self._boq_of_project(boq_id, contract.project_id)
+
+        positions = list(
+            (
+                await self.session.execute(
+                    sa_select(Position).where(Position.boq_id == boq_id).order_by(Position.sort_order, Position.ordinal)
+                )
+            ).scalars()
+        )
+        if position_ids:
+            known = {p.id for p in positions}
+            foreign = [str(pid) for pid in position_ids if pid not in known]
+            if foreign:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail={
+                        "error": "sov_position_not_in_boq",
+                        "code": "sov_position_not_in_boq",
+                        "field": "position_ids",
+                        "params": {"count": len(foreign)},
+                        "message": "Some of the chosen positions are not in this bill of quantities.",
+                        "position_ids": foreign,
+                    },
+                )
+        picked = billable_positions(positions, is_section=_is_section, position_ids=position_ids or None)
+        if not picked:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "error": "sov_boq_has_no_priced_positions",
+                    "code": "sov_boq_has_no_priced_positions",
+                    "field": "boq_id",
+                    "params": {},
+                    "message": (
+                        "The bill of quantities has no priced position to schedule: every row is a "
+                        "section header or has no quantity or rate yet."
+                    ),
+                },
+            )
+
+        existing = await self.line_repo.list_for_contract(contract_id)
+        linked = {str(pid) for ln in existing if (pid := boq_position_id_for_line(ln)) is not None}
+        project = await self.session.get(Project, contract.project_id)
+        try:
+            all_specs = sov_line_specs(
+                picked,
+                contract.currency,
+                currency_of=_position_currency,
+                base_currency=getattr(project, "currency", "") or "",
+                fx_rates=_project_fx_map(project),
+            )
+        except MissingExchangeRate as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "error": "sov_currency_rate_missing",
+                    "code": "sov_currency_rate_missing",
+                    "field": "boq_id",
+                    "params": {"from_currency": exc.from_currency, "to_currency": exc.to_currency},
+                    "message": (
+                        f"The bill prices lines in {exc.from_currency} and the contract is in "
+                        f"{exc.to_currency}, but the project has no exchange rate between them. "
+                        "Add the rate to the project's currencies first."
+                    ),
+                },
+            ) from None
+        specs = [s for s in all_specs if str(s.position_id) not in linked]
+
+        removed_placeholder = 0
+        if specs:
+            placeholders = [ln for ln in existing if (ln.metadata_ or {}).get("lump_sum_account") is True]
+            billed = await self.claim_line_repo.claims_billing_lines([ln.id for ln in placeholders])
+            for ln in placeholders:
+                if ln.id not in billed:
+                    await self.line_repo.delete(ln.id)
+                    removed_placeholder += 1
+
+        next_index = max((ln.order_index or 0 for ln in existing), default=-1) + 1
+        new_lines: list[ContractLine] = []
+        for offset, spec in enumerate(specs):
+            metadata: dict[str, Any] = {
+                BOQ_POSITION_META_KEY: str(spec.position_id),
+                BOQ_ID_META_KEY: str(boq_id),
+                SOURCE_META_KEY: SOURCE_BOQ,
+            }
+            if spec.classification:
+                metadata["classification"] = spec.classification
+            new_lines.append(
+                ContractLine(
+                    contract_id=contract_id,
+                    code=spec.code,
+                    description=spec.description,
+                    line_type="work",
+                    unit=spec.unit,
+                    quantity=spec.quantity,
+                    unit_rate=spec.unit_rate,
+                    total_value=spec.total_value,
+                    order_index=next_index + offset,
+                    metadata_=metadata,
+                )
+            )
+        created: list[ContractLine] = []
+        if new_lines:
+            created = list(await self.line_repo.bulk_create(new_lines))
+            await self._inherit_line_cost_lines(contract_id, created)
+
+        lines_now = await self.line_repo.list_for_contract(contract_id)
+        sov_total = sum((Decimal(str(ln.total_value or 0)) for ln in lines_now), DEC_ZERO)
+        logger.info(
+            "Schedule of values drawn from BOQ %s for contract %s: %d lines, %d already linked",
+            boq_id,
+            contract.code,
+            len(created),
+            len(picked) - len(specs),
+        )
+        return {
+            "lines": created,
+            "created": len(created),
+            "already_linked": len(picked) - len(specs),
+            "removed_placeholder": removed_placeholder,
+            "sov_total": sov_total,
+            "contract_total_value": Decimal(str(contract.total_value or 0)),
+        }
+
     # ── Progress claims ──────────────────────────────────────────────────
 
     async def create_progress_claim(self, data: Any) -> ProgressClaim:
@@ -3746,6 +4148,96 @@ class ContractsService:
             "prior_completed_value": prior,
             "cumulative_completed_value": (prior + Decimal(str(period_value or 0))).quantize(Decimal("0.0001")),
         }
+
+    async def assert_claim_line_within_schedule(
+        self,
+        claim: ProgressClaim,
+        contract_line_id: uuid.UUID,
+        *,
+        period_value: Decimal | float | int | str | None,
+        stored_value: Decimal | float | int | str | None,
+    ) -> None:
+        """Refuse a hand-written claim line that bills past its schedule line, or below nothing.
+
+        On a schedule of values the amount a payment application claims is
+        the schedule's to measure: work to date (the earlier claims plus this
+        period) and the materials stored on site may come to the line's
+        scheduled value and no more, and work to date may not go below zero.
+        The submission check says the same at the end
+        (``pay_application.line_overbilled``); refusing the write here keeps
+        the figure from being typed in the first place.
+
+        A claim whose gross is an agreed sum (an instalment) or recorded cost
+        carries its lines as a breakdown of that sum, not as measured work, so
+        it is left alone. A credit line (negative scheduled value) is not
+        measured this way either.
+        """
+        if claim.gross_basis in GROSS_FIXED_BASES:
+            return
+        line = await self.line_repo.get_by_id(contract_line_id)
+        if line is None or line.contract_id != claim.contract_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "error": "claim_line_not_on_contract",
+                    "code": "claim_line_not_on_contract",
+                    "field": "contract_line_id",
+                    "params": {},
+                    "message": "The schedule of values line is not on this claim's contract.",
+                },
+            )
+        scheduled = Decimal(str(line.total_value or 0))
+        if scheduled < DEC_ZERO:
+            return
+        prior_by_line = await self.claim_line_repo.prior_period_value_by_line(
+            claim.contract_id,
+            before_claim_id=claim.id,
+        )
+        prior = Decimal(str(prior_by_line.get(line.id, DEC_ZERO)))
+        period = Decimal(str(period_value or 0))
+        stored = Decimal(str(stored_value or 0))
+        currency = getattr(claim, "currency", None) or ""
+        tolerance = money_quantum(currency) / 2
+        label = line.code or line.description or str(line.id)
+        if prior + period < -tolerance:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "error": "claim_line_below_zero_to_date",
+                    "code": "claim_line_below_zero_to_date",
+                    "field": "period_completed_value",
+                    "params": {"line": label, "previous": sentence_amount(prior, currency)},
+                    "message": (
+                        f"Line {label}: this period takes back more than the earlier claims billed "
+                        f"({sentence_amount(prior, currency)}), so work to date would be below zero."
+                    ),
+                },
+            )
+        to_date = prior + period + stored
+        if to_date - scheduled > tolerance:
+            remaining = max(scheduled - prior, DEC_ZERO)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "error": "claim_line_exceeds_scheduled_value",
+                    "code": "claim_line_exceeds_scheduled_value",
+                    "field": "period_completed_value"
+                    if period > DEC_ZERO or stored == DEC_ZERO
+                    else "materials_stored_value",
+                    "params": {
+                        "line": label,
+                        "to_date": sentence_amount(to_date, currency),
+                        "scheduled": sentence_amount(scheduled, currency),
+                        "remaining": sentence_amount(remaining, currency),
+                    },
+                    "message": (
+                        f"Line {label}: work and stored materials to date would come to "
+                        f"{sentence_amount(to_date, currency)}, more than its scheduled value of "
+                        f"{sentence_amount(scheduled, currency)}. At most "
+                        f"{sentence_amount(remaining, currency)} is left to bill on it."
+                    ),
+                },
+            )
 
     async def claim_line_value_from_percent(
         self,
@@ -5845,7 +6337,7 @@ class ContractsService:
 
         net = contract_retention_basis(None, None)
         project = await self.session.get(Project, contract.project_id)
-        country = getattr(project, "country_code", None)
+        country = project_country_code(project) or None
         if not country_measures_retention_gross(country):
             return net, RETENTION_BASIS_REASON_COUNTRY
         metadata = contract.metadata_ if isinstance(contract.metadata_, dict) else {}
@@ -7431,7 +7923,7 @@ class ContractsService:
 
         contract = contract or await self.get_contract(claim.contract_id)
         project = await self.session.get(Project, contract.project_id)
-        country = normalise_country(getattr(project, "country_code", None)) or ""
+        country = project_country_code(project)
         currency = claim.currency or contract.currency or getattr(project, "currency", "") or ""
         flavour = "unit_price" if is_measured_contract(contract) else "lump_sum"
 
@@ -8871,24 +9363,13 @@ class ContractsService:
                 "code": code,
                 "name": builtin["name"],
                 "family": builtin["family"],
-                "description": "",
                 "retention_release_event": builtin["retention_release_event"],
                 "source": "builtin",
                 "editable": False,
                 "version": 0,
                 "status": "published",
-                "clauses": [
-                    {
-                        "number": number,
-                        "title": title,
-                        "body": "",
-                        "sort_order": index,
-                        "risk_level": "none",
-                        "risk_note": "",
-                        "is_optional": False,
-                    }
-                    for index, (number, title) in enumerate(builtin["key_clauses"].items())
-                ],
+                **builtin_template_profile(builtin),
+                "clauses": builtin_clause_rows(builtin),
                 "clause_count": len(builtin["key_clauses"]),
             }
 
@@ -8926,8 +9407,8 @@ class ContractsService:
                     "status": "published",
                     "name": builtin["name"],
                     "family": builtin["family"],
-                    "description": "",
                     "retention_release_event": builtin["retention_release_event"],
+                    **builtin_template_profile(builtin),
                     "clause_count": builtin["clause_count"],
                     "source": "builtin",
                     "editable": False,
@@ -8999,18 +9480,20 @@ class ContractsService:
             lineage_id=new_id,
             name=new_name or f"{builtin['name']} (adapted)",
             family=builtin["family"],
-            description="",
+            description=builtin_template_profile(builtin)["description"],
             retention_release_event=builtin["retention_release_event"],
             status="draft",
             derived_from_builtin=builtin_code,
             created_by=user_id,
         )
         await self.template_repo.create(template)
+        # A form standard ships headings only; a library template ships its
+        # own default wording too, and the fork starts from whichever it has.
         clauses = await self._write_clauses(
             template.id,
             [
-                {"number": number, "title": title, "sort_order": index}
-                for index, (number, title) in enumerate(builtin["key_clauses"].items())
+                {"number": row["number"], "title": row["title"], "body": row["body"], "sort_order": row["sort_order"]}
+                for row in builtin_clause_rows(builtin)
             ],
         )
         return _template_to_dict(template, clauses)
@@ -9654,6 +10137,9 @@ CONTRACT_CLAUSE_TEMPLATES: dict[str, dict[str, Any]] = {
     "aia_a102_2017": {
         "name": "AIA A102-2017 - Owner & Contractor (Cost-Plus, GMP)",
         "family": "aia",
+        "country_code": "US",
+        # Cost of the work plus a fee, with a guaranteed maximum price.
+        "contract_types": ["gmp", "cost_plus"],
         "key_clauses": {
             "5": "Compensation",
             "5.2": "GMP",
@@ -9665,6 +10151,8 @@ CONTRACT_CLAUSE_TEMPLATES: dict[str, dict[str, Any]] = {
     "consensusdocs_200": {
         "name": "ConsensusDocs 200 - Standard Owner / Constructor (Lump Sum)",
         "family": "consensusdocs",
+        "country_code": "US",
+        "contract_types": ["lump_sum"],
         "key_clauses": {
             "9": "Payment",
             "8": "Schedule / Delay",
@@ -9691,12 +10179,52 @@ CONTRACT_CLAUSE_TEMPLATES: dict[str, dict[str, Any]] = {
 }
 
 
+CONTRACT_CLAUSE_TEMPLATES.update(LIBRARY_TEMPLATES)
+
+#: Keys of a built-in entry that are clause content rather than catalogue fields.
+_TEMPLATE_CONTENT_KEYS = frozenset({"key_clauses", "clause_bodies"})
+
+
+def builtin_template_profile(body: dict[str, Any]) -> dict[str, Any]:
+    """What a built-in says about the contract drawn from it, with empty answers filled.
+
+    Every built-in answers every key, so a caller never branches on a missing
+    one: a form standard with no market, types or default terms answers
+    ``None``, ``[]`` and ``{}``.
+    """
+    return {
+        "description": str(body.get("description") or ""),
+        "country_code": body.get("country_code"),
+        "contract_types": list(body.get("contract_types") or []),
+        "default_terms": dict(body.get("default_terms") or {}),
+        "advance_tiers": [list(row) for row in body.get("advance_tiers") or []],
+    }
+
+
+def builtin_clause_rows(body: dict[str, Any]) -> list[dict[str, Any]]:
+    """A built-in's clauses in the shape authored clauses are returned in."""
+    bodies = body.get("clause_bodies") or {}
+    return [
+        {
+            "number": number,
+            "title": title,
+            "body": str(bodies.get(number) or ""),
+            "sort_order": index,
+            "risk_level": "none",
+            "risk_note": "",
+            "is_optional": False,
+        }
+        for index, (number, title) in enumerate(body["key_clauses"].items())
+    ]
+
+
 def list_contract_templates() -> list[dict[str, Any]]:
     """Pure: list every clause template available for selection."""
     return [
         {
             "code": code,
-            **{k: v for k, v in body.items() if k != "key_clauses"},
+            **{k: v for k, v in body.items() if k not in _TEMPLATE_CONTENT_KEYS},
+            **builtin_template_profile(body),
             "clause_count": len(body["key_clauses"]),
         }
         for code, body in CONTRACT_CLAUSE_TEMPLATES.items()
@@ -9708,7 +10236,32 @@ def get_contract_template(template_code: str) -> dict[str, Any]:
     if template_code not in CONTRACT_CLAUSE_TEMPLATES:
         raise KeyError(f"Unknown contract clause template: {template_code}")
     body = CONTRACT_CLAUSE_TEMPLATES[template_code]
-    return {"code": template_code, **body}
+    return {"code": template_code, **body, "clause_count": len(body["key_clauses"])}
+
+
+def builtin_template_default_terms(
+    template_code: str | None,
+    contract_type: str,
+    contract_value: Any = None,
+) -> dict[str, Any]:
+    """The terms a built-in template fills in for a new contract of ``contract_type``.
+
+    Empty for an authored template, an unknown code, or a contract type the
+    template is not written for, because a Vietnamese unit-price clause set
+    says nothing about a lump-sum contract. Where the template states a
+    minimum advance by contract value, the advance for ``contract_value`` is
+    included.
+    """
+    if not template_code or template_code not in CONTRACT_CLAUSE_TEMPLATES:
+        return {}
+    profile = builtin_template_profile(CONTRACT_CLAUSE_TEMPLATES[template_code])
+    if profile["contract_types"] and contract_type not in profile["contract_types"]:
+        return {}
+    terms = dict(profile["default_terms"])
+    advance = minimum_advance_percent(profile["advance_tiers"], contract_value)
+    if advance is not None:
+        terms.setdefault("advance_payment_percent", advance)
+    return terms
 
 
 # ── Authored clause templates ────────────────────────────────────────────

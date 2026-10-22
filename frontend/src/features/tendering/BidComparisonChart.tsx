@@ -28,15 +28,78 @@ interface BidComparisonChartProps {
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
 
-const CHART_PADDING_TOP = 40;
+const CHART_PADDING_TOP = 64;
 const CHART_PADDING_BOTTOM = 80;
 const CHART_PADDING_LEFT = 80;
 const CHART_PADDING_RIGHT = 24;
 const BAR_GAP_RATIO = 0.3;
-const MIN_CHART_HEIGHT = 300;
+const MIN_CHART_HEIGHT = 330;
 // The bottom strip the legend used to be drawn in, inside the SVG.
 const LEGEND_STRIP = 20;
 const TICK_COUNT = 5;
+// A bar is never drawn thinner than this, so the cheapest bid stays visible
+// beside bids a hundred times its size; its figure is printed above it anyway.
+const MIN_BAR_PX = 6;
+// Roughly the width of one character of the 11px axis label.
+const LABEL_CHAR_PX = 6.5;
+
+const LOWEST_COLOR = 'var(--oe-success, #15803d)';
+// Orange rather than red: red against green is the pair a red-green colour
+// blind reader cannot tell apart, and every bar also carries its label.
+const HIGHEST_COLOR = 'var(--oe-warning-strong, #c2410c)';
+const OTHER_COLOR = 'var(--color-oe-blue, #3b82f6)';
+
+export interface BarLabel {
+  /** The name as shown, made unique when two bids carry the same one. */
+  full: string;
+  /** Up to two lines that fit under the bar. */
+  lines: string[];
+}
+
+/**
+ * Labels for the bars: whole words on up to two lines, never a bare prefix.
+ *
+ * Two bids from "Schuff Steel" used to read "Schuff Steel..." twice and could
+ * not be told apart. A name that occurs more than once is numbered, and a name
+ * too long for two lines keeps its end ("...Steel Pacific") rather than only
+ * its start, because the start is what same-company bids share. The full
+ * name is always in the tooltip.
+ */
+export function barLabels(names: string[], maxChars: number): BarLabel[] {
+  const width = Math.max(6, Math.floor(maxChars));
+  const seen = new Map<string, number>();
+  const counts = new Map<string, number>();
+  for (const n of names) counts.set(n.trim(), (counts.get(n.trim()) ?? 0) + 1);
+  return names.map((raw) => {
+    const name = raw.trim();
+    let full = name;
+    if ((counts.get(name) ?? 0) > 1) {
+      const index = (seen.get(name) ?? 0) + 1;
+      seen.set(name, index);
+      full = `${name} (${index})`;
+    }
+    const words = full.split(/\s+/).filter(Boolean);
+    const lines: string[] = [];
+    let current = '';
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (candidate.length <= width || !current) {
+        current = candidate;
+      } else {
+        lines.push(current);
+        current = word;
+      }
+    }
+    if (current) lines.push(current);
+    if (lines.length <= 2 && lines.every((l) => l.length <= width)) return { full, lines };
+    // Too long: the first line as it is, the second line the end of the name.
+    const head = lines[0] ?? '';
+    const first = head.length > width ? `${head.slice(0, width - 1)}\u2026` : head;
+    const rest = full.slice(first.endsWith('\u2026') ? width - 1 : head.length).trim();
+    const second = rest.length > width ? `\u2026${rest.slice(rest.length - (width - 1))}` : rest;
+    return { full, lines: second ? [first, second] : [first] };
+  });
+}
 
 function formatCompact(amount: number, currency: string): string {
   // currency may be "", which renders a clean number with no symbol rather
@@ -72,10 +135,10 @@ function getBarColor(
   highestTotal: number,
   bidCount: number,
 ): string {
-  if (bidCount <= 1) return 'var(--color-oe-blue, #3b82f6)';
-  if (total === lowestTotal) return 'var(--oe-success, #15803d)';
-  if (total === highestTotal) return 'var(--oe-error, #dc2626)';
-  return 'var(--color-oe-blue, #3b82f6)';
+  if (bidCount <= 1) return OTHER_COLOR;
+  if (total === lowestTotal) return LOWEST_COLOR;
+  if (total === highestTotal) return HIGHEST_COLOR;
+  return OTHER_COLOR;
 }
 
 function niceNum(range: number, round: boolean): number {
@@ -182,8 +245,12 @@ export function BidComparisonChart({
   const { lowestTotal, highestTotal, yAxis, chartArea, bars, budgetY } = useMemo(() => {
     const allValues = plottedBids.map((b) => b.total);
     // Only a complete bid can be the lowest: one that left lines unpriced is
-    // cheaper by exactly what it left out. NaN matches no bar.
-    const completeValues = plottedBids.filter((b) => unpricedLineCount(b) === 0).map((b) => b.total);
+    // cheaper by exactly what it left out. A negative total, which the server
+    // now refuses but an older bid may still carry, is a typing mistake and
+    // never the lowest price. NaN matches no bar.
+    const completeValues = plottedBids
+      .filter((b) => unpricedLineCount(b) === 0 && b.total >= 0)
+      .map((b) => b.total);
     const lowest = completeValues.length > 0 ? Math.min(...completeValues) : Number.NaN;
     const highest = allValues.length > 0 ? Math.max(...allValues) : 0;
 
@@ -202,13 +269,19 @@ export function BidComparisonChart({
     const barWidth = totalBarWidth * (1 - BAR_GAP_RATIO);
     const gapWidth = totalBarWidth * BAR_GAP_RATIO;
 
+    const labels = barLabels(
+      plottedBids.map((b) => b.company_name),
+      totalBarWidth / LABEL_CHAR_PX,
+    );
     const barsArr = plottedBids.map((bid, i) => {
-      const barHeight = yAx.max > 0 ? (bid.total / yAx.max) * area.height : 0;
+      const scaled = yAx.max > 0 ? (Math.max(bid.total, 0) / yAx.max) * area.height : 0;
+      const barHeight = Math.max(scaled, MIN_BAR_PX);
       return {
         x: area.x + i * totalBarWidth + gapWidth / 2,
-        y: area.y + area.height - Math.max(barHeight, 0),
+        y: area.y + area.height - barHeight,
         width: Math.max(barWidth, 0),
-        height: Math.max(barHeight, 0),
+        height: barHeight,
+        label: labels[i] ?? { full: bid.company_name, lines: [bid.company_name] },
         bid,
       };
     });
@@ -332,24 +405,49 @@ export function BidComparisonChart({
               plottedBids.length,
             );
             const isHovered = hoveredIndex === i;
+            const isLowest = plottedBids.length > 1 && bar.bid.total === lowestTotal;
+            const isHighest = plottedBids.length > 1 && !isLowest && bar.bid.total === highestTotal;
+            const rank = isLowest
+              ? t('tendering.lowest', 'Lowest')
+              : isHighest
+                ? t('tendering.highest', 'Highest')
+                : '';
+            const tooltipText = `${bar.label.full}: ${formatFull(bar.bid.total, bar.bid.currency)}`;
+            const tooltipWidth = Math.max(140, tooltipText.length * LABEL_CHAR_PX + 16);
             return (
               <g
                 key={bar.bid.bid_id}
                 onMouseEnter={() => setHoveredIndex(i)}
                 onMouseLeave={() => setHoveredIndex(null)}
                 className="cursor-pointer"
+                data-testid="bid-chart-bar"
               >
+                <title>{rank ? `${tooltipText} (${rank})` : tooltipText}</title>
                 {/* Bar */}
                 <rect
                   x={bar.x}
                   y={bar.y}
                   width={bar.width}
-                  height={Math.max(bar.height, 1)}
+                  height={bar.height}
                   rx={3}
                   fill={color}
-                  opacity={isHovered ? 1 : 0.85}
+                  stroke={isLowest ? 'var(--color-content-primary, #1f2937)' : 'none'}
+                  strokeWidth={isLowest ? 1.5 : 0}
+                  opacity={isHovered ? 1 : 0.9}
                   className="transition-opacity duration-150"
                 />
+
+                {/* Amount and rank above the bar, so neither depends on colour */}
+                <text
+                  x={bar.x + bar.width / 2}
+                  y={bar.y - 20}
+                  textAnchor="middle"
+                  className="text-[10px] font-semibold"
+                  fill="var(--color-content-primary, #1f2937)"
+                >
+                  {formatCompact(bar.bid.total, chartCurrency)}
+                  {rank ? ` \u00b7 ${rank}` : ''}
+                </text>
 
                 {/* Deviation label above bar */}
                 <text
@@ -369,26 +467,27 @@ export function BidComparisonChart({
                   {fmtPercent(bar.bid.deviation_pct)}
                 </text>
 
-                {/* Company name on X axis */}
-                <text
-                  x={bar.x + bar.width / 2}
-                  y={chartArea.y + chartArea.height + 16}
-                  textAnchor="middle"
-                  className="text-[11px] font-medium"
-                  fill="var(--color-content-primary, #1f2937)"
-                >
-                  {bar.bid.company_name.length > 14
-                    ? `${bar.bid.company_name.slice(0, 12)}...`
-                    : bar.bid.company_name}
-                </text>
+                {/* Company name on X axis, whole words on up to two lines */}
+                {bar.label.lines.map((line, li) => (
+                  <text
+                    key={li}
+                    x={bar.x + bar.width / 2}
+                    y={chartArea.y + chartArea.height + 16 + li * 13}
+                    textAnchor="middle"
+                    className="text-[11px] font-medium"
+                    fill="var(--color-content-primary, #1f2937)"
+                  >
+                    {line}
+                  </text>
+                ))}
 
                 {/* Hover tooltip */}
                 {isHovered && (
                   <g>
                     <rect
-                      x={bar.x + bar.width / 2 - 70}
-                      y={bar.y - 44}
-                      width={140}
+                      x={bar.x + bar.width / 2 - tooltipWidth / 2}
+                      y={bar.y - 58}
+                      width={tooltipWidth}
                       height={28}
                       rx={6}
                       fill="var(--color-surface-primary, #ffffff)"
@@ -398,12 +497,12 @@ export function BidComparisonChart({
                     />
                     <text
                       x={bar.x + bar.width / 2}
-                      y={bar.y - 26}
+                      y={bar.y - 40}
                       textAnchor="middle"
                       className="text-[11px] font-semibold"
                       fill="var(--color-content-primary, #1f2937)"
                     >
-                      {formatFull(bar.bid.total, bar.bid.currency)}
+                      {tooltipText}
                     </text>
                   </g>
                 )}
@@ -434,15 +533,15 @@ export function BidComparisonChart({
             {plottedBids.length > 1 && (
               <>
                 <span className="inline-flex items-center gap-1">
-                  <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: 'var(--oe-success, #15803d)' }} />
+                  <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: LOWEST_COLOR }} />
                   {t('tendering.lowest', 'Lowest')}
                 </span>
                 <span className="inline-flex items-center gap-1">
-                  <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: 'var(--oe-error, #dc2626)' }} />
+                  <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: HIGHEST_COLOR }} />
                   {t('tendering.highest', 'Highest')}
                 </span>
                 <span className="inline-flex items-center gap-1">
-                  <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: 'var(--color-oe-blue, #3b82f6)' }} />
+                  <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: OTHER_COLOR }} />
                   {t('tendering.other', 'Other')}
                 </span>
               </>

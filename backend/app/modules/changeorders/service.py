@@ -1271,9 +1271,16 @@ class ChangeOrderService:
         service layer so router shortcuts don't bypass it.
         """
         if order.submitted_by and str(order.submitted_by) == str(user_id):
+            # Coded so the screen can say it in the reader's language; the
+            # English sentence stays as the fallback for API clients.
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=(f"You cannot {action} a change order you submitted yourself (four-eyes principle)."),
+                detail={
+                    "code": f"change_order_self_{action}",
+                    "message": f"You cannot {action} a change order you submitted yourself (four-eyes principle).",
+                    "field": "submitted_by",
+                    "params": {"action": action},
+                },
             )
 
     async def _resolve_mirrored_amount(self, order: ChangeOrder) -> tuple[str, dict[str, Any] | None]:
@@ -2776,11 +2783,16 @@ class ChangeOrderService:
             if any(str(aid) == submitter_s for aid in approver_user_ids):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail=(
-                        "The change-order submitter cannot be an approver "
-                        "on their own chain (four-eyes principle). Remove "
-                        "the submitter from the approver list."
-                    ),
+                    detail={
+                        "code": "change_order_submitter_in_chain",
+                        "message": (
+                            "The change-order submitter cannot be an approver "
+                            "on their own chain (four-eyes principle). Remove "
+                            "the submitter from the approver list."
+                        ),
+                        "field": "approver_user_ids",
+                        "params": {},
+                    },
                 )
 
         rows: list[ChangeOrderApproval] = []

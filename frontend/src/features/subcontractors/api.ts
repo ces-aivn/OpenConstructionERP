@@ -11,6 +11,8 @@ import { apiGet, apiPost, apiPatch, apiDelete, isTruncated, type Page } from '@/
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
 export type PrequalStatus = 'pending' | 'approved' | 'suspended' | 'rejected';
+/** Insurance as the server judges it today, from the certificate register. */
+export type InsuranceState = 'valid' | 'expired' | 'revoked' | 'missing';
 export type AgreementStatus = 'draft' | 'active' | 'completed' | 'terminated';
 export type WorkPackageStatus = 'planned' | 'in_progress' | 'completed';
 export type PaymentApplicationStatus =
@@ -51,6 +53,8 @@ export interface Subcontractor {
   prequal_completed_at?: string | null;
   blocked_reason?: string | null;
   is_blocked?: boolean;
+  /** Null or absent where the route did not compute it. */
+  insurance_state?: InsuranceState | null;
   created_by?: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
@@ -247,6 +251,8 @@ export interface CreateSubcontractorPayload {
   website?: string;
   notes?: string;
   prequalification_status?: PrequalStatus;
+  /** Why the firm is approved while it holds no valid insurance; the server refuses the approval without it. */
+  prequal_override_reason?: string;
 }
 
 /* ── Subcontractors ────────────────────────────────────────────────────── */

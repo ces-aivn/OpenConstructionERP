@@ -212,6 +212,18 @@ export interface ProgressClaimLine {
   retention_to_date?: number | string | null;
   retention_stored_to_date?: number | string | null;
   retention_rate?: number | string | null;
+  /**
+   * The line's continuation-sheet row, worked out by the server from its
+   * schedule of values line: C scheduled value, D previous, G work and stored materials
+   * to date, G as a percent of C, and H balance to finish. Null when the
+   * server could not read the schedule line.
+   */
+  scheduled_value?: number | string | null;
+  /** G703 column D: what the claims before this one billed on the line. */
+  previous_value?: number | string | null;
+  total_completed_stored?: number | string | null;
+  percent_complete?: number | string | null;
+  balance_to_finish?: number | string | null;
   created_at: string;
   updated_at: string;
 }
@@ -340,6 +352,11 @@ export interface ContractCreatePayload {
   template_code?: string | null;
   terms?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
+  /**
+   * The bill of quantities the schedule of values is drawn from: one line per
+   * priced position, each linked to it. Left out, the schedule is entered later.
+   */
+  sov_boq_id?: string | null;
 }
 
 export type ContractUpdatePayload = Partial<Omit<ContractCreatePayload, 'project_id'>>;
@@ -660,6 +677,33 @@ export function listContractLines(contractId: string): Promise<ContractLine[]> {
   return safeGetList<ContractLine>(`/v1/contracts/contracts/${contractId}/lines`);
 }
 
+/** What drawing the schedule of values from a bill wrote. */
+export interface SovFromBoqResult {
+  lines: ContractLine[];
+  created: number;
+  /** Priced positions a schedule line already links to; skipped. */
+  already_linked: number;
+  /** The cost model's single lump-sum line, removed once real lines replace it. */
+  removed_placeholder: number;
+  sov_total: number | string;
+  contract_total_value: number | string;
+}
+
+/**
+ * Draw a draft contract's schedule of values from a bill of its project: one
+ * line per priced position, linked to it, so the contract can be billed from
+ * progress. Positions already linked are skipped.
+ */
+export function drawContractLinesFromBoq(
+  contractId: string,
+  data: { boq_id: string; position_ids?: string[] },
+): Promise<SovFromBoqResult> {
+  return apiPost<SovFromBoqResult>(
+    `/v1/contracts/contracts/${encodeURIComponent(contractId)}/lines/from-boq`,
+    data,
+  );
+}
+
 export function createContractLine(
   contractId: string,
   data: ContractLineCreatePayload,
@@ -811,6 +855,8 @@ export function createClaimLine(data: {
   period_completed_qty?: number;
   period_completed_value?: number;
   period_completed_pct?: number;
+  /** G703 column F: materials on site, not yet built in, as a period-end balance. */
+  materials_stored_value?: number;
 }): Promise<ProgressClaimLine> {
   return apiPost<ProgressClaimLine>('/v1/contracts/progress-claim-lines/', data);
 }
@@ -822,6 +868,7 @@ export function updateClaimLine(
     period_completed_value?: number;
     period_completed_pct?: number;
     cumulative_completed_value?: number;
+    materials_stored_value?: number;
   },
 ): Promise<ProgressClaimLine> {
   return apiPatch<ProgressClaimLine>(
@@ -1182,6 +1229,14 @@ export interface ClauseTemplate {
   status: TemplateStatus;
   derived_from_builtin?: string | null;
   template_id?: string | null;
+  /** The market a built-in is written for; null for a form standard with none, and for authored paper. */
+  country_code?: string | null;
+  /** The contract types a built-in fits, the first being the one to pre-select. Empty fits any. */
+  contract_types?: ContractType[];
+  /** Terms a built-in fills in where the author states none (advance, security, warranty...). */
+  default_terms?: Record<string, string | number | null>;
+  /** A minimum advance by contract value: `[upper bound or null, percent]` rows, first match wins. */
+  advance_tiers?: Array<[string | number | null, string | number]>;
 }
 
 export type TemplateStatus = 'draft' | 'published' | 'archived';
@@ -1357,7 +1412,10 @@ export interface ComplianceGateReport {
   status: 'passed' | 'warnings' | 'errors' | 'skipped';
   score: number | null;
   blocked: boolean;
-  counts: { errors: number; warnings: number; passed: number };
+  /** `evaluated` is how many rules actually ran; 0 means nothing was checked. */
+  counts: { errors: number; warnings: number; passed: number; evaluated?: number };
+  /** True when no rule ran at all, which is not a pass. */
+  nothing_checked?: boolean;
   errors: ComplianceViolation[];
   warnings: ComplianceViolation[];
 }
@@ -1370,7 +1428,10 @@ export interface ComplianceGateError {
   rule_sets: string[];
   status: 'passed' | 'warnings' | 'errors' | 'skipped';
   score: number | null;
-  counts: { errors: number; warnings: number; passed: number };
+  /** `evaluated` is how many rules actually ran; 0 means nothing was checked. */
+  counts: { errors: number; warnings: number; passed: number; evaluated?: number };
+  /** True when no rule ran at all, which is not a pass. */
+  nothing_checked?: boolean;
   errors: ComplianceViolation[];
   warnings: ComplianceViolation[];
 }

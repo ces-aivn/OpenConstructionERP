@@ -129,6 +129,12 @@ export function ProgressClaimLineTable({
               {t('contracts.line', { defaultValue: 'Line' })}
             </th>
             <th className="px-3 py-2 text-right">
+              {t('contracts.claim_col_scheduled', { defaultValue: 'Scheduled value' })}
+            </th>
+            <th className="px-3 py-2 text-right">
+              {t('contracts.claim_col_previous', { defaultValue: 'Previous' })}
+            </th>
+            <th className="px-3 py-2 text-right">
               {t('contracts.qty', { defaultValue: 'Qty' })}
             </th>
             <th className="px-3 py-2 text-right">
@@ -136,6 +142,15 @@ export function ProgressClaimLineTable({
             </th>
             <th className="px-3 py-2 text-right">
               {t('contracts.period_value', { defaultValue: 'Period value' })}
+            </th>
+            <th className="px-3 py-2 text-right">
+              {t('contracts.claim_col_stored', { defaultValue: 'Stored materials' })}
+            </th>
+            <th className="px-3 py-2 text-right">
+              {t('contracts.claim_col_to_date', { defaultValue: 'Completed and stored to date' })}
+            </th>
+            <th className="px-3 py-2 text-right">
+              {t('contracts.claim_col_balance', { defaultValue: 'Balance to finish' })}
             </th>
             {editable && <th className="px-3 py-2 text-right" />}
           </tr>
@@ -158,11 +173,12 @@ export function ProgressClaimLineTable({
               <ClaimLineAddRow
                 claimId={claimId}
                 pickable={pickable}
+                currency={currency}
                 onDone={() => setAdding(false)}
               />
             ) : (
               <tr>
-                <td colSpan={5} className="pt-2">
+                <td colSpan={COLUMN_COUNT + 1} className="pt-2">
                   <Button
                     size="sm"
                     variant="ghost"
@@ -178,25 +194,51 @@ export function ProgressClaimLineTable({
           </tfoot>
         )}
       </table>
+      {editable && (
+        <p className="mt-2 text-xs text-content-tertiary" data-testid="claim-lines-measured-note">
+          {t('contracts.claim_lines_measured_note', {
+            defaultValue:
+              'Each line is billed against its scheduled value: enter the percent complete to date or this period\'s value, plus materials stored on site. Work and stored materials to date cannot exceed the scheduled value.',
+          })}
+        </p>
+      )}
     </div>
   );
+}
+
+/** Data columns of the table, the action column aside. */
+const COLUMN_COUNT = 9;
+
+/** A money cell that shows a dash when the server sent nothing, never a made-up zero. */
+function MoneyCell({ value, currency }: { value: number | string | null | undefined; currency: string }) {
+  if (value === null || value === undefined || value === '') {
+    return <span className="text-content-tertiary">—</span>;
+  }
+  return <MoneyDisplay amount={toNum(value)} currency={currency || undefined} />;
+}
+
+function lineLabel(cl: ContractLine | undefined, fallbackId: string): string {
+  if (!cl) return fallbackId.slice(0, 8);
+  return [cl.code, cl.description].filter(Boolean).join(' — ') || fallbackId.slice(0, 8);
 }
 
 /**
  * Bill one schedule-of-values line on this claim, by hand.
  *
- * The percent and the money are both asked for because neither follows from
- * the other here: a line can be half done and billed at a rate agreed later.
- * What is billed to date and column D of the G703 are worked out by the
- * server from the claims before this one, so they are not on this form.
+ * The percent is to date; the server bills it over what earlier claims billed
+ * when no period value is typed. Stored materials are what is on site and not
+ * yet built in. The server refuses a line whose work and stored materials to
+ * date would exceed its scheduled value, so the amount is measured, not free.
  */
 function ClaimLineAddRow({
   claimId,
   pickable,
+  currency,
   onDone,
 }: {
   claimId: string;
   pickable: ContractLine[];
+  currency: string;
   onDone: () => void;
 }) {
   const { t } = useTranslation();
@@ -205,6 +247,8 @@ function ClaimLineAddRow({
   const [lineId, setLineId] = useState('');
   const [pct, setPct] = useState('');
   const [value, setValue] = useState('');
+  const [stored, setStored] = useState('');
+  const picked = pickable.find((cl) => cl.id === lineId);
 
   const createMut = useMutation({
     mutationFn: () =>
@@ -213,6 +257,7 @@ function ClaimLineAddRow({
         contract_line_id: lineId,
         period_completed_pct: Number(pct) || 0,
         period_completed_value: Number(value) || 0,
+        ...(Number(stored) > 0 ? { materials_stored_value: Number(stored) } : {}),
       }),
     onSuccess: () => {
       invalidateClaimAfterLineWrite(qc, claimId);
@@ -240,11 +285,15 @@ function ClaimLineAddRow({
           </option>
           {pickable.map((cl) => (
             <option key={cl.id} value={cl.id}>
-              {[cl.code, cl.description].filter(Boolean).join(' — ') || cl.id.slice(0, 8)}
+              {lineLabel(cl, cl.id)}
             </option>
           ))}
         </select>
       </td>
+      <td className="px-3 py-2 text-right text-content-secondary">
+        {picked ? <MoneyCell value={picked.total_value} currency={currency} /> : null}
+      </td>
+      <td className="px-3 py-2" />
       <td className="px-3 py-2" />
       <td className="px-3 py-2">
         <input
@@ -261,7 +310,6 @@ function ClaimLineAddRow({
       <td className="px-3 py-2">
         <input
           type="number"
-          min={0}
           step="0.01"
           value={value}
           onChange={(e) => setValue(e.target.value)}
@@ -269,6 +317,19 @@ function ClaimLineAddRow({
           aria-label={t('contracts.period_value', { defaultValue: 'Period value' })}
         />
       </td>
+      <td className="px-3 py-2">
+        <input
+          type="number"
+          min={0}
+          step="0.01"
+          value={stored}
+          onChange={(e) => setStored(e.target.value)}
+          className={inputCls}
+          aria-label={t('contracts.claim_col_stored', { defaultValue: 'Stored materials' })}
+        />
+      </td>
+      <td className="px-3 py-2" />
+      <td className="px-3 py-2" />
       <td className="px-3 py-2 text-right">
         <div className="flex justify-end gap-1">
           <Button
@@ -315,12 +376,14 @@ function ClaimLineRow({
   const [editing, setEditing] = useState(false);
   const [pct, setPct] = useState(String(toNum(line.period_completed_pct)));
   const [value, setValue] = useState(String(toNum(line.period_completed_value)));
+  const [stored, setStored] = useState(String(toNum(line.materials_stored_value)));
 
   const saveMut = useMutation({
     mutationFn: () =>
       updateClaimLine(line.id, {
         period_completed_pct: Number(pct) || 0,
         period_completed_value: Number(value) || 0,
+        materials_stored_value: Number(stored) || 0,
         // cumulative_completed_value is cumulative-to-date and is recomputed
         // server-side from prior non-rejected periods; the client must not
         // author it (sending the period value here corrupted earned-value and
@@ -343,13 +406,25 @@ function ClaimLineRow({
   const startEdit = () => {
     setPct(String(toNum(line.period_completed_pct)));
     setValue(String(toNum(line.period_completed_value)));
+    setStored(String(toNum(line.materials_stored_value)));
     setEditing(true);
   };
+
+  const contractLine = clMap.get(line.contract_line_id);
+  // The scheduled value is the server's continuation-sheet figure; a server
+  // from before it was sent falls back to the schedule line's own total.
+  const scheduled = line.scheduled_value ?? contractLine?.total_value ?? null;
 
   return (
     <tr className="border-t border-border-light hover:bg-surface-secondary">
       <td className="px-3 py-2 font-mono text-xs text-content-secondary">
-        {clMap.get(line.contract_line_id)?.description || clMap.get(line.contract_line_id)?.code || line.contract_line_id.slice(0, 8)}
+        {contractLine?.description || contractLine?.code || line.contract_line_id.slice(0, 8)}
+      </td>
+      <td className="px-3 py-2 text-right text-content-secondary">
+        <MoneyCell value={scheduled} currency={currency} />
+      </td>
+      <td className="px-3 py-2 text-right text-content-secondary">
+        <MoneyCell value={line.previous_value ?? line.prior_completed_value} currency={currency} />
       </td>
       <td className="px-3 py-2 text-right text-content-secondary">
         {toNum(line.period_completed_qty).toLocaleString(getIntlLocale())}
@@ -374,7 +449,6 @@ function ClaimLineRow({
         {editing ? (
           <input
             type="number"
-            min={0}
             step="0.01"
             value={value}
             onChange={(e) => setValue(e.target.value)}
@@ -387,6 +461,32 @@ function ClaimLineRow({
             currency={currency || undefined}
           />
         )}
+      </td>
+      <td className="px-3 py-2 text-right">
+        {editing ? (
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            value={stored}
+            onChange={(e) => setStored(e.target.value)}
+            className={inputCls}
+            aria-label={t('contracts.claim_col_stored', { defaultValue: 'Stored materials' })}
+          />
+        ) : (
+          <MoneyDisplay amount={toNum(line.materials_stored_value)} currency={currency || undefined} />
+        )}
+      </td>
+      <td className="px-3 py-2 text-right" data-testid={`claim-line-to-date-${line.id}`}>
+        <MoneyCell value={line.total_completed_stored} currency={currency} />
+        {line.percent_complete !== null && line.percent_complete !== undefined && (
+          <span className="ml-1 text-2xs text-content-tertiary">
+            ({fmtPercent(toNum(line.percent_complete), 2)})
+          </span>
+        )}
+      </td>
+      <td className="px-3 py-2 text-right text-content-secondary">
+        <MoneyCell value={line.balance_to_finish} currency={currency} />
       </td>
       {editable && (
         <td className="px-3 py-2 text-right">

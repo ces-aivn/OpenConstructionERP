@@ -145,6 +145,7 @@ export function ComplianceGate({
   const errors = report?.errors ?? [];
   const warnings = report?.warnings ?? [];
   const passedCount = report?.counts.passed ?? 0;
+  const nothingChecked = report ? complianceCheckedNothing(report) : false;
 
   const StatusBanner = () => {
     if (gateQ.isLoading) {
@@ -187,6 +188,32 @@ export function ComplianceGate({
                 defaultValue:
                   'Resolve the {{count}} blocking issue(s) below, then re-check to sign.',
                 count: errors.length,
+              })}
+            </p>
+          </div>
+        </div>
+      );
+    }
+    if (nothingChecked) {
+      // Zero rules ran. That is not a pass: the packs reach no rule, or the
+      // rules found nothing on this contract to look at, so nothing was
+      // verified. Signing is not blocked, but the screen must not say "passed".
+      return (
+        <div
+          className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-800 dark:bg-amber-950/40"
+          data-testid="compliance-nothing-checked"
+        >
+          <Info size={20} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <div>
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+              {t('contracts.compliance.nothing_checked_title', {
+                defaultValue: 'No compliance rules configured for this contract',
+              })}
+            </p>
+            <p className="mt-0.5 text-sm text-amber-700 dark:text-amber-400">
+              {t('contracts.compliance.nothing_checked_desc', {
+                defaultValue:
+                  'The active rule packs had nothing to check: no rule applies to this contract, or its schedule of values is empty. Signing is not blocked, but nothing has been verified - check the performance security, insurance and permits yourself.',
               })}
             </p>
           </div>
@@ -372,7 +399,7 @@ export function ComplianceGate({
         />
 
         {/* All clear — no findings at all */}
-        {report && errors.length === 0 && warnings.length === 0 && (
+        {report && !nothingChecked && errors.length === 0 && warnings.length === 0 && (
           <div className="flex items-center gap-2 rounded-lg border border-border-light px-4 py-6 text-sm text-content-secondary">
             <Info size={16} className="text-content-tertiary" />
             {t('contracts.compliance.no_findings', {
@@ -384,6 +411,21 @@ export function ComplianceGate({
       </div>
     </WideModal>
   );
+}
+
+/**
+ * Whether a compliance run checked nothing at all.
+ *
+ * The server says so in `nothing_checked`; an older server does not, and then
+ * a run with no result of any kind, or one it reports as skipped or
+ * unsupported, is read the same way. Either is "no rules", never "passed".
+ */
+export function complianceCheckedNothing(report: ComplianceGateReport): boolean {
+  if (typeof report.nothing_checked === 'boolean') return report.nothing_checked;
+  const status = String(report.status);
+  if (status === 'skipped' || status === 'unsupported') return true;
+  const { errors, warnings, passed } = report.counts;
+  return errors + warnings + passed === 0;
 }
 
 /**

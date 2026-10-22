@@ -1,0 +1,12 @@
+{
+  "common": {
+    "ok": "OK"
+  },
+  "pay_application": {
+    "amount_positive": {
+      "fail": "Payment application {claim} asks for nothing: its gross this period and its net due are both {amount}",
+      "suggestion": "Enter the work done this period on the schedule-of-values lines, or generate them from recorded progress, before submitting",
+      "suggestion_no_schedule": "The contract has no schedule of values yet. Add its lines on the contract (from the BOQ or by hand), record the work done against them, then generate the claim lines"
+    }
+  }
+}

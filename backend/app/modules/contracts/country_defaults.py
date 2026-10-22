@@ -331,6 +331,57 @@ COUNTRY_CONTRACT_DEFAULTS: dict[str, dict[str, Any]] = {
             "The contractor's application with its continuation sheet, certified by the architect.",
         ),
     },
+    # Vietnam. Construction contracts follow Nghị định 37/2015/NĐ-CP as amended
+    # by Nghị định 50/2021/NĐ-CP (and 35/2023/NĐ-CP for advances); the warranty
+    # money that Vietnamese contracts hold back is set by Nghị định
+    # 06/2021/NĐ-CP. The figures bind works funded by public capital and are the
+    # figures private contracts usually adopt.
+    "VN": {
+        "standard_form": "Nghị định 37/2015/NĐ-CP, sửa đổi bởi Nghị định 50/2021/NĐ-CP",
+        "retention_percent": _figure(
+            "5",
+            "statute",
+            "Nghị định 06/2021/NĐ-CP, Điều 28",
+            "The warranty money is at least five percent of the contract value (three percent on special-grade "
+            "and grade-I works) on publicly funded works; it is usually held back from each payment unless a "
+            "warranty bond replaces it.",
+        ),
+        "retention_cap_percent": _figure(
+            "5",
+            "industry_practice",
+            "Nghị định 06/2021/NĐ-CP, Điều 28",
+            "Withholding stops once the warranty money is reached, so the rate stops biting at the warranty "
+            "amount of the contract value.",
+        ),
+        "retention_release_split": _figure(
+            _split(("defects_period_end", "100")),
+            "statute",
+            "Nghị định 06/2021/NĐ-CP, Điều 28",
+            "The warranty money is paid back when the warranty period ends and the employer confirms the "
+            "warranty obligations are complete.",
+        ),
+        "payment_period_days": _figure(
+            14,
+            "statute",
+            "Nghị định 37/2015/NĐ-CP, Điều 19, khoản 10",
+            "Payment is due no later than fourteen working days after the employer receives a complete and "
+            "valid payment dossier; the contract may agree a shorter period.",
+        ),
+        "valuation_interval": _figure(
+            "monthly",
+            "industry_practice",
+            "Nghị định 37/2015/NĐ-CP, Điều 19",
+            "The contract states the payment stages; monthly valuation of completed work is the usual agreed "
+            "rhythm, with milestone payment common on lump-sum contracts.",
+        ),
+        "certificate_name": _figure(
+            "Hồ sơ đề nghị thanh toán",
+            "statute",
+            "Nghị định 37/2015/NĐ-CP, Điều 20",
+            "The payment dossier: the acceptance record of completed quantities and the statement of the value "
+            "claimed for the stage.",
+        ),
+    },
     "CA": {
         # Holdback is provincial law. This row is what a Canadian project with
         # no province recorded starts from, and it states the Ontario
@@ -1295,6 +1346,60 @@ def normalise_country(country_code: str | None) -> str:
     """Upper-case ISO code with the aliases this table knows folded in; ``""`` when blank."""
     code = (country_code or "").strip().upper()
     return COUNTRY_ALIASES.get(code, code)
+
+
+#: Three-letter codes a project's free-text region or address may carry.
+_ALPHA3_ALIASES: dict[str, str] = {"VNM": "VN", "USA": "US", "GBR": "GB"}
+
+#: Two-letter region tags that are not countries.
+_NON_COUNTRY_TAGS: frozenset[str] = frozenset({"EU", "UN"})
+
+
+def country_from_text(value: Any) -> str:
+    """The ISO 3166-1 alpha-2 code a free-text country names, or ``""``.
+
+    Reads what a person types into a region or address field: a code ("VN",
+    "us"), a three-letter code ("VNM") or a name in any spelling the shared
+    resolver knows ("Vietnam", "Viet Nam", "United States"). Multi-country
+    tags such as "DACH" or "EU" name no single country and answer ``""``, so a
+    coarse region is never mistaken for a market.
+    """
+    from app.core.country_resolver import resolve_country_code  # noqa: PLC0415
+
+    if not isinstance(value, str):
+        return ""
+    raw = value.strip()
+    if not raw:
+        return ""
+    upper = raw.upper()
+    if len(upper) == 2 and upper.isalpha():
+        return "" if upper in _NON_COUNTRY_TAGS else COUNTRY_ALIASES.get(upper, upper)
+    if upper in _ALPHA3_ALIASES:
+        return _ALPHA3_ALIASES[upper]
+    return resolve_country_code(raw) or ""
+
+
+def project_country_code(project: Any) -> str:
+    """The country a project is in, normalised, or ``""`` when it names none.
+
+    The recorded ``country_code`` wins. A project created without one but whose
+    address or region states a single country ("Vietnam") is in that country:
+    reading only the code told such a project it "names no country" and left
+    every default empty. The region default "DACH" spans three countries and so
+    resolves to nothing, which keeps a project that never chose a market
+    neutral.
+    """
+    if project is None:
+        return ""
+    recorded = normalise_country(getattr(project, "country_code", None))
+    if recorded:
+        return recorded
+    address = getattr(project, "address", None)
+    if isinstance(address, dict):
+        from_address = country_from_text(address.get("country")) or country_from_text(address.get("country_code"))
+        if from_address:
+            return from_address
+    return country_from_text(getattr(project, "region", None))
 
 
 def _pack_release_split(country: str) -> list[dict[str, str]] | None:

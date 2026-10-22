@@ -1,12 +1,14 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 /**
- * The award record (Vergabevermerk) for one tender package.
+ * The award record for one tender package.
  *
- * German public procurement asks the contracting authority to keep a written
- * record of the award procedure while the procedure runs, so a review body can
- * follow how the award was reached (VOB/A section 20 below the EU threshold,
- * VgV section 8 above it). Everything about the procedure is assembled by the
+ * A buyer keeps a written record of the award procedure while it runs, so
+ * whoever reviews it later can follow how the award was reached. Which rules
+ * it answers to follows the project's country, as the server reports it in
+ * `legal_framework`: Vietnam's Law on Bidding No. 22/2023/QH15, a private US
+ * procurement, the German Vergabevermerk, or no named rules. Only a German
+ * project is shown the German names. Everything about the procedure is assembled by the
  * server from what the procedure already recorded, so nothing here asks the
  * reader to retype a fact the system holds. What the screen collects is only
  * what a person has to say: which procedure type was chosen and why, the award
@@ -45,7 +47,7 @@ interface Props {
   packageId: string;
 }
 
-/** The procedure types a German buyer picks between, by their own names. */
+/** The procedure types a buyer picks between; each framework words them its own way. */
 const PROCEDURE_CHOICES = [
   'open',
   'restricted_with_competition',
@@ -54,7 +56,9 @@ const PROCEDURE_CHOICES = [
   'direct',
 ] as const;
 
-function useLabels() {
+type Framework = NonNullable<AwardRecord['legal_framework']>;
+
+function useLabels(framework: Framework) {
   const { t } = useTranslation();
 
   const section: Record<string, string> = {
@@ -113,9 +117,9 @@ function useLabels() {
     awarded_by: t('tendering.award_record.fact.awarded_by', { defaultValue: 'Awarded by' }),
   };
 
-  // The German names are the procedures' own names, kept beside the English so
-  // a buyer recognises what they are picking.
-  const procedure: Record<string, string> = {
+  // For a German project the German names are the procedures' own names, kept
+  // beside the English so a buyer recognises what they are picking.
+  const procedureDe: Record<string, string> = {
     open: t('tendering.award_record.procedure.open', {
       defaultValue: 'Open procedure (Öffentliche Ausschreibung)',
     }),
@@ -130,6 +134,48 @@ function useLabels() {
     }),
     direct: t('tendering.award_record.procedure.direct', {
       defaultValue: 'Direct award (Direktauftrag)',
+    }),
+  };
+  // Vietnam: the selection methods of the Law on Bidding No. 22/2023/QH15.
+  const procedureVn: Record<string, string> = {
+    open: t('tendering.award_record.procedure_vn.open', { defaultValue: 'Open bidding' }),
+    restricted_with_competition: t('tendering.award_record.procedure_vn.restricted_with_competition', {
+      defaultValue: 'Open bidding with prequalification',
+    }),
+    restricted: t('tendering.award_record.procedure_vn.restricted', { defaultValue: 'Restricted bidding' }),
+    negotiated: t('tendering.award_record.procedure_vn.negotiated', { defaultValue: 'Price negotiation' }),
+    direct: t('tendering.award_record.procedure_vn.direct', { defaultValue: 'Direct appointment of the contractor' }),
+  };
+  // A private procurement (the US, or a country with no named rules).
+  const procedurePlain: Record<string, string> = {
+    open: t('tendering.award_record.procedure_plain.open', { defaultValue: 'Open competitive bidding' }),
+    restricted_with_competition: t('tendering.award_record.procedure_plain.restricted_with_competition', {
+      defaultValue: 'Competitive bidding with prequalification',
+    }),
+    restricted: t('tendering.award_record.procedure_plain.restricted', {
+      defaultValue: 'Invited (selective) bidding',
+    }),
+    negotiated: t('tendering.award_record.procedure_plain.negotiated', { defaultValue: 'Negotiated contract' }),
+    direct: t('tendering.award_record.procedure_plain.direct', { defaultValue: 'Sole-source award' }),
+  };
+  const procedure = framework === 'de' ? procedureDe : framework === 'vn' ? procedureVn : procedurePlain;
+
+  const intro: Record<Framework, string> = {
+    de: t('tendering.award_record.intro', {
+      defaultValue:
+        'German public procurement asks the buyer to keep a written record of the award procedure while it runs, so that a review body can follow how the award was reached (Vergabevermerk, VOB/A section 20 and VgV section 8). This one is assembled from the procedure itself: the scope, the firms invited, the bids, the levelling and the award. Only the reasoning is yours to write.',
+    }),
+    vn: t('tendering.award_record.intro_vn', {
+      defaultValue:
+        'The record of the contractor selection, kept with reference to the Law on Bidding No. 22/2023/QH15 while the procedure runs, so the investor and any later review can follow how the award was reached. It is assembled from the procedure itself: the scope, the firms invited, the bids, the levelling and the award. Only the reasoning is yours to write.',
+    }),
+    us: t('tendering.award_record.intro_us', {
+      defaultValue:
+        'A record of how this private procurement was awarded, kept while it runs for the owner, the lender and any later audit. No statutory form applies. It is assembled from the procedure itself: the scope, the firms invited, the bids, the levelling and the award. Only the reasoning is yours to write.',
+    }),
+    neutral: t('tendering.award_record.intro_neutral', {
+      defaultValue:
+        'A written record of how this package was awarded, kept while the procedure runs so that anyone reviewing it later can follow the decision. It is assembled from the procedure itself: the scope, the firms invited, the bids, the levelling and the award. Only the reasoning is yours to write.',
     }),
   };
 
@@ -147,7 +193,7 @@ function useLabels() {
     withdrawn: t('tendering.award_record.state.withdrawn', { defaultValue: 'Withdrawn' }),
   };
 
-  return { section, fact, procedure, state };
+  return { section, fact, procedure, state, intro: intro[framework] };
 }
 
 /** Render one assembled fact as the value the reader sees. */
@@ -381,12 +427,11 @@ export function AwardRecordPanel({ packageId }: Props) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
-  const labels = useLabels();
-
   const recordQ = useQuery({
     queryKey: ['tendering-award-record', packageId],
     queryFn: () => getAwardRecord(packageId),
   });
+  const labels = useLabels(recordQ.data?.legal_framework ?? 'neutral');
 
   const saveMutation = useMutation({
     mutationFn: (body: { section: string; text: string; value?: string }) =>
@@ -454,10 +499,7 @@ export function AwardRecordPanel({ packageId }: Props) {
               {t('tendering.award_record.title', { defaultValue: 'Award record' })}
             </h4>
             <p className="mt-1 text-xs text-content-secondary">
-              {t('tendering.award_record.intro', {
-                defaultValue:
-                  'German public procurement asks the buyer to keep a written record of the award procedure while it runs, so that a review body can follow how the award was reached (Vergabevermerk, VOB/A section 20 and VgV section 8). This one is assembled from the procedure itself: the scope, the firms invited, the bids, the levelling and the award. Only the reasoning is yours to write.',
-              })}
+              {labels.intro}
             </p>
             {!record.started && (
               <p className="mt-1 text-xs text-content-tertiary">

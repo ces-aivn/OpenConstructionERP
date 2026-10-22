@@ -96,6 +96,10 @@ class SubcontractorCreate(SubcontractorBase):
         default="pending",
         pattern=r"^(pending|approved|suspended|rejected)$",
     )
+    # Required to approve a firm that holds no valid insurance, and kept on
+    # the audit trail and under ``metadata["prequal_approval_override"]``.
+    # Ignored for any other status.
+    prequal_override_reason: str | None = Field(default=None, max_length=2000)
 
 
 class SubcontractorUpdate(BaseModel):
@@ -119,6 +123,10 @@ class SubcontractorUpdate(BaseModel):
         default=None,
         pattern=r"^(pending|approved|suspended|rejected)$",
     )
+    # Required to approve a firm that holds no valid insurance, and kept on
+    # the audit trail and under ``metadata["prequal_approval_override"]``.
+    # Ignored for any other status.
+    prequal_override_reason: str | None = Field(default=None, max_length=2000)
     country: str | None = Field(default=None, max_length=2)
     address: dict[str, Any] | None = None
     website: str | None = Field(default=None, max_length=500)
@@ -154,6 +162,10 @@ class SubcontractorResponse(BaseModel):
     prequal_completed_at: datetime | None = None
     blocked_reason: str | None = None
     is_blocked: bool = False
+    # ``valid`` | ``expired`` | ``revoked`` | ``missing``, judged today from
+    # the certificate register (the vendor row's insurance date where the
+    # register holds no insurance row). Null where a route did not compute it.
+    insurance_state: str | None = None
     created_by: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_")
     created_at: datetime

@@ -6,7 +6,7 @@
  * Backed by /api/v1/tendering/ — see backend/app/modules/tendering/router.py
  */
 
-import { apiGet, apiPost, apiDelete } from '@/shared/lib/api';
+import { apiGet, apiPost, apiPut, apiDelete } from '@/shared/lib/api';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -164,13 +164,41 @@ export interface PackageScope {
   included_position_count: number;
   boq_position_count: number;
   sections: PackageScopeSection[];
+  /** The bill rows the package declares; empty when it declares none (the whole bill). */
+  position_ids?: string[];
+  /** The package's own budget, summed over the rows in scope. Decimal-as-string. */
+  budget_total?: string | number;
 }
 
 export function getPackageScope(packageId: string): Promise<PackageScope> {
   return apiGet<PackageScope>(`/v1/tendering/packages/${packageId}/scope`);
 }
 
-/* ── Award record (Vergabevermerk) ─────────────────────────────────────── */
+/** Picked scope: whole top-level rows and single rows (each with its descendants). */
+export interface PackageScopePick {
+  section_ids?: string[];
+  position_ids?: string[];
+}
+
+/** Re-draw the part of the bill a package covers; refused once it is awarded or closed. */
+export function setPackageScope(packageId: string, body: PackageScopePick): Promise<PackageScope> {
+  return apiPut<PackageScope>(`/v1/tendering/packages/${packageId}/scope`, body);
+}
+
+export interface CreatePackageFromBoqBody extends PackageScopePick {
+  project_id: string;
+  boq_id: string;
+  package_name: string;
+  package_description?: string;
+  deadline?: string | null;
+}
+
+/** Create a package over the picked part of a bill (nothing picked: the whole bill). */
+export function createPackageFromBoq<T = { id: string }>(body: CreatePackageFromBoqBody): Promise<T> {
+  return apiPost<T>('/v1/tendering/packages/from-boq/', body);
+}
+
+/* ── Award record ──────────────────────────────────────────────────────── */
 
 /** One fact the procedure itself recorded. `key` is a code, the label is ours. */
 export interface AwardRecordFact {
@@ -219,6 +247,10 @@ export interface AwardRecord {
   package_id: string;
   package_name: string;
   project_name: string;
+  /** ISO alpha-2 country of the project, when it names one. */
+  country_code?: string | null;
+  /** The procurement rules the record is worded against. */
+  legal_framework?: 'vn' | 'us' | 'de' | 'neutral';
   /** The package's lifecycle status, which is the stage the record stands at. */
   stage: string;
   currency: string;
@@ -259,6 +291,8 @@ export interface Recipient {
   status: string;
   sent_at: string | null;
   last_error: string | null;
+  /** Stable code for `last_error`: missing_email | missing_recipient_id | delivery_failed. */
+  last_error_code?: string | null;
   created_at: string;
 }
 
@@ -268,6 +302,7 @@ export interface DistributeResultEntry {
   email: string;
   status: 'sent' | 'failed' | 'skipped';
   detail: string;
+  code?: string;
 }
 
 export interface DistributeResponse {

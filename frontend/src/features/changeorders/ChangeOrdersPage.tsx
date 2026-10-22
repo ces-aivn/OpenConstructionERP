@@ -219,6 +219,11 @@ function getReasonLabels(t: (key: string, opts?: Record<string, unknown>) => str
     error: t('changeorders.reason_error', { defaultValue: 'Error/Omission' }),
     non_conformance: t('changeorders.reason_non_conformance', { defaultValue: 'Non-Conformance' }),
     value_engineering: t('changeorders.reason_value_engineering', { defaultValue: 'Value Engineering' }),
+    weather_force_majeure: t('changeorders.reason_weather_force_majeure', {
+      defaultValue: 'Weather / Force majeure',
+    }),
+    site_access_delay: t('changeorders.reason_site_access_delay', { defaultValue: 'Late site handover' }),
+    acceleration: t('changeorders.reason_acceleration', { defaultValue: 'Acceleration' }),
   };
 }
 
@@ -1615,6 +1620,10 @@ function DetailView({
     return !!active && active.decision === 'pending' && active.approver_user_id === currentUserId;
   }, [approvals, currentUserId, order?.current_approval_step]);
 
+  // The person who submitted the order may not decide it (four-eyes).
+  const isSubmitter =
+    !!currentUserId && !!order?.submitted_by && String(order.submitted_by) === currentUserId;
+
   // Resolve approver UUIDs to display names for the timeline. Best-effort:
   // if the directory is unavailable (no users.list permission) the timeline
   // falls back to the id snippet on its own.
@@ -1951,7 +1960,23 @@ function DetailView({
             {order.status === 'submitted' &&
               !order.current_approval_step &&
               approvals.length === 0 && (
-              canApprove ? (
+              canApprove && isSubmitter ? (
+                // Four-eyes: the server refuses a decision by the person who
+                // submitted the order, so the buttons are not offered to them.
+                <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-800 px-3 py-1.5">
+                  <CheckCircle2 size={14} className="text-amber-600 dark:text-amber-400" />
+                  <div className="text-xs">
+                    <p className="font-medium text-amber-900 dark:text-amber-200">
+                      {t('changeorders.pending_approval', { defaultValue: 'Awaiting approval' })}
+                    </p>
+                    <p className="text-amber-800 dark:text-amber-300">
+                      {t('changeorders.four_eyes_hint', {
+                        defaultValue: 'You submitted this change order, so another manager must approve or reject it.',
+                      })}
+                    </p>
+                  </div>
+                </div>
+              ) : canApprove ? (
                 <>
                   <Button variant="primary" size="sm" onClick={async () => {
                     const ok = await confirm({

@@ -227,6 +227,142 @@ def _scope_sections(positions: list, metadata: dict | None) -> dict:
     }
 
 
+def _coded_error(
+    http_status: int, code: str, message: str, *, field: str | None = None, **params: object
+) -> HTTPException:
+    """An HTTP refusal the client words itself: ``api_errors.<code>`` filled from ``params``.
+
+    ``message`` is the English fallback for callers that are not this app.
+    """
+    detail: dict[str, object] = {"code": code, "message": message, "params": dict(params)}
+    if field:
+        detail["field"] = field
+    return HTTPException(status_code=http_status, detail=detail)
+
+
+def _collect_scope(
+    positions: list,
+    section_ids: list[uuid.UUID] | list[str],
+    position_ids: list[uuid.UUID] | list[str],
+) -> tuple[list[str], list[str], list]:
+    """Gather the bill rows a package covers from the sections and rows picked.
+
+    Every top-level row (``parent_id`` is ``None``) is a section a caller can
+    pick whole; any row can be picked on its own, and a picked row brings every
+    descendant with it. Sections and rows are unioned. Nothing picked means the
+    whole bill. Ids that name nothing in this bill are refused rather than
+    packaged as an empty scope, which would read as a real package.
+
+    Returns:
+        ``(chosen_section_ids, chosen_position_ids, included_positions)``, the
+        included positions in bill order.
+
+    Raises:
+        HTTPException 422 ``scope_section_not_in_bill`` or
+        ``scope_position_not_in_bill``.
+    """
+    by_id = {str(p.id): p for p in positions}
+    top_level = [p for p in positions if getattr(p, "parent_id", None) is None]
+    wanted_sections = [str(v) for v in section_ids]
+    wanted_rows = [str(v) for v in position_ids]
+
+    top_ids = {str(p.id) for p in top_level}
+    if wanted_sections:
+        unknown = [sid for sid in wanted_sections if sid not in top_ids]
+        if unknown:
+            raise _coded_error(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "scope_section_not_in_bill",
+                "A chosen section is not a top-level row of this BOQ",
+                field="section_ids",
+                count=len(unknown),
+            )
+    if wanted_rows:
+        unknown = [pid for pid in wanted_rows if pid not in by_id]
+        if unknown:
+            raise _coded_error(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "scope_position_not_in_bill",
+                "A chosen position is not a row of this BOQ",
+                field="position_ids",
+                count=len(unknown),
+            )
+
+    roots = (
+        list(dict.fromkeys([*wanted_sections, *wanted_rows]))
+        if (wanted_sections or wanted_rows)
+        else [str(p.id) for p in top_level]
+    )
+
+    children_of: dict[str, list[str]] = {}
+    for p in positions:
+        parent = getattr(p, "parent_id", None)
+        if parent is not None:
+            children_of.setdefault(str(parent), []).append(str(p.id))
+
+    included: set[str] = set()
+    stack = list(roots)
+    while stack:
+        pid = stack.pop()
+        if pid in included:
+            continue
+        included.add(pid)
+        stack.extend(children_of.get(pid, []))
+
+    chosen_sections = list(dict.fromkeys(wanted_sections)) if (wanted_sections or wanted_rows) else roots
+    chosen_rows = list(dict.fromkeys(wanted_rows))
+    return chosen_sections, chosen_rows, [p for p in positions if str(p.id) in included]
+
+
+def _scope_budget(positions: list) -> Decimal:
+    """The budget of a set of bill rows: each row's total, else quantity x rate."""
+    total = Decimal("0")
+    for pos in positions:
+        qty = _to_decimal(getattr(pos, "quantity", "0"))
+        rate = _to_decimal(getattr(pos, "unit_rate", "0"))
+        row_total = getattr(pos, "total", None)
+        total += _to_decimal(row_total) if row_total else qty * rate
+    return total
+
+
+def _money_text(raw: object) -> str:
+    """A Decimal-as-string for a money value, ``"0"`` when it cannot be read."""
+    try:
+        d = Decimal(str(raw)) if raw is not None else Decimal("0")
+        return format(d if d.is_finite() else Decimal("0"), "f")
+    except (InvalidOperation, ValueError, TypeError):
+        return "0"
+
+
+def _line_item_template(included: list) -> list[dict]:
+    """The compact copy of the rows in scope that bids are pre-seeded from."""
+    return [
+        {
+            "position_id": str(p.id),
+            "description": getattr(p, "description", "") or "",
+            "unit": getattr(p, "unit", "") or "",
+            "quantity": _money_text(getattr(p, "quantity", "0")),
+            "unit_rate": _money_text(getattr(p, "unit_rate", "0")),
+            "total": _money_text(getattr(p, "total", "0")),
+        }
+        for p in included
+    ]
+
+
+def _with_scope(metadata: dict | None, chosen_sections: list[str], chosen_rows: list[str], included: list) -> dict:
+    """Return package metadata carrying exactly the given scope.
+
+    The demo installer's ``scope_position_ids`` is dropped: the reader unions
+    both shapes, so leaving the old list in place would widen the new scope.
+    """
+    meta = {k: v for k, v in (metadata or {}).items() if k != "scope_position_ids"}
+    meta["source_section_ids"] = chosen_sections
+    meta["source_position_ids"] = chosen_rows
+    meta["included_position_count"] = len(included)
+    meta["line_item_template"] = _line_item_template(included)
+    return meta
+
+
 async def _safe_publish(name: str, data: dict, source_module: str = "") -> None:
     try:
         event_bus.publish_detached(name, data, source_module=source_module)
@@ -257,6 +393,7 @@ from app.modules.tendering.schemas import (
     LevelingMatrixRow,
     PackageCreate,
     PackageScopeResponse,
+    PackageScopeUpdate,
     PackageUpdate,
     RecipientCreate,
     RecipientResponse,
@@ -350,71 +487,9 @@ class TenderingService:
                 detail=f"Could not load BOQ {data.boq_id}: not found",
             )
 
-        # Index positions by id for fast descendant lookup.
-        pos_by_id: dict[uuid.UUID, object] = {p.id: p for p in all_positions}
-
-        # Every top-level row is a unit of scope the caller can pick: a section
-        # with its lines, or a priced line sitting loose at the top of the bill.
-        # Only sections used to count, so a flat bill (no sections at all)
-        # became an empty package, and a loose line beside the sections was
-        # left out of a package that claimed to cover the whole bill.
-        section_positions = [p for p in all_positions if getattr(p, "parent_id", None) is None]
-
-        # Filter to the requested section_ids when the caller specified any.
-        if data.section_ids:
-            requested = set(data.section_ids)
-            section_positions = [p for p in section_positions if p.id in requested]
-            if not section_positions:
-                # A pick that matches no top-level row of this bill would make
-                # an empty package that reads as a real one.
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail="None of the chosen sections is a top-level row of this BOQ",
-                )
-
-        # Build set of chosen section IDs for the metadata record.
-        chosen_section_ids = [str(p.id) for p in section_positions]
-
-        # Recursively collect all descendants of the chosen sections.
-        # Build a parent->children index first so we traverse the tree once
-        # at O(n) rather than O(n*depth) with repeated linear scans.
-        children_of: dict[uuid.UUID | None, list[object]] = {}
-        for p in all_positions:
-            parent_key = getattr(p, "parent_id", None)
-            children_of.setdefault(parent_key, []).append(p)
-
-        included_ids: set[uuid.UUID] = set()
-
-        def _collect(pos_id: uuid.UUID) -> None:
-            included_ids.add(pos_id)
-            for child in children_of.get(pos_id, []):
-                _collect(child.id)
-
-        for sec in section_positions:
-            _collect(sec.id)
-
-        included = [pos_by_id[pid] for pid in included_ids if pid in pos_by_id]
-
-        # Build the compact line-item template (money as Decimal-as-string).
-        def _money_str(raw: object) -> str:
-            """Return a Decimal-as-string representation of a money value."""
-            try:
-                d = Decimal(str(raw)) if raw is not None else Decimal("0")
-                return format(d if d.is_finite() else Decimal("0"), "f")
-            except (InvalidOperation, ValueError, TypeError):
-                return "0"
-
-        line_item_template = [
-            {
-                "position_id": str(p.id),
-                "description": getattr(p, "description", "") or "",
-                "unit": getattr(p, "unit", "") or "",
-                "quantity": _money_str(getattr(p, "quantity", "0")),
-                "unit_rate": _money_str(getattr(p, "unit_rate", "0")),
-                "total": _money_str(getattr(p, "total", "0")),
-            }
-            for p in included
-        ]
+        chosen_section_ids, chosen_position_ids, included = _collect_scope(
+            list(all_positions), data.section_ids, data.position_ids
+        )
 
         # Infer project currency the same way apply_winner and _build_leveling do.
         from app.modules.projects.repository import ProjectRepository
@@ -423,13 +498,12 @@ class TenderingService:
         project_currency = (getattr(project, "currency", "") or "").strip().upper() if project is not None else ""
 
         # Build the metadata payload.
-        meta: dict = {
-            **data.metadata,
-            "source_boq_id": str(data.boq_id),
-            "source_section_ids": chosen_section_ids,
-            "included_position_count": len(included),
-            "line_item_template": line_item_template,
-        }
+        meta: dict = _with_scope(
+            {**data.metadata, "source_boq_id": str(data.boq_id)},
+            chosen_section_ids,
+            chosen_position_ids,
+            included,
+        )
         if project_currency:
             meta["currency"] = project_currency
 
@@ -510,7 +584,67 @@ class TenderingService:
         answer.covers_whole_bill = described["covers_whole_bill"]
         answer.included_position_count = described["included_position_count"]
         answer.sections = [PackageScopeSection(**section) for section in described["sections"]]
+        declared = _scope_position_ids(package.metadata_)
+        answer.position_ids = [str(p.id) for p in positions if str(p.id) in declared]
+        answer.budget_total = _round2_dec(_scope_budget(_positions_in_scope(positions, package.metadata_)))
         return answer
+
+    async def set_package_scope(self, package_id: uuid.UUID, data: "PackageScopeUpdate") -> "PackageScopeResponse":
+        """Re-draw the part of the bill a package covers.
+
+        A package raised over the whole bill compares every bid against the
+        whole bill's budget, so a steel package read -90 % against a bill that
+        also holds the earthworks and the services. Narrowing the scope here is
+        what puts the comparison, the levelling and the award record back on
+        the package's own lines.
+
+        Raises:
+            HTTPException 404: the package does not exist.
+            HTTPException 409 ``package_scope_locked``: the package is awarded
+                or closed, so its comparison is decided.
+            HTTPException 422 ``package_has_no_bill``: the package names no BOQ.
+            HTTPException 422 ``scope_*_not_in_bill``: a picked id is not in it.
+        """
+        package = await self.get_package(package_id)
+        if package.status in _BID_FIGURES_FROZEN_STATES:
+            raise _coded_error(
+                status.HTTP_409_CONFLICT,
+                "package_scope_locked",
+                f"Package is '{package.status}'; its scope can no longer change",
+                status=package.status,
+            )
+        if package.boq_id is None:
+            raise _coded_error(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "package_has_no_bill",
+                "The package names no BOQ to draw a scope from",
+                field="boq_id",
+            )
+
+        from app.modules.boq.service import BOQService
+
+        try:
+            boq_data = await BOQService(self.session).get_boq_with_positions(package.boq_id)
+        except HTTPException as exc:
+            raise _coded_error(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "package_bill_unreadable",
+                "The package's BOQ cannot be read",
+                field="boq_id",
+            ) from exc
+
+        chosen_sections, chosen_rows, included = _collect_scope(
+            list(boq_data.positions), data.section_ids, data.position_ids
+        )
+        meta = _with_scope(package.metadata_, chosen_sections, chosen_rows, included)
+        await self.repo.update_package_fields(package_id, metadata_=meta)
+        await _safe_publish(
+            "tendering.package.scope_changed",
+            {"package_id": str(package_id), "included_position_count": len(included)},
+            source_module="oe_tendering",
+        )
+        logger.info("Tender package scope set: %s (positions=%s)", package_id, len(included))
+        return await self.package_scope(package_id)
 
     async def get_package(self, package_id: uuid.UUID) -> TenderPackage:
         """Get a package by ID. Raises 404 if not found."""
@@ -1219,6 +1353,7 @@ class TenderingService:
             status=str(raw.get("status", "pending")),
             sent_at=raw.get("sent_at"),
             last_error=raw.get("last_error"),
+            last_error_code=raw.get("last_error_code") or (None if not raw.get("last_error") else "delivery_failed"),
             created_at=str(raw.get("created_at", "")),
         )
 
@@ -1363,6 +1498,7 @@ class TenderingService:
                 failed_count += 1
                 r["status"] = "failed"
                 r["last_error"] = "missing email"
+                r["last_error_code"] = "missing_email"
                 results.append(
                     DistributeResultEntry(
                         recipient_id=rid,
@@ -1370,6 +1506,7 @@ class TenderingService:
                         email="",
                         status="failed",
                         detail="missing email",
+                        code="missing_email",
                     )
                 )
                 continue
@@ -1379,6 +1516,7 @@ class TenderingService:
                 failed_count += 1
                 r["status"] = "failed"
                 r["last_error"] = "missing recipient id"
+                r["last_error_code"] = "missing_recipient_id"
                 results.append(
                     DistributeResultEntry(
                         recipient_id=rid,
@@ -1386,6 +1524,7 @@ class TenderingService:
                         email=to_email,
                         status="failed",
                         detail="missing recipient id",
+                        code="missing_recipient_id",
                     )
                 )
                 continue
@@ -1434,6 +1573,7 @@ class TenderingService:
                 r["status"] = "sent"
                 r["sent_at"] = now
                 r["last_error"] = None
+                r["last_error_code"] = None
                 results.append(
                     DistributeResultEntry(
                         recipient_id=rid,
@@ -1447,6 +1587,7 @@ class TenderingService:
                 failed_count += 1
                 r["status"] = "failed"
                 r["last_error"] = reason
+                r["last_error_code"] = "delivery_failed"
                 results.append(
                     DistributeResultEntry(
                         recipient_id=rid,
@@ -1454,6 +1595,7 @@ class TenderingService:
                         email=to_email,
                         status="failed",
                         detail=reason or "delivery failed",
+                        code="delivery_failed",
                     )
                 )
 
@@ -1648,6 +1790,16 @@ class TenderingService:
         name = getattr(project, "name", "") or ""
         currency = (getattr(project, "currency", "") or "").strip().upper()
         return name, currency
+
+    async def _project_country(self, package: TenderPackage) -> str | None:
+        """The ISO alpha-2 country of a package's project, or ``None`` when it names none."""
+        from app.modules.projects.repository import ProjectRepository
+        from app.modules.tendering.award_record import project_country_code
+
+        project = await ProjectRepository(self.session).get_by_id(package.project_id)
+        if project is None:
+            return None
+        return project_country_code(getattr(project, "country_code", None), getattr(project, "region", None))
 
     @staticmethod
     def _slug(value: str) -> str:
@@ -1861,11 +2013,12 @@ class TenderingService:
         unstated, which the record then names as a gap, rather than refusing the
         whole question.
         """
-        from app.modules.tendering.award_record import build_award_record
+        from app.modules.tendering.award_record import build_award_record, legal_framework_for
 
         package = await self.get_package(package_id)
         bids = await self.repo.list_bids_for_package(package_id)
         project_name, currency = await self._project_name_and_currency(package)
+        country_code = await self._project_country(package)
 
         described: dict = {}
         boq_name = ""
@@ -1914,6 +2067,8 @@ class TenderingService:
             package_id=package_id,
             package_name=package.name,
             project_name=project_name,
+            country_code=country_code,
+            legal_framework=legal_framework_for(country_code),
             **assembled,
         )
 

@@ -23,6 +23,7 @@ import clsx from 'clsx';
 import { CheckCircle2, ShieldAlert, Ban, Clock } from 'lucide-react';
 import { getAwardEligibility, type PrequalStatus } from './api';
 import { describeComplianceReasons } from './complianceReasons';
+import { prequalStatusLabel } from './prequalStatus';
 
 interface AwardEligibilityBannerProps {
   subcontractorId: string;
@@ -87,7 +88,7 @@ export function AwardEligibilityBanner({
     desc = t('subcontractors.award_gate_desc', {
       defaultValue:
         'Prequalification is {{status}}. Agreements cannot be activated and payments are held until it is cleared.',
-      status: prequalStatus,
+      status: prequalStatusLabel(t, prequalStatus),
     });
   } else if (!awardable) {
     // Server says not awardable for some other reason — surface it generically.

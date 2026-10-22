@@ -63,6 +63,7 @@ import {
 } from './ContractTemplatesPanel';
 import { ContractStatusPipeline } from './ContractStatusPipeline';
 import { SovLineLinkEditor, SovLineLinkSummary } from './SovLineLink';
+import { SovFromBoqAction, SovSourceSelect } from './SovFromBoq';
 import { AccountChooser, overrideReason } from '@/features/costmodel/AccountChooser';
 import { useHasPermission } from '@/shared/lib/permissionGates';
 import { ContractCodeRename } from './ContractCodeRename';
@@ -126,6 +127,18 @@ import {
   type ValuationInterval,
 } from './api';
 import { ContractPaymentTermsCard } from './ContractPaymentTermsEditor';
+import {
+  CounterpartyPicker,
+  TYPE_TERMS,
+  commercialTermsFor,
+  contractTermErrors,
+  missingRequiredTerms,
+  templateFits,
+  templatePrefill,
+  termErrorText,
+  termLabel,
+  type ContractTermKey,
+} from './ContractCreateTerms';
 import { HakedisTermsCard } from './hakedis';
 import {
   DefaultHint,
@@ -2461,6 +2474,17 @@ export function ContractDetailDrawer({
                 </Button>
               )}
             </p>
+            {/* The schedule is drawn from the bill while the contract is a
+                draft; a signed scope moves by variation instead. */}
+            {linesEditable && (
+              <div className="mb-2">
+                <SovFromBoqAction
+                  contractId={contractId}
+                  projectId={contract.project_id}
+                  onDrawn={() => invalidateSoV(qc, contractId)}
+                />
+              </div>
+            )}
             {linesQ.isLoading ? (
               <SkeletonTable rows={3} columns={4} />
             ) : (linesQ.data ?? []).length === 0 && !addingLine ? (
@@ -2863,6 +2887,9 @@ export function CreateContractModal({
     title: '',
     contract_type: 'lump_sum' as ContractType,
     counterparty_type: 'subcontractor' as CounterpartyType,
+    // The firm on the other side, by id, and the name it was picked under.
+    counterparty_id: '',
+    counterparty_name: '',
     total_value: '0',
     // The project's currency, not a guess. A contract seeded in the wrong one
     // carries it to every claim raised on it and on to the certificate, where
@@ -2872,6 +2899,9 @@ export function CreateContractModal({
     start_date: todayIso(),
     end_date: '',
     template_code: '',
+    // The bill the schedule of values is drawn from; empty means the lines are
+    // entered later on the contract.
+    sov_boq_id: '',
   });
 
   // Payment terms start from the usual figures of the project's country and
@@ -2930,6 +2960,44 @@ export function CreateContractModal({
   const pickableTemplates = (templatesQ.data ?? []).filter(
     (tpl) => tpl.status === 'published',
   );
+  const selectedTemplate = pickableTemplates.find((tpl) => tpl.code === form.template_code);
+
+  // The figures the contract's type needs (fee, cap, target, NTE) and the
+  // commercial terms its template carries. A template's figure shows as the
+  // starting value and, like a country default, is sent only once the person
+  // changes it: the server fills the rest from the same template.
+  const [typeTerms, setTypeTerms] = useState<Partial<Record<ContractTermKey, string>>>({});
+  const [typeTouched, setTypeTouched] = useState<ReadonlySet<ContractTermKey>>(() => new Set());
+  const [termErrors, setTermErrors] = useState<Record<string, string>>({});
+  const termPrefill = useMemo(
+    () => templatePrefill(selectedTemplate, form.contract_type, form.total_value),
+    [selectedTemplate, form.contract_type, form.total_value],
+  );
+  const typeTermValue = (key: ContractTermKey): string =>
+    typeTouched.has(key) ? (typeTerms[key] ?? '') : (termPrefill[key] ?? '');
+  const setTypeTerm = (key: ContractTermKey, value: string) => {
+    setTypeTerms((prev) => ({ ...prev, [key]: value }));
+    setTypeTouched((prev) => new Set(prev).add(key));
+    setTermErrors((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
+  const typeSpecs = TYPE_TERMS[form.contract_type] ?? [];
+  const commercialSpecs = commercialTermsFor(selectedTemplate, form.contract_type);
+  const chooseTemplate = (code: string) => {
+    const tpl = pickableTemplates.find((entry) => entry.code === code);
+    const types = tpl?.contract_types ?? [];
+    // A template written for other types moves the type to the one it is
+    // written for, so its clauses and its terms describe the same contract.
+    const nextType =
+      tpl && types.length > 0 && !templateFits(tpl, form.contract_type) ? types[0]! : form.contract_type;
+    setForm({ ...form, template_code: code, contract_type: nextType });
+    setTypeTouched(new Set());
+    setTermErrors({});
+  };
 
   const submit = async () => {
     if (!form.code.trim()) {
@@ -2953,17 +3021,39 @@ export function CreateContractModal({
       });
       return;
     }
+    const missing = missingRequiredTerms(form.contract_type, typeTermValue);
+    if (missing.length > 0) {
+      setTermErrors(
+        Object.fromEntries(missing.map((key) => [key, termErrorText(t, 'contract_term_required', key)])),
+      );
+      addToast({
+        type: 'error',
+        title: t('contracts.terms_error.toast', {
+          defaultValue: 'Check the highlighted contract terms.',
+        }),
+      });
+      return;
+    }
+    const contractTerms: Record<string, string> = {};
+    for (const spec of [...typeSpecs, ...commercialSpecs]) {
+      const value = typeTermValue(spec.key).trim();
+      // A template figure left as shown is filled by the server; a typed one
+      // and every figure the type requires are sent.
+      if (value !== '' && (typeTouched.has(spec.key) || spec.required)) contractTerms[spec.key] = value;
+    }
     const payload: ContractCreatePayload = {
       project_id: projectId,
       code: form.code.trim(),
       title: form.title.trim(),
       contract_type: form.contract_type,
       counterparty_type: form.counterparty_type,
+      counterparty_id: form.counterparty_id || null,
       total_value: Number(form.total_value) || 0,
       currency: form.currency.trim().toUpperCase() || undefined,
       start_date: form.start_date || null,
       end_date: form.end_date || null,
       template_code: form.template_code || null,
+      ...(form.sov_boq_id ? { sov_boq_id: form.sov_boq_id } : {}),
     };
     const retention = termValue('retention_percent').trim();
     if (touched.has('retention_percent') && retention !== '') {
@@ -2990,6 +3080,7 @@ export function CreateContractModal({
     if (touched.has('certificate_name')) {
       payload.certificate_name = terms.certificate_name.trim() || null;
     }
+    if (Object.keys(contractTerms).length > 0) payload.terms = contractTerms;
     setBusy(true);
     try {
       await createContract(payload);
@@ -3000,11 +3091,67 @@ export function CreateContractModal({
       qc.invalidateQueries({ queryKey: ['contracts', 'list'] });
       onClose();
     } catch (err) {
-      addToast({ type: 'error', title: getErrorMessage(err) });
+      // A refusal about the type terms names its fields: mark them, and say
+      // so in the reader's language instead of the server's code.
+      const fieldErrors = contractTermErrors(err, t);
+      if (Object.keys(fieldErrors).length > 0) {
+        setTermErrors(fieldErrors);
+        addToast({
+          type: 'error',
+          title: t('contracts.terms_error.toast', {
+            defaultValue: 'Check the highlighted contract terms.',
+          }),
+        });
+      } else {
+        addToast({ type: 'error', title: getErrorMessage(err) });
+      }
     } finally {
       setBusy(false);
     }
   };
+
+  const termField = (spec: (typeof typeSpecs)[number]) => (
+    <WideModalField
+      key={spec.key}
+      label={termLabel(t, spec.key)}
+      required={spec.required}
+      error={termErrors[spec.key]}
+      hint={
+        !typeTouched.has(spec.key) && termPrefill[spec.key] !== undefined
+          ? t('contracts.term.from_template', { defaultValue: 'From the template' })
+          : undefined
+      }
+    >
+      {spec.kind === 'select' ? (
+        <select
+          value={typeTermValue(spec.key)}
+          onChange={(e) => setTypeTerm(spec.key, e.target.value)}
+          className={inputCls}
+          data-testid={`contract-term-${spec.key}`}
+        >
+          <option value="">{t('contracts.payment_terms.not_stated', { defaultValue: 'Not stated' })}</option>
+          <option value="fixed">
+            {t('contracts.term.price_basis_fixed', { defaultValue: 'Fixed unit price' })}
+          </option>
+          <option value="adjustable">
+            {t('contracts.term.price_basis_adjustable', { defaultValue: 'Adjustable unit price' })}
+          </option>
+        </select>
+      ) : (
+        <input
+          type="number"
+          min={0}
+          max={spec.kind === 'percent' ? 100 : undefined}
+          step={spec.kind === 'months' ? 1 : 'any'}
+          value={typeTermValue(spec.key)}
+          onChange={(e) => setTypeTerm(spec.key, e.target.value)}
+          onFocus={(e) => e.currentTarget.select()}
+          className={inputCls}
+          data-testid={`contract-term-${spec.key}`}
+        />
+      )}
+    </WideModalField>
+  );
 
   return (
     <WideModal
@@ -3056,10 +3203,12 @@ export function CreateContractModal({
         <WideModalField label={t('contracts.type', { defaultValue: 'Type' })}>
           <select
             value={form.contract_type}
-            onChange={(e) =>
-              setForm({ ...form, contract_type: e.target.value as ContractType })
-            }
+            onChange={(e) => {
+              setForm({ ...form, contract_type: e.target.value as ContractType });
+              setTermErrors({});
+            }}
             className={inputCls}
+            data-testid="contract-type"
           >
             {CONTRACT_TYPES.map((tp) => (
               <option key={tp} value={tp}>
@@ -3071,7 +3220,7 @@ export function CreateContractModal({
           </select>
         </WideModalField>
         <WideModalField
-          label={t('contracts.counterparty', { defaultValue: 'Counterparty' })}
+          label={t('contracts.counterparty_role', { defaultValue: 'Counterparty role' })}
         >
           <select
             value={form.counterparty_type}
@@ -3079,6 +3228,9 @@ export function CreateContractModal({
               setForm({
                 ...form,
                 counterparty_type: e.target.value as CounterpartyType,
+                // A firm picked as a subcontractor is not a client contact.
+                counterparty_id: '',
+                counterparty_name: '',
               })
             }
             className={inputCls}
@@ -3094,6 +3246,18 @@ export function CreateContractModal({
           </select>
         </WideModalField>
         <WideModalField
+          label={t('contracts.counterparty_name', { defaultValue: 'Counterparty (company)' })}
+          span={2}
+        >
+          <CounterpartyPicker
+            type={form.counterparty_type}
+            value={form.counterparty_id}
+            displayName={form.counterparty_name}
+            onChange={(id, name) => setForm({ ...form, counterparty_id: id, counterparty_name: name })}
+            className={inputCls}
+          />
+        </WideModalField>
+        <WideModalField
           label={t('contracts.tpl_drawn_from', {
             defaultValue: 'Drawn from clause template',
           })}
@@ -3105,8 +3269,9 @@ export function CreateContractModal({
         >
           <select
             value={form.template_code}
-            onChange={(e) => setForm({ ...form, template_code: e.target.value })}
+            onChange={(e) => chooseTemplate(e.target.value)}
             className={inputCls}
+            data-testid="contract-template"
           >
             <option value="">
               {t('contracts.tpl_none', { defaultValue: 'No template' })}
@@ -3176,6 +3341,44 @@ export function CreateContractModal({
           ) : null}
         </WideModalField>
       </WideModalSection>
+
+      <WideModalSection
+        title={t('contracts.section_sov', { defaultValue: 'Schedule of values' })}
+        columns={1}
+      >
+        <WideModalField
+          label={t('contracts.sov_source', { defaultValue: 'Schedule of values' })}
+          hint={t('contracts.sov_source_hint', {
+            defaultValue:
+              'Drawn from a BOQ, the contract gets one line per priced position, linked to it, so each payment application is billed from progress against those lines. Leave the value at 0 to take the schedule total.',
+          })}
+        >
+          <SovSourceSelect
+            projectId={projectId}
+            value={form.sov_boq_id}
+            onChange={(boqId) => setForm({ ...form, sov_boq_id: boqId })}
+            className={inputCls}
+          />
+        </WideModalField>
+      </WideModalSection>
+
+      {typeSpecs.length > 0 && (
+        <WideModalSection
+          title={t('contracts.section_type_terms', { defaultValue: 'Terms of this contract type' })}
+          columns={2}
+        >
+          {typeSpecs.map(termField)}
+        </WideModalSection>
+      )}
+
+      {commercialSpecs.length > 0 && (
+        <WideModalSection
+          title={t('contracts.section_commercial_terms', { defaultValue: 'Advance, security and warranty' })}
+          columns={2}
+        >
+          {commercialSpecs.map(termField)}
+        </WideModalSection>
+      )}
 
       <WideModalSection
         title={t('contracts.payment_terms.section', { defaultValue: 'Payment terms' })}
@@ -3339,7 +3542,7 @@ export function CreateContractModal({
       </WideModalSection>
 
       <WideModalSection
-        title={t('contracts.section_schedule', { defaultValue: 'Schedule' })}
+        title={t('contracts.section_term', { defaultValue: 'Contract term' })}
         columns={2}
       >
         <WideModalField

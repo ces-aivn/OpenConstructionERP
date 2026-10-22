@@ -343,7 +343,10 @@ async def test_submitter_cannot_approve_their_own_order() -> None:
     with pytest.raises(HTTPException) as exc_info:
         await service.approve_order(order.id, user_id=submitter)
     assert exc_info.value.status_code == 403
-    assert "four-eyes" in exc_info.value.detail.lower()
+    # Coded, so the screen can say it in the reader's language.
+    assert exc_info.value.detail["code"] == "change_order_self_approve"
+    assert exc_info.value.detail["params"] == {"action": "approve"}
+    assert "four-eyes" in exc_info.value.detail["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -358,6 +361,21 @@ async def test_submitter_cannot_reject_their_own_order() -> None:
     with pytest.raises(HTTPException) as exc_info:
         await service.reject_order(order.id, user_id=submitter)
     assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["code"] == "change_order_self_reject"
+
+
+@pytest.mark.parametrize("reason", ["weather_force_majeure", "site_access_delay", "acceleration"])
+def test_delay_event_reasons_are_accepted(reason: str) -> None:
+    """Weather / force majeure, late site handover and acceleration are causes
+    a change order can be filed under, and each has a printed label."""
+    from app.modules.changeorders.intl import REASON_CATEGORY_LABELS
+    from app.modules.changeorders.pdf_translations import _LABELS
+    from app.modules.changeorders.schemas import ChangeOrderCreate
+
+    order = ChangeOrderCreate(project_id=uuid.uuid4(), title="Rain delay", reason_category=reason)
+    assert order.reason_category == reason
+    assert reason in REASON_CATEGORY_LABELS
+    assert reason in _LABELS["reason"]["en"]
 
 
 # ── BUG-352: items frozen outside draft ─────────────────────────────────────

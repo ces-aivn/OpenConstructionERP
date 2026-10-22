@@ -56,6 +56,17 @@ NO_NOTICE_PERIODS_ON_PURPOSE: dict[str, str] = {
         "fallback window and nothing on screen says the period is neutral rather than PPC2000's. "
         "PPC2000 does state timescales; adding them is a domain decision, not a wiring one."
     ),
+    **dict.fromkeys(
+        (
+            "vn_nd37_lump_sum",
+            "vn_nd37_fixed_unit_price",
+            "vn_nd37_adjustable_unit_price",
+            "vn_nd37_time_based",
+        ),
+        "No notice periods configured for Vietnamese construction contracts, so a record drawn from this "
+        "template is timed by the standard-neutral fallback window. Nghị định 37/2015/NĐ-CP leaves claim "
+        "notice periods largely to the contract, so the window is a fallback and not a derivation.",
+    ),
     "VOB_B": (
         "No notice periods configured, so a VOB/B record is timed by the standard-neutral "
         "fallback window while carrying its own clause reference. VOB/B Section 6(1) states the "

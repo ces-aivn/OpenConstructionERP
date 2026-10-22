@@ -625,10 +625,14 @@ def _service_with(package: SimpleNamespace, *, bids: list | None = None, writes_
     async def _project_name_and_currency(_package: object) -> tuple[str, str]:
         return "Neubau Halle 3", "EUR"
 
+    async def _project_country(_package: object) -> str | None:
+        return "DE"
+
     service.repo = _Repo()
     service.session = SimpleNamespace()
     service.get_package = _get_package
     service._project_name_and_currency = _project_name_and_currency
+    service._project_country = _project_country
     return service
 
 
