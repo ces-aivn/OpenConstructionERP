@@ -17,15 +17,13 @@ export interface ProjectLanguageOption {
  * language is answered by a backend locale file as well, which is what a
  * project language needs on the server side.
  *
- * Regional variants (en-GB, es-MX, pt-BR and the rest) stay out: their bundles
- * hold only the words a region says differently and fall back to the base
- * language for everything else, and the backend has no locale file for them.
+ * The backend ships one English locale, `en`, and it is US English, so the
+ * `en-US` interface option maps onto it. Other regional variants (en-GB, es-MX,
+ * pt-BR and the rest) stay out: the backend has no locale file for them.
  */
 export const PROJECT_LANGUAGES: ProjectLanguageOption[] = SUPPORTED_LANGUAGES.filter(
-  (l) => !l.code.includes('-'),
+  (l) => !l.code.includes('-') || l.code === 'en-US',
 ).map((l) => ({
-  value: l.code,
-  // The picker names the base entry "English (International)" to tell it apart
-  // from the two regional ones, which do not appear here.
-  label: l.code === 'en' ? 'English' : l.name,
+  value: l.code === 'en-US' ? 'en' : l.code,
+  label: l.name,
 }));

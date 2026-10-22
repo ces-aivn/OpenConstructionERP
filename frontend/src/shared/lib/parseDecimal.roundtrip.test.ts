@@ -36,7 +36,8 @@ describe('locale round trip', () => {
   it('measures every language the product offers, counted from the source', () => {
     // The denominator, printed beside the verdict. A gate whose population
     // silently went to zero would otherwise pass by measuring nothing.
-    expect(LOCALES.length).toBeGreaterThan(30);
+    expect(LOCALES.length).toBeGreaterThan(0);
+    expect([...LOCALES].sort(), 'offered language set changed').toEqual(['en-US', 'vi']);
     expect(new Set(LOCALES).size).toBe(LOCALES.length);
     expect(AMOUNTS.length).toBeGreaterThan(0);
   });

@@ -18,8 +18,12 @@ for (const match of i18nSource.matchAll(/\{\s*code:\s*'([^']+)'[^}]*?country:\s*
 describe('CountryFlag', () => {
   it('found the language list', () => {
     // If the literal is reformatted the regex above stops matching, and a test
-    // that iterates an empty list passes while checking nothing.
-    expect(languages.length).toBeGreaterThan(25);
+    // that iterates an empty list passes while checking nothing. The build
+    // offers exactly Vietnamese and US English, so the list is pinned to them.
+    expect(languages).toEqual([
+      ['vi', 'vn'],
+      ['en-US', 'us'],
+    ]);
   });
 
   // Adding a language is two edits in two files, and forgetting the second one

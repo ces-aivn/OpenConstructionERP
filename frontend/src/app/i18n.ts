@@ -5,96 +5,13 @@ import { initReactI18next } from 'react-i18next';
 import { useTranslation as useI18nTranslation } from 'react-i18next';
 
 export const SUPPORTED_LANGUAGES = [
-  // Plain English names no region, and the two entries under it are how a
-  // reader says which one they mean rather than working out what unqualified
-  // `English` is. It used to fly a Union Jack over a `gb` country, which said
-  // British in the picker while `shared/lib/intlLocale.ts` said American in
-  // every date and price on screen. Both halves now say the same thing: the
-  // country is `xx`, this codebase's existing code for "not tied to a market"
-  // (`shared/lib/regionalPack.ts`, `features/onboarding/countryOffer.ts`), so
-  // no flag is claimed, `detectCountry` offers no pack off the back of a bare
-  // `en` browser, and `homeMarketForLanguage` steers nobody at the British
-  // cases who did not ask for Britain.
-  { code: 'en', name: 'English (International)', flag: '🌐', country: 'xx' },
-  // British and American English are regional variants of the entry above, in
-  // the same sense es-MX is one of es: the files under `locales/en-GB.ts` and
-  // `locales/en-US.ts` hold only the words that region names differently, and
-  // every other key is answered by `en.ts` through the fallback chain. The
-  // region subtag is upper case because that is how i18next normalises a
-  // two-part code, and the bundle has to be registered under the same spelling
-  // it looks up.
-  { code: 'en-GB', name: 'English (UK)', english: 'English (United Kingdom)', flag: '🇬🇧', country: 'gb' },
-  { code: 'en-US', name: 'English (US)', english: 'English (United States)', flag: '🇺🇸', country: 'us' },
-  { code: 'de', name: 'Deutsch', english: 'German', flag: '🇩🇪', country: 'de' },
-  { code: 'fr', name: 'Français', english: 'French', flag: '🇫🇷', country: 'fr' },
-  { code: 'es', name: 'Español', english: 'Spanish', flag: '🇪🇸', country: 'es' },
-  { code: 'es-MX', name: 'Español (México)', english: 'Spanish (Mexico)', flag: '🇲🇽', country: 'mx' },
-  { code: 'es-CL', name: 'Español (Chile)', english: 'Spanish (Chile)', flag: '🇨🇱', country: 'cl' },
-  { code: 'es-CO', name: 'Español (Colombia)', english: 'Spanish (Colombia)', flag: '🇨🇴', country: 'co' },
-  { code: 'pt', name: 'Português', english: 'Portuguese', flag: '🇵🇹', country: 'pt' },
-  { code: 'pt-BR', name: 'Português (Brasil)', english: 'Portuguese (Brazil)', flag: '🇧🇷', country: 'br' },
-  { code: 'ru', name: 'Русский', english: 'Russian', flag: '🇷🇺', country: 'ru' },
-  { code: 'zh', name: '简体中文', english: 'Chinese (Simplified)', flag: '🇨🇳', country: 'cn' },
-  { code: 'ar', name: 'العربية', english: 'Arabic', flag: '🇸🇦', country: 'sa', dir: 'rtl' },
-  { code: 'hi', name: 'हिन्दी', english: 'Hindi', flag: '🇮🇳', country: 'in' },
-  { code: 'tr', name: 'Türkçe', english: 'Turkish', flag: '🇹🇷', country: 'tr' },
-  { code: 'it', name: 'Italiano', english: 'Italian', flag: '🇮🇹', country: 'it' },
-  { code: 'nl', name: 'Nederlands', english: 'Dutch', flag: '🇳🇱', country: 'nl' },
-  { code: 'pl', name: 'Polski', english: 'Polish', flag: '🇵🇱', country: 'pl' },
-  { code: 'cs', name: 'Čeština', english: 'Czech', flag: '🇨🇿', country: 'cz' },
-  { code: 'ja', name: '日本語', english: 'Japanese', flag: '🇯🇵', country: 'jp' },
-  { code: 'ko', name: '한국어', english: 'Korean', flag: '🇰🇷', country: 'kr' },
-  { code: 'sv', name: 'Svenska', english: 'Swedish', flag: '🇸🇪', country: 'se' },
-  { code: 'no', name: 'Norsk', english: 'Norwegian', flag: '🇳🇴', country: 'no' },
-  { code: 'da', name: 'Dansk', english: 'Danish', flag: '🇩🇰', country: 'dk' },
-  { code: 'fi', name: 'Suomi', english: 'Finnish', flag: '🇫🇮', country: 'fi' },
-  { code: 'bg', name: 'Български', english: 'Bulgarian', flag: '🇧🇬', country: 'bg' },
-  { code: 'hr', name: 'Hrvatski', english: 'Croatian', flag: '🇭🇷', country: 'hr' },
-  // Hungarian was held back while its bundle measured 73.7% of values
-  // byte-identical to English, where `scripts/check_locale_english_placeholder.py`
-  // refuses anything above 10%. The rebuilt hu.ts measures 1.0%, and the two
-  // English nouns the byte comparison cannot see (takeoff and validation, kept
-  // as Hungarian nouns across some 470 values) were translated before it was
-  // offered. `backend/locales/hu.json` landed with it, as every language here
-  // is answered by one. Hungary was already a full market on the backend, so
-  // the market reads in its own language now rather than through an English
-  // menu.
-  { code: 'hu', name: 'Magyar', english: 'Hungarian', flag: '🇭🇺', country: 'hu' },
-  { code: 'id', name: 'Bahasa Indonesia', english: 'Indonesian', flag: '🇮🇩', country: 'id' },
-  { code: 'ro', name: 'Română', english: 'Romanian', flag: '🇷🇴', country: 'ro' },
-  { code: 'th', name: 'ไทย', english: 'Thai', flag: '🇹🇭', country: 'th' },
+  // This build is positioned for Vietnamese and US companies, so the picker
+  // offers exactly those two languages. Vietnamese comes first: it is the
+  // fallback `getLanguageByCode` answers with. `en.ts` stays bundled as the
+  // i18next fallback that `en-US.ts` overlays, but plain `en` is no longer
+  // offered; `matchSupportedLanguage` maps any English browser to `en-US`.
   { code: 'vi', name: 'Tiếng Việt', english: 'Vietnamese', flag: '🇻🇳', country: 'vn' },
-  // Mongolian is deliberately not offered: five invented roots passed every
-  // gate in mn.ts and the file needs a native-speaker pass before the
-  // language returns. The locale file stays on disk so the work resumes from
-  // where it stopped, but nothing loads it while it is off this list.
-  { code: 'ky', name: 'Кыргызча', english: 'Kyrgyz', flag: '🇰🇬', country: 'kg' },
-  { code: 'et', name: 'Eesti', english: 'Estonian', flag: '🇪🇪', country: 'ee' },
-  { code: 'bn', name: 'বাংলা', english: 'Bengali', flag: '🇧🇩', country: 'bd' },
-  { code: 'kk', name: 'Қазақша', english: 'Kazakh', flag: '🇰🇿', country: 'kz' },
-  { code: 'fil', name: 'Filipino', english: 'Filipino', flag: '🇵🇭', country: 'ph' },
-  { code: 'ur', name: 'اردو', english: 'Urdu', flag: '🇵🇰', country: 'pk', dir: 'rtl' },
-  { code: 'fa', name: 'فارسی', english: 'Persian', flag: '🇮🇷', country: 'ir', dir: 'rtl' },
-  { code: 'he', name: 'עברית', english: 'Hebrew', flag: '🇮🇱', country: 'il', dir: 'rtl' },
-  { code: 'el', name: 'Ελληνικά', english: 'Greek', flag: '🇬🇷', country: 'gr' },
-  // `uk` is the ISO 639-1 code for Ukrainian, and it is also the string this
-  // codebase already uses for the United Kingdom as a *region*: a BoQ preset
-  // region, a country-pack id, and the country map in CreateProjectPage all
-  // carry `uk` meaning Britain. The two live in different namespaces and must
-  // stay that way. Nothing may derive a UI language from a region code, or a
-  // British project would come up in Ukrainian.
-  { code: 'uk', name: 'Українська', english: 'Ukrainian', flag: '🇺🇦', country: 'ua' },
-  // Uzbek is written in Latin script: the Latin alphabet has been the official
-  // one since 1993 and is what public and construction documentation uses. The
-  // two modifier letters in the language's own name are U+02BB, not an
-  // apostrophe, and a straight quote there is a misspelling rather than a
-  // typographic preference.
-  //
-  // The *.insights.* and cases.* bands that had been left in English since
-  // 9ac55ac74 (2026-08-17) were closed on 2026-09-01, along with the rest of
-  // uz.ts that was still byte-identical to en.ts outside those bands. Offered
-  // below.
-  { code: 'uz', name: 'Oʻzbekcha', english: 'Uzbek', flag: '🇺🇿', country: 'uz' },
+  { code: 'en-US', name: 'English (US)', english: 'English (United States)', flag: '🇺🇸', country: 'us' },
 ];
 
 export function getLanguageByCode(code: string): (typeof SUPPORTED_LANGUAGES)[number] {
@@ -164,7 +81,9 @@ export function matchSupportedLanguage(raw: string | null | undefined): string |
     }
   }
   const base = parts[0]!.toLowerCase();
-  return SUPPORTED_LANGUAGES.some((l) => l.code === base) ? base : null;
+  if (SUPPORTED_LANGUAGES.some((l) => l.code === base)) return base;
+  // Every English variant (en, en-GB, en-AU, ...) reads in American English.
+  return base === 'en' ? 'en-US' : null;
 }
 
 /** The region subtag of one language tag, lower case, or null. Scans past the
@@ -505,7 +424,7 @@ export function resolveInitialLanguage(): string {
   if (browserMatch) return browserMatch;
 
   // 4. Final fallback.
-  return 'en';
+  return 'vi';
 }
 
 /**

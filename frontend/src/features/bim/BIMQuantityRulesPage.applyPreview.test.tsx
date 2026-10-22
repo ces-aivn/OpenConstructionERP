@@ -37,6 +37,7 @@ import { ApiError } from '@/shared/lib/api';
 import type { QuantityMapApplyResult } from './api';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useToastStore } from '@/stores/useToastStore';
+import { usePreferencesStore } from '@/stores/usePreferencesStore';
 
 const fingerprint = 'a'.repeat(64);
 const result: QuantityMapApplyResult = {
@@ -67,6 +68,11 @@ async function preview() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // An en-US browser defaults to imperial, and the imperial unit path throws
+  // on the rule fixtures below, which carry no unit. The preview flow is not
+  // about units, so the suite pins the metric system it was written against.
+  usePreferencesStore.getState().resetPreferences();
+  usePreferencesStore.getState().setPreference('measurementSystem', 'metric');
   useProjectContextStore.setState({ activeProjectId: 'p-1', activeProjectName: 'Villa' });
   useToastStore.setState({ toasts: [], history: [] });
   mocks.listQuantityMaps.mockResolvedValue({ items: [], total: 0 });

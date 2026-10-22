@@ -24,89 +24,13 @@ export interface OptionGroup {
 //
 // Kept verbatim to match the previous in-file constant; visual layout in
 // both forms relies on the exact label format ``CODE (symbol) — Name``.
+// VND and USD only in the VN/US build; "Custom..." still accepts any ISO code.
 export const CURRENCY_GROUPS: OptionGroup[] = [
   {
-    group: 'Europe',
+    group: 'Currencies',
     options: [
-      { value: 'EUR', label: 'EUR (€) - Euro' },
-      { value: 'GBP', label: 'GBP (£) - British Pound' },
-      { value: 'CHF', label: 'CHF (Fr.) - Swiss Franc' },
-      { value: 'SEK', label: 'SEK (kr) - Swedish Krona' },
-      { value: 'NOK', label: 'NOK (kr) - Norwegian Krone' },
-      { value: 'DKK', label: 'DKK (kr) - Danish Krone' },
-      { value: 'PLN', label: 'PLN (zł) - Polish Zloty' },
-      { value: 'CZK', label: 'CZK (Kč) - Czech Koruna' },
-      { value: 'TRY', label: 'TRY (₺) - Turkish Lira' },
-      { value: 'RUB', label: 'RUB (₽) - Russian Ruble' },
-      { value: 'UAH', label: 'UAH (₴) - Ukrainian Hryvnia' },
-      { value: 'HUF', label: 'HUF (Ft) - Hungarian Forint' },
-      { value: 'RON', label: 'RON (lei) - Romanian Leu' },
-      { value: 'ISK', label: 'ISK (kr) - Icelandic Krona' },
-    ],
-  },
-  {
-    group: 'Americas',
-    options: [
-      { value: 'USD', label: 'USD ($) - US Dollar' },
-      { value: 'CAD', label: 'CAD (C$) - Canadian Dollar' },
-      { value: 'BRL', label: 'BRL (R$) - Brazilian Real' },
-      { value: 'MXN', label: 'MXN (Mex$) - Mexican Peso' },
-      { value: 'ARS', label: 'ARS (AR$) - Argentine Peso' },
-      { value: 'CLP', label: 'CLP (CL$) - Chilean Peso' },
-      { value: 'PEN', label: 'PEN (S/) - Peruvian Sol' },
-      { value: 'COP', label: 'COP (COL$) - Colombian Peso' },
-    ],
-  },
-  {
-    group: 'Asia & Middle East',
-    options: [
-      { value: 'CNY', label: 'CNY (¥) - Chinese Yuan' },
-      { value: 'JPY', label: 'JPY (¥) - Japanese Yen' },
-      { value: 'KRW', label: 'KRW (₩) - South Korean Won' },
-      { value: 'INR', label: 'INR (₹) - Indian Rupee' },
-      { value: 'AED', label: 'AED (د.إ) - UAE Dirham' },
-      { value: 'SAR', label: 'SAR (﷼) - Saudi Riyal' },
-      { value: 'QAR', label: 'QAR (﷼) - Qatari Riyal' },
-      { value: 'BHD', label: 'BHD (BD) - Bahraini Dinar' },
-      { value: 'KWD', label: 'KWD (د.ك) - Kuwaiti Dinar' },
-      { value: 'OMR', label: 'OMR (ر.ع.) - Omani Rial' },
-      { value: 'SGD', label: 'SGD (S$) - Singapore Dollar' },
-      { value: 'MYR', label: 'MYR (RM) - Malaysian Ringgit' },
-      { value: 'THB', label: 'THB (฿) - Thai Baht' },
-      { value: 'IDR', label: 'IDR (Rp) - Indonesian Rupiah' },
-      { value: 'PHP', label: 'PHP (₱) - Philippine Peso' },
       { value: 'VND', label: 'VND (₫) - Vietnamese Dong' },
-      { value: 'HKD', label: 'HKD (HK$) - Hong Kong Dollar' },
-      { value: 'TWD', label: 'TWD (NT$) - Taiwan Dollar' },
-      { value: 'ILS', label: 'ILS (₪) - Israeli Shekel' },
-      { value: 'JOD', label: 'JOD (JD) - Jordanian Dinar' },
-      { value: 'LBP', label: 'LBP (ل.ل) - Lebanese Pound' },
-      { value: 'PKR', label: 'PKR (₨) - Pakistani Rupee' },
-      { value: 'BDT', label: 'BDT (৳) - Bangladeshi Taka' },
-      { value: 'LKR', label: 'LKR (Rs) - Sri Lankan Rupee' },
-    ],
-  },
-  {
-    group: 'Africa',
-    options: [
-      { value: 'ZAR', label: 'ZAR (R) - South African Rand' },
-      { value: 'EGP', label: 'EGP (E£) - Egyptian Pound' },
-      { value: 'NGN', label: 'NGN (₦) - Nigerian Naira' },
-      { value: 'KES', label: 'KES (KSh) - Kenyan Shilling' },
-      { value: 'MAD', label: 'MAD (د.م.) - Moroccan Dirham' },
-      { value: 'TND', label: 'TND (DT) - Tunisian Dinar' },
-      { value: 'GHS', label: 'GHS (GH₵) - Ghanaian Cedi' },
-      { value: 'TZS', label: 'TZS (TSh) - Tanzanian Shilling' },
-      { value: 'UGX', label: 'UGX (USh) - Ugandan Shilling' },
-      { value: 'ETB', label: 'ETB (Br) - Ethiopian Birr' },
-    ],
-  },
-  {
-    group: 'Oceania',
-    options: [
-      { value: 'AUD', label: 'AUD (A$) - Australian Dollar' },
-      { value: 'NZD', label: 'NZD (NZ$) - New Zealand Dollar' },
-      { value: 'FJD', label: 'FJD (FJ$) - Fijian Dollar' },
+      { value: 'USD', label: 'USD ($) - US Dollar' },
     ],
   },
   {
@@ -162,38 +86,11 @@ export interface CountryDefault {
 }
 
 export const COUNTRY_DEFAULTS: Readonly<Record<string, CountryDefault>> = {
-  de: { region: 'DACH', currency: 'EUR' },
-  at: { region: 'DACH', currency: 'EUR' },
-  ch: { region: 'DACH', currency: 'CHF' },
-  gb: { region: 'UK', currency: 'GBP' },
-  ie: { region: 'Ireland', currency: 'EUR' },
-  fr: { region: 'France', currency: 'EUR' },
-  es: { region: 'Spain', currency: 'EUR' },
-  it: { region: 'Italy', currency: 'EUR' },
-  nl: { region: 'Netherlands', currency: 'EUR' },
-  pl: { region: 'Poland', currency: 'PLN' },
-  cz: { region: 'Czech', currency: 'CZK' },
-  // Croatia replaced the kuna with the euro on 2023-01-01, so HRK is not
-  // offered for a new project at all. A project saved in HRK before then
-  // still shows its code; the picker renders an unlisted code as custom.
-  hr: { region: 'Croatia', currency: 'EUR' },
-  hu: { region: 'HU', currency: 'HUF' },
-  ua: { region: 'UA', currency: 'UAH' },
-  tr: { region: 'Turkey', currency: 'TRY' },
-  ru: { region: 'Russia', currency: 'RUB' },
+  // Only the countries the build offers a region and currency for. Every other
+  // country has no option to point at, so it gets no default rather than one
+  // that fills nothing.
+  vn: { region: 'Vietnam', currency: 'VND' },
   us: { region: 'US', currency: 'USD' },
-  ca: { region: 'Canada', currency: 'CAD' },
-  br: { region: 'Brazil', currency: 'BRL' },
-  mx: { region: 'Mexico', currency: 'MXN' },
-  cn: { region: 'China', currency: 'CNY' },
-  jp: { region: 'Japan', currency: 'JPY' },
-  kr: { region: 'Korea', currency: 'KRW' },
-  in: { region: 'India', currency: 'INR' },
-  ae: { region: 'GulfStates', currency: 'AED' },
-  sa: { region: 'GulfStates', currency: 'SAR' },
-  au: { region: 'Australia', currency: 'AUD' },
-  nz: { region: 'NewZealand', currency: 'NZD' },
-  za: { region: 'SouthAfrica', currency: 'ZAR' },
 };
 
 export function lookupCountryDefault(

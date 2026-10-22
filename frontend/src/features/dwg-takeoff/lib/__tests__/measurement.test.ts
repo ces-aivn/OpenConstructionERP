@@ -9,7 +9,7 @@
  *    not silently reported as a wrong/zero area.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   formatMeasurement,
   calculateArea,
@@ -17,8 +17,16 @@ import {
   isSelfIntersecting,
   unitFactorToMetres,
 } from '../measurement';
+import { usePreferencesStore } from '@/stores/usePreferencesStore';
 
 describe('formatMeasurement - dimensional safety (D-TKC-006)', () => {
+  // formatMeasurement reads the measurement system from the preference store.
+  // The en-US jsdom browser defaults to imperial, and these assertions are
+  // written for the metric SI output, so the preference is set explicitly.
+  beforeEach(() => {
+    usePreferencesStore.setState({ measurementSystem: 'metric' });
+  });
+
   it('keeps the SI k-prefix for LINEAR units', () => {
     expect(formatMeasurement(1500, 'm')).toBe('1.50 km');
     expect(formatMeasurement(0.005, 'm')).toBe('5.00 mm');

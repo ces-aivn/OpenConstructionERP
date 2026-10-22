@@ -42,10 +42,11 @@ const COLORS = { Walls: '#EF4444', Floors: '#3B82F6' };
 
 describe('MeasurementLedger', () => {
   // Quantities are stored metric; the ledger reads measurementSystem from
-  // the preferences store. Reset to defaults (metric) so each test starts
-  // from a known system regardless of order.
+  // the preferences store. The en-US jsdom default is imperial, so every test
+  // starts from metric chosen explicitly, regardless of order.
   beforeEach(() => {
     usePreferencesStore.getState().resetPreferences();
+    usePreferencesStore.getState().setPreference('measurementSystem', 'metric');
   });
 
   it('renders the empty state when there are no measurements', () => {
@@ -141,7 +142,7 @@ describe('MeasurementLedger', () => {
     expect(types).toEqual(['area', 'count', 'distance']);
   });
 
-  it('shows metric units + values by default (issue #270 baseline)', () => {
+  it('shows metric units + values when metric is chosen (issue #270 baseline)', () => {
     render(<MeasurementLedger measurements={FIXTURE} groupColorMap={COLORS} />);
     // Walls distance subtotal: 10 + 5 = 15 m.
     const wallsM = screen

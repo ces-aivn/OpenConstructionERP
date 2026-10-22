@@ -276,7 +276,8 @@ export function DashboardProjectsMap({ projects, className, heightClass: heightC
 
   const initialView = useMemo(() => {
     if (resolved.length === 0) {
-      return { longitude: 10, latitude: 30, zoom: 1.4 };
+      // No located project yet: the Pacific view with Vietnam and the US.
+      return { longitude: 180, latitude: 30, zoom: 1.4 };
     }
     if (resolved.length === 1) {
       const only = resolved[0]!;

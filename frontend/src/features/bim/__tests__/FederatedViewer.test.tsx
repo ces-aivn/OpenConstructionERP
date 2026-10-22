@@ -331,6 +331,9 @@ describe('FederatedViewer', () => {
   });
 
   it('a completed measurement renders the distance readout', async () => {
+    // Raw metres are the expectation here, so the unit system is pinned to metric
+    // rather than inherited from the en-US jsdom default, which is imperial.
+    usePreferencesStore.getState().setPreference('measurementSystem', 'metric');
     hookValue = {
       detail: detailWith(['m1']),
       members: [loadedMember('m1')],

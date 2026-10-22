@@ -1,9 +1,10 @@
 // @ts-nocheck
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import BenchmarkModule from './BenchmarkModule';
+import { usePreferencesStore } from '@/stores/usePreferencesStore';
 import {
   BENCHMARKS,
   BUILDING_TYPES,
@@ -39,6 +40,12 @@ function renderModule() {
 }
 
 describe('BenchmarkModule', () => {
+  // The jsdom browser is en-US, which now defaults to imperial. These tests
+  // assert the metric labels, so the preference is set explicitly.
+  beforeEach(() => {
+    usePreferencesStore.setState({ measurementSystem: 'metric' });
+  });
+
   it('should render the page header', () => {
     renderModule();
     // Regex tolerates identity-marker ZWJ/ZWNJ trailing the visible text.

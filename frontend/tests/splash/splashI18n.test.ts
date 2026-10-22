@@ -111,7 +111,8 @@ describe('desktop splash translations', () => {
     expect(Object.keys(english).length).toBeGreaterThan(20);
     // Guard the guard: a regex that matched nothing would make every check
     // below pass vacuously.
-    expect(offered.length).toBeGreaterThan(30);
+    // CesCons offers Vietnamese and US English only.
+    expect(offered.length).toBeGreaterThanOrEqual(2);
   });
 
   it('answers every offered language, by a table or by a stated decision', () => {
@@ -160,7 +161,9 @@ describe('desktop splash translations', () => {
     expect(declared, 'SPLASH_RTL not found').not.toBeNull();
     const inSplash = [...declared![1]!.matchAll(/'([a-z-]+)'/g)].map((m) => m[1]!).sort();
     const inApp = offered.filter((l) => l.rtl).map((l) => l.code.split('-')[0]!);
-    expect(inSplash).toEqual([...new Set(inApp)].sort());
+    // The splash keeps tables for more languages than the app offers, so it
+    // must cover every right-to-left language the app offers, not match them.
+    for (const code of new Set(inApp)) expect(inSplash).toContain(code);
   });
 
   it('answers every key the script asks for', () => {

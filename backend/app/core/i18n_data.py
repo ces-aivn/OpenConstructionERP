@@ -63,7 +63,7 @@ PAPER_SIZES: dict[str, dict[str, str | int]] = {
 DATE_FORMATS: dict[str, dict[str, str | list[str]]] = {
     "DD.MM.YYYY": {"example": "07.04.2026", "regions": ["DACH", "RU"]},
     "MM/DD/YYYY": {"example": "04/07/2026", "regions": ["US"]},
-    "DD/MM/YYYY": {"example": "07/04/2026", "regions": ["UK", "EU", "LATAM"]},
+    "DD/MM/YYYY": {"example": "07/04/2026", "regions": ["UK", "EU", "LATAM", "VN"]},
     "YYYY-MM-DD": {"example": "2026-04-07", "regions": ["ISO"]},
     "YYYY/MM/DD": {"example": "2026/04/07", "regions": ["JP", "KR", "CN"]},
     "YYYY.MM.DD.": {"example": "2026.04.07.", "regions": ["HU"]},
@@ -82,7 +82,7 @@ NUMBER_FORMATS: dict[str, dict[str, str | list[str]]] = {
     "1.234,56": {
         "decimal": ",",
         "thousands": ".",
-        "regions": ["DACH", "EU", "LATAM"],
+        "regions": ["DACH", "EU", "LATAM", "VN"],
     },
     "1 234,56": {
         "decimal": ",",
@@ -140,7 +140,7 @@ REGION_GROUPS: dict[str, list[str]] = {
     "NA": ["US", "CA"],
     "LATAM": ["MX", "BR", "AR", "CL", "CO", "PE"],
     "MENA": ["SA", "AE", "QA", "KW", "EG", "IL", "TR"],
-    "APAC": ["AU", "JP", "NZ", "KR", "CN", "SG", "IN", "MY", "TH"],
+    "APAC": ["AU", "JP", "NZ", "KR", "CN", "SG", "IN", "MY", "TH", "VN"],
     "RU": ["RU"],
 }
 
@@ -190,6 +190,16 @@ COUNTRY_DEFAULTS: dict[str, dict[str, str]] = {
         "date_format": "DD/MM/YYYY",
         "number_format": "1,234.56",
         "locale": "en",
+    },
+    # Vietnam: dates day-first, dot thousands and comma decimals, VND has no
+    # minor unit in practice (currency_registry gives it 0 decimals).
+    "VN": {
+        "currency": "VND",
+        "measurement": "metric",
+        "paper": "A4",
+        "date_format": "DD/MM/YYYY",
+        "number_format": "1.234,56",
+        "locale": "vi",
     },
     # North America -------------------------------------------------------
     "US": {

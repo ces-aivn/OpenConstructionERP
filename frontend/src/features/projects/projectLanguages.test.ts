@@ -15,14 +15,8 @@ import { PROJECT_LANGUAGES } from './projectLanguages';
 const BACKEND_LOCALES = join(dirname(fileURLToPath(import.meta.url)), '../../../../backend/locales');
 
 describe('project languages', () => {
-  it('offers Ukrainian under its own code', () => {
-    const uk = PROJECT_LANGUAGES.find((l) => l.value === 'uk');
-    expect(uk?.label).toBe('Українська');
-  });
-
-  it('offers every base language of the interface picker', () => {
-    const base = SUPPORTED_LANGUAGES.map((l) => l.code).filter((c) => !c.includes('-'));
-    expect(PROJECT_LANGUAGES.map((l) => l.value)).toEqual(base);
+  it('offers exactly the Vietnamese and US English interface languages', () => {
+    expect(PROJECT_LANGUAGES.map((l) => l.value)).toEqual(['vi', 'en']);
   });
 
   it('leaves the regional variants out', () => {
@@ -35,10 +29,12 @@ describe('project languages', () => {
     expect(missing).toEqual([]);
   });
 
-  it('keeps the languages the form offered before', () => {
-    const before = ['en', 'de', 'fr', 'es', 'it', 'pt', 'nl', 'pl', 'cs', 'hr', 'hu', 'ru', 'tr', 'ar', 'zh', 'ja',
-      'ko', 'hi', 'th', 'vi', 'id', 'sv', 'no', 'da', 'fi'];
-    const offered = new Set(PROJECT_LANGUAGES.map((l) => l.value));
-    expect(before.filter((c) => !offered.has(c))).toEqual([]);
+  it('offers English to a reader whose interface is US English', () => {
+    // A US business sets its interface to en-US and expects the same language
+    // for its projects. The base-code filter above drops every tag with a
+    // hyphen, so en-US has no project option unless it is mapped to the `en`
+    // locale the backend ships.
+    expect(SUPPORTED_LANGUAGES.some((l) => l.code === 'en-US')).toBe(true);
+    expect(PROJECT_LANGUAGES.map((l) => l.value)).toContain('en');
   });
 });

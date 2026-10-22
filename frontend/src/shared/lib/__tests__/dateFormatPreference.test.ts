@@ -222,10 +222,13 @@ describe('Kyrgyz is the single all-numeric exception to the auto path', () => {
     expect(formatDateWithPreference(AMBIGUOUS, 'ky', NUMERIC_UTC, 'YYYY-MM-DD')).toBe('2026-11-03');
   });
 
-  it('is an exception of exactly one across every offered language', () => {
-    // The population, printed beside the verdict. A gate whose denominator is
-    // not the whole set can be satisfied by narrowing the set instead.
-    const unreadable = SUPPORTED_LANGUAGES.filter(({ code }) => {
+  it('is an exception of exactly one across every offered language and Kyrgyz', () => {
+    // The population, printed beside the verdict. Kyrgyz is no longer offered,
+    // so it is measured alongside the offered set, which keeps the exception
+    // itself under test. A gate whose denominator is not the whole set can be
+    // satisfied by narrowing the set instead.
+    const population = [...SUPPORTED_LANGUAGES.map((l) => ({ code: l.code })), { code: 'ky' }];
+    const unreadable = population.filter(({ code }) => {
       const tag = LOCALE_MAP[code] ?? code;
       const order = new Intl.DateTimeFormat(tag, NUMERIC_UTC)
         .formatToParts(AMBIGUOUS)

@@ -5,8 +5,7 @@
  *
  * The defect this replaces was invisible to every gate we own, because
  * `formatDistanceToNow(d, { addSuffix: true })` is valid code that returns a
- * valid string. It just returns an English one, forever, in all forty-two
- * languages. Nothing throws and nothing renders a raw key, so the only
+ * valid string. It just returns an English one, forever, in all languages. Nothing throws and nothing renders a raw key, so the only
  * instrument that catches it is one that names the language it expects.
  *
  * The table below is written out rather than derived, because a derived
@@ -16,8 +15,14 @@ import { describe, it, expect } from 'vitest';
 import { SUPPORTED_LANGUAGES } from '@/app/i18n';
 import { dateFnsLocaleFor, LANGUAGES_WITHOUT_DATE_FNS_LOCALE } from './dateFnsLocale';
 
-/** i18next code → the `code` field of the date-fns locale it must resolve to. */
-const EXPECTED: Record<string, string> = {
+/**
+ * i18next code → the `code` field of the date-fns locale it must resolve to.
+ *
+ * The product offers only `vi` and `en-US`, but the date-fns map still names
+ * the wider set. This table pins the map itself, so re-offering a language
+ * later does not need the map rebuilt from memory.
+ */
+const MAP_CONTRACT: Record<string, string> = {
   // Plain `en` names no region and date-fns ships no region-free English, so
   // it lands on enUS, which is also what CLDR gives unqualified `en`. The two
   // regional entries each get their own, and en-GB having its own is the
@@ -71,34 +76,39 @@ const EXPECTED: Record<string, string> = {
 };
 
 describe('date-fns locale resolution', () => {
-  it('resolves every supported language to the locale named for it', () => {
+  it('resolves every offered language to the locale named for it', () => {
     for (const { code } of SUPPORTED_LANGUAGES) {
-      const expected = EXPECTED[code];
+      const expected = MAP_CONTRACT[code];
       expect(expected, `no expectation recorded for language "${code}"`).toBeDefined();
       expect(dateFnsLocaleFor(code).code, `language "${code}"`).toBe(expected);
     }
   });
 
-  it('covers every supported language and nothing that is not one', () => {
-    // A language added to the picker with no entry here would otherwise fall
-    // through to English and ship looking finished.
-    const supported = SUPPORTED_LANGUAGES.map((l) => l.code).sort();
-    expect(Object.keys(EXPECTED).sort()).toEqual(supported);
+  it('offers exactly Vietnamese and US English', () => {
+    expect(SUPPORTED_LANGUAGES.map((l) => l.code).sort()).toEqual(['en-US', 'vi']);
+  });
+
+  it('keeps the whole map contract, so a language re-offered later needs no new code', () => {
+    for (const [code, expected] of Object.entries(MAP_CONTRACT)) {
+      expect(dateFnsLocaleFor(code).code, `language "${code}"`).toBe(expected);
+    }
   });
 
   it('falls back to English only for the three languages date-fns has no locale for', () => {
     // Asserted in both directions on purpose. The first half says the gap is
-    // where we think it is; the second says nothing else quietly joined it,
+    // where we think it is; the second says nothing offered quietly joined it,
     // which is the failure mode that put this defect in front of readers.
     const gaps = [...LANGUAGES_WITHOUT_DATE_FNS_LOCALE];
     for (const code of gaps) {
       expect(dateFnsLocaleFor(code).code, `known gap "${code}"`).toBe('en-US');
     }
-    const fallingBack = SUPPORTED_LANGUAGES.map((l) => l.code)
+    const offeredCodes = SUPPORTED_LANGUAGES.map((l) => l.code);
+    const fallingBack = offeredCodes
       .filter((c) => !c.startsWith('en'))
       .filter((c) => dateFnsLocaleFor(c).code === 'en-US')
       .sort();
-    expect(fallingBack).toEqual([...gaps].sort());
+    // None of the offered non-English languages is one of the gaps.
+    expect(fallingBack).toEqual(gaps.filter((g) => offeredCodes.includes(g)).sort());
   });
 
   it('resolves a regional code through its base language', () => {

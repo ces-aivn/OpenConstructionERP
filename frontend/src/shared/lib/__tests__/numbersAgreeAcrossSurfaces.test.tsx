@@ -169,6 +169,9 @@ describe('a money surface is written in the language the reader is reading', () 
 
   it('a quantity is written with the same separators as the money beside it', () => {
     speak('de');
+    // The quantity is stored metric; an en-US jsdom default is imperial, so the
+    // unit system is chosen here rather than inherited from the host locale.
+    usePreferencesStore.getState().setPreference('measurementSystem', 'metric');
     const { container } = render(<QuantityDisplay value={1234.5} unit="m³" precision={2} />);
     const expected = new Intl.NumberFormat('de-DE', {
       minimumFractionDigits: 0,
@@ -288,6 +291,7 @@ describe('the number-format preference', () => {
     // locale through a different component, so the contract is asserted on
     // both rather than assumed to carry across.
     usePreferencesStore.getState().setPreference('numberLocale', 'de-DE');
+    usePreferencesStore.getState().setPreference('measurementSystem', 'metric');
     const readings = readAcrossLanguages(
       () => render(<QuantityDisplay value={1234.5} unit="m³" precision={2} />).container.textContent,
     );

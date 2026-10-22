@@ -96,8 +96,8 @@ describe('Swiss number grouping', () => {
 });
 
 describe('the project pickers', () => {
-  it('fill an Irish address with the Irish region and the euro', () => {
-    expect(lookupCountryDefault('IE')).toEqual({ region: 'Ireland', currency: 'EUR' });
+  it('fill no default for an Irish address, because the build offers no Ireland region', () => {
+    expect(lookupCountryDefault('IE')).toBeNull();
   });
 
   it('offer every region and currency the country defaults name', () => {
@@ -106,16 +106,15 @@ describe('the project pickers', () => {
     const regionBlock = createProjectSource().split('const REGION_GROUPS')[1]?.split('\n];')[0] ?? '';
     const regions = new Set([...regionBlock.matchAll(/value:\s*'([^']+)'/g)].map((m) => m[1]));
     const currencies = new Set(CURRENCY_GROUPS.flatMap((g) => g.options.map((o) => o.value)));
-    expect(regions.size).toBeGreaterThan(20);
+    // The build offers Vietnam, the US, the international grouping and Custom.
+    expect([...regions].sort()).toEqual(['INTL', 'US', 'Vietnam', '__custom__'].sort());
+    // The default table is trimmed to the offered countries, so the loop below
+    // covers exactly these two and a new entry must be added here on purpose.
+    expect(Object.keys(COUNTRY_DEFAULTS).sort()).toEqual(['us', 'vn']);
     for (const [cc, entry] of Object.entries(COUNTRY_DEFAULTS)) {
       expect(regions.has(entry.region), `${cc} -> region ${entry.region}`).toBe(true);
       expect(currencies.has(entry.currency), `${cc} -> currency ${entry.currency}`).toBe(true);
     }
-  });
-
-  it('offer the hryvnia in both currency lists', () => {
-    expect(CURRENCY_GROUPS.flatMap((g) => g.options.map((o) => o.value))).toContain('UAH');
-    expect(createProjectSource()).toContain("{ value: 'UAH', label: 'UAH (₴) - Ukrainian Hryvnia' }");
   });
 
   it('show the hryvnia and forint signs rather than their codes', () => {

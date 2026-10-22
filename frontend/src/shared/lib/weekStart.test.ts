@@ -87,24 +87,18 @@ describe('week start, over every offered language', () => {
     // an empty or truncated list, every assertion below passes vacuously and
     // this suite becomes a no-op that reports success.
     expect(CODES.length, 'SUPPORTED_LANGUAGES came back empty').toBeGreaterThan(0);
-    expect(
-      CODES.length,
-      `only ${CODES.length} languages parsed, the platform ships far more`,
-    ).toBeGreaterThanOrEqual(40);
+    expect([...CODES].sort(), 'offered language set changed').toEqual(['en-US', 'vi']);
     expect(new Set(CODES).size, 'duplicate language codes').toBe(CODES.length);
   });
 
-  it('at least one offered language genuinely starts its week on Saturday', () => {
-    // The premise guard. This whole suite exists because a two-valued answer
-    // cannot express Saturday. If ICU's data ever stopped putting any of our
-    // languages on Saturday, the census below would keep passing while
-    // testing nothing, and we would never learn the collapse had become
-    // harmless. Better to go red and be told.
-    const saturday = CODES.filter((c) => cldrFirstDay(c) === 6);
-    expect(
-      saturday.length,
-      'no offered language starts on Saturday any more, so this suite no longer proves anything',
-    ).toBeGreaterThan(0);
+  it('still resolves a Saturday-start locale to Saturday, outside the offered set', () => {
+    // No offered language starts its week on Saturday (vi starts on Monday,
+    // en-US on Sunday), so the census cannot exercise that branch. The helper
+    // still has to produce it, so the mapping is asserted directly. Arabic
+    // in its generic `ar` form is the Saturday-start entry in ICU.
+    expect(cldrFirstDay('ar')).toBe(6);
+    expect(weekStartFor('ar')).toBe(6);
+    expect(weekStartsOnFor('ar')).toBe(6);
   });
 
   it('answers the real CLDR first day for every offered language', () => {
@@ -139,12 +133,14 @@ describe('week start, over every offered language', () => {
     // The collapse this replaced returned only 0 or 1. Reintroducing it in
     // any form, here or at a call site, makes this red without depending on
     // which particular languages ICU puts on Saturday.
-    const distinct = new Set(CODES.map((c) => weekStartsOnFor(c)));
+    // The offered pair gives Sunday and Monday; `ar` supplies Saturday, so
+    // three distinct answers prove the helper is not folding to two.
+    const distinct = new Set([...CODES, 'ar'].map((c) => weekStartsOnFor(c)));
     expect(
       distinct.size,
-      `helper produced only ${distinct.size} distinct week starts across ${CODES.length} languages`,
+      `helper produced only ${distinct.size} distinct week starts`,
     ).toBeGreaterThan(2);
-    expect([...distinct].sort(), 'no language mapped to Saturday').toContain(6);
+    expect([...distinct].sort(), 'no locale mapped to Saturday').toContain(6);
   });
 
   it('converts CLDR numbering to the getDay numbering at the boundary', () => {

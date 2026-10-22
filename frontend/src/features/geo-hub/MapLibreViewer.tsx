@@ -103,8 +103,10 @@ interface MapLibreViewerProps {
 }
 
 // Initial camera: whole-world for the global view, tighter once we have a
-// focus. The page flies to projects/search results after mount.
-const WORLD_VIEW = { longitude: 12, latitude: 30, zoom: 1.4 };
+// focus. The page flies to projects/search results after mount. Centred on
+// the Pacific so both home markets, Vietnam and the United States, are in
+// the first frame.
+const WORLD_VIEW = { longitude: 180, latitude: 30, zoom: 1.4 };
 const FOCUS_ZOOM = 15;
 
 // A project map opens on the site itself, close enough that the streets

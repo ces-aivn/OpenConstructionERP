@@ -6,46 +6,41 @@
  *
  * ``i18n-fallbacks.ts`` aggregates the per-locale resources so that tests can
  * iterate the locales without repeating forty imports. A locale missing from it
- * is not offered any less; it is simply invisible to every test that iterates
- * the object, which is how Kyrgyz, Greek and Ukrainian each went unchecked
- * while shipping.
+ * is simply invisible to every test that iterates the object, which is how
+ * Kyrgyz, Greek and Ukrainian each went unchecked while shipping.
  *
- * That file already carried a comment telling whoever enabled Uzbek to add the
- * import in the same commit. Uzbek was enabled, the import was not added, and
- * the locale shipped unchecked anyway. This test exists because a comment
- * recording a rule cannot enforce it.
+ * This build offers vi and en-US only, but the other locale files stay on disk
+ * on purpose so they can be re-enabled without re-translating. The aggregator
+ * therefore holds every shipped file, not just the offered ones. The invariant
+ * is that the aggregator and the files on disk agree exactly, apart from the two
+ * overlay files, and that every offered language is aggregated.
  *
- * Both directions matter, so both are asserted. A language added to
- * ``SUPPORTED_LANGUAGES`` and forgotten here fails the first assertion; a
- * locale added here that nobody can select fails the second. Writing them as
- * exact set differences rather than as counts is deliberate: a count passes
- * again the moment two mistakes cancel out.
+ * Writing these as exact set differences rather than as counts is deliberate: a
+ * count passes again the moment two mistakes cancel out.
  */
 
+import { readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { SUPPORTED_LANGUAGES } from '../i18n';
 import { fallbackResources } from '../i18n-fallbacks';
 
 /**
- * Offered, but deliberately not aggregated.
+ * Overlay files that are deliberately not aggregated.
  *
- * ``en-GB`` and ``en-US`` are overrides-only overlays rather than full
- * locales, so a test that iterates the object would compare a deliberate 9 key
- * and ~1.6k key file against a ~35k key one and report a gap that is the whole
- * point of those files.
+ * ``en-GB`` and ``en-US`` are overrides-only overlays rather than full locales,
+ * so a test that iterates the object would compare a deliberate small overlay
+ * against a full file and report a gap that is the whole point of those files.
  */
-const OFFERED_BUT_NOT_AGGREGATED = ['en-GB', 'en-US'];
+const OVERLAYS = ['en-GB', 'en-US'];
 
-/**
- * Aggregated, but deliberately not offered.
- *
- * ``mn`` is kept here so the Mongolian file holds whatever coverage it has
- * while it waits for a native-speaker pass. It is the only locale in that
- * state; ``hu`` is not aggregated because it is not offered and has no
- * coverage to keep yet.
- */
-const AGGREGATED_BUT_NOT_OFFERED = ['mn'];
+const LOCALES = resolve(__dirname, '..', 'locales');
+
+/** Every locale file on disk, by code, excluding the barrel. */
+const shipped = readdirSync(LOCALES)
+  .filter((name) => name.endsWith('.ts') && name !== 'index.ts')
+  .map((name) => name.slice(0, -3));
 
 describe('the offered languages and the fallback aggregator', () => {
   const offered = new Set(SUPPORTED_LANGUAGES.map((language) => language.code));
@@ -54,22 +49,23 @@ describe('the offered languages and the fallback aggregator', () => {
   it('leaves no offered language out of the aggregator except the named overlay', () => {
     const missing = [...offered].filter((code) => !aggregated.has(code)).sort();
 
-    expect(missing).toEqual([...OFFERED_BUT_NOT_AGGREGATED].sort());
+    expect(missing).toEqual([...OVERLAYS.filter((code) => offered.has(code))].sort());
   });
 
-  it('aggregates nothing a user cannot select except the one waiting on review', () => {
-    const extra = [...aggregated].filter((code) => !offered.has(code)).sort();
+  it('aggregates exactly the shipped locale files, no more and no fewer', () => {
+    // Retained but unoffered locales are expected here. What must not happen is a
+    // file on disk that no test iterates, or an aggregated entry with no file.
+    const expected = shipped.filter((code) => !OVERLAYS.includes(code)).sort();
 
-    expect(extra).toEqual([...AGGREGATED_BUT_NOT_OFFERED].sort());
+    expect([...aggregated].sort()).toEqual(expected);
   });
 
   it('names each exception rather than merely counting them', () => {
     // The counts are the weakest form of this check and are asserted only to
-    // catch a rewrite that empties one of the lists above and leaves the two
-    // set comparisons trivially true.
-    expect(OFFERED_BUT_NOT_AGGREGATED).toHaveLength(2);
-    expect(AGGREGATED_BUT_NOT_OFFERED).toHaveLength(1);
-    expect(offered.size).toBeGreaterThan(40);
-    expect(aggregated.size).toBeGreaterThan(40);
+    // catch a rewrite that empties one of the lists above and leaves the set
+    // comparisons trivially true.
+    expect(OVERLAYS.filter((code) => shipped.includes(code))).toEqual(OVERLAYS);
+    expect(offered.size).toBe(SUPPORTED_LANGUAGES.length);
+    expect(aggregated.size).toBeGreaterThan(offered.size);
   });
 });

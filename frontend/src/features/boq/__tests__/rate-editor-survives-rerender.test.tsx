@@ -14,12 +14,13 @@
  * identities for the same data, exactly what the page does on a row click,
  * and checks that the editor is still open and still commits what was typed.
  */
-import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { createElement } from 'react';
 
 import BOQGrid from '../BOQGrid';
 import type { Position } from '../api';
+import { usePreferencesStore } from '@/stores/usePreferencesStore';
 
 vi.mock('@/features/collab_locks', () => ({
   acquireLock: vi.fn(async () => ({ ok: true, lock: { id: 'lock-test' } })),
@@ -45,6 +46,13 @@ beforeAll(() => {
     configurable: true,
     get() { return this.parentElement; },
   });
+});
+
+beforeEach(() => {
+  // An en-US browser defaults to imperial, which would convert the typed rate
+  // from the displayed system. This test asserts the metric-canonical write.
+  usePreferencesStore.getState().resetPreferences();
+  usePreferencesStore.getState().setPreference('measurementSystem', 'metric');
 });
 
 afterEach(() => {

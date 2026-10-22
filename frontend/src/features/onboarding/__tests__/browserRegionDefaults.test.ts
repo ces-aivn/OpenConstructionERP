@@ -77,17 +77,19 @@ describe('the country a browser names', () => {
   });
 
   it('does not borrow a region from another language further down the list', () => {
-    browser('de', ['de', 'en-US']);
+    // Vietnamese is the offered language with its own country; German is no
+    // longer offered, so it would read nothing from the language.
+    browser('vi', ['vi', 'en-US']);
     expect(detectBrowserRegion()).toBeNull();
-    expect(detectCountry('de')).toBe('de');
+    expect(detectCountry('vi')).toBe('vn');
   });
 
   it("stops going by the browser once the reader picks another language", () => {
     browser('en-US');
     // en-US is the factory default of many machines far from the US, so a
     // reader who switches the app to German is read by their choice.
-    expect(detectCountryForLanguage('de')).toBe('de');
-    expect(browserRegionForLanguage('de')).toBeNull();
+    expect(detectCountryForLanguage('vi')).toBe('vn');
+    expect(browserRegionForLanguage('vi')).toBeNull();
     browser('fr-CA');
     expect(detectCountryForLanguage('fr')).toBe('ca');
     expect(browserRegionForLanguage('fr')).toBe('ca');
@@ -177,10 +179,18 @@ describe("the dashboard's home market", () => {
   });
 
   it('falls back to the language for a region with no cases', () => {
-    // Austria has no cases: the German-language market answers, labelled as
-    // the language's, never as the reader's region.
-    expect(MARKETS).not.toContain('AT');
-    expect(homeMarketFor('de-AT')).toEqual({ market: 'DE', source: 'language' });
+    // Japan has no cases: the US-English market answers, labelled as the
+    // language's, never as the reader's region. The German-language version
+    // of this (de-AT) no longer applies because German is not offered.
+    expect(MARKETS).not.toContain('JP');
+    browser('en-JP');
+    expect(
+      resolveHomeMarket({
+        language: 'en-US',
+        browserRegion: browserRegionForLanguage('en-US'),
+        markets: MARKETS,
+      }),
+    ).toEqual({ market: 'US', source: 'language' });
   });
 
   it('claims no market for a region and language that reach none', () => {

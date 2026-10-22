@@ -96,13 +96,28 @@ export type { DigitSystem };
  */
 const RETIRED_KEYS = ['vatRate', 'defaultRegion', 'defaultStandard'] as const;
 
+/**
+ * The VN/US build's home market for a reader who has chosen nothing yet: an
+ * English UI is a US user (USD, imperial), anything else Vietnamese (VND,
+ * metric), since Vietnamese is the default language. Reads the same
+ * `i18nextLng` key i18n persists, falling back to the browser language.
+ */
+function isEnglishUi(): boolean {
+  try {
+    const lang = localStorage.getItem('i18nextLng') ?? navigator.language ?? '';
+    return lang.toLowerCase().startsWith('en');
+  } catch {
+    return false;
+  }
+}
+
 const DEFAULTS: Preferences = {
-  currency: 'EUR',
-  measurementSystem: 'metric',
+  currency: isEnglishUi() ? 'USD' : 'VND',
+  measurementSystem: isEnglishUi() ? 'imperial' : 'metric',
   dateFormat: 'auto',
   numberLocale: 'auto',
   digitSystem: 'auto',
-  defaultCurrency: 'EUR',
+  defaultCurrency: isEnglishUi() ? 'USD' : 'VND',
 };
 
 /**

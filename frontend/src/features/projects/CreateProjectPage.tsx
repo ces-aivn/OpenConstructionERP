@@ -66,63 +66,14 @@ export interface OptionGroup {
   options: RegionOption[];
 }
 
+// The VN/US build offers the two home markets first; International and a
+// free-text region stay for the occasional project abroad.
 const REGION_GROUPS: OptionGroup[] = [
   {
-    group: 'Europe',
+    group: 'Markets',
     options: [
-      { value: 'DACH', label: 'DACH (Germany, Austria, Switzerland)' },
-      { value: 'UK', label: 'United Kingdom', iso: 'GB' },
-      { value: 'Ireland', label: 'Ireland', iso: 'IE' },
-      { value: 'Nordics', label: 'Nordics (Sweden, Norway, Denmark, Finland)' },
-      { value: 'France', label: 'France', iso: 'FR' },
-      { value: 'Spain', label: 'Spain', iso: 'ES' },
-      { value: 'Italy', label: 'Italy', iso: 'IT' },
-      { value: 'Netherlands', label: 'Netherlands', iso: 'NL' },
-      { value: 'Poland', label: 'Poland', iso: 'PL' },
-      { value: 'Czech', label: 'Czech Republic', iso: 'CZ' },
-      { value: 'Croatia', label: 'Croatia', iso: 'HR' },
-      { value: 'HU', label: 'Hungary', iso: 'HU' },
-      { value: 'UA', label: 'Ukraine', iso: 'UA' },
-      { value: 'Turkey', label: 'Turkey', iso: 'TR' },
-      { value: 'Russia', label: 'Russia', iso: 'RU' },
-    ],
-  },
-  {
-    group: 'Americas',
-    options: [
+      { value: 'Vietnam', label: 'Vietnam', iso: 'VN' },
       { value: 'US', label: 'United States', iso: 'US' },
-      { value: 'Canada', label: 'Canada', iso: 'CA' },
-      { value: 'Brazil', label: 'Brazil', iso: 'BR' },
-      { value: 'Mexico', label: 'Mexico', iso: 'MX' },
-      { value: 'LatinAmerica', label: 'Latin America (Other)' },
-    ],
-  },
-  {
-    group: 'Asia & Middle East',
-    options: [
-      { value: 'China', label: 'China', iso: 'CN' },
-      { value: 'Japan', label: 'Japan', iso: 'JP' },
-      { value: 'Korea', label: 'South Korea', iso: 'KR' },
-      { value: 'India', label: 'India', iso: 'IN' },
-      { value: 'SoutheastAsia', label: 'Southeast Asia' },
-      { value: 'MiddleEast', label: 'Middle East (General)' },
-      { value: 'GulfStates', label: 'Gulf States (UAE, Saudi Arabia, Qatar)' },
-    ],
-  },
-  {
-    group: 'Africa',
-    options: [
-      { value: 'NorthAfrica', label: 'North Africa' },
-      { value: 'SouthAfrica', label: 'South Africa', iso: 'ZA' },
-      { value: 'EastAfrica', label: 'East Africa' },
-      { value: 'WestAfrica', label: 'West Africa' },
-    ],
-  },
-  {
-    group: 'Oceania',
-    options: [
-      { value: 'Australia', label: 'Australia', iso: 'AU' },
-      { value: 'NewZealand', label: 'New Zealand', iso: 'NZ' },
     ],
   },
   {
@@ -154,6 +105,7 @@ const REGION_TO_PACK: Record<string, string> = {
   Japan: 'asia_pacific',
   Korea: 'asia_pacific',
   SoutheastAsia: 'asia_pacific',
+  Vietnam: 'asia_pacific',
   Australia: 'asia_pacific',
   NewZealand: 'asia_pacific',
   India: 'india',
@@ -234,89 +186,13 @@ const STANDARD_GROUPS: OptionGroup[] = [
 
 // ── Currencies (all major construction market currencies) ─────────────────
 
+// VND and USD only; "Custom..." still accepts any other ISO code.
 export const CURRENCY_GROUPS: OptionGroup[] = [
   {
-    group: 'Europe',
+    group: 'Currencies',
     options: [
-      { value: 'EUR', label: 'EUR (€) - Euro' },
-      { value: 'GBP', label: 'GBP (£) - British Pound' },
-      { value: 'CHF', label: 'CHF (Fr.) - Swiss Franc' },
-      { value: 'SEK', label: 'SEK (kr) - Swedish Krona' },
-      { value: 'NOK', label: 'NOK (kr) - Norwegian Krone' },
-      { value: 'DKK', label: 'DKK (kr) - Danish Krone' },
-      { value: 'PLN', label: 'PLN (zł) - Polish Zloty' },
-      { value: 'CZK', label: 'CZK (Kč) - Czech Koruna' },
-      { value: 'TRY', label: 'TRY (₺) - Turkish Lira' },
-      { value: 'RUB', label: 'RUB (₽) - Russian Ruble' },
-      { value: 'UAH', label: 'UAH (₴) - Ukrainian Hryvnia' },
-      { value: 'HUF', label: 'HUF (Ft) - Hungarian Forint' },
-      { value: 'RON', label: 'RON (lei) - Romanian Leu' },
-      { value: 'ISK', label: 'ISK (kr) - Icelandic Krona' },
-    ],
-  },
-  {
-    group: 'Americas',
-    options: [
-      { value: 'USD', label: 'USD ($) - US Dollar' },
-      { value: 'CAD', label: 'CAD (C$) - Canadian Dollar' },
-      { value: 'BRL', label: 'BRL (R$) - Brazilian Real' },
-      { value: 'MXN', label: 'MXN (Mex$) - Mexican Peso' },
-      { value: 'ARS', label: 'ARS (AR$) - Argentine Peso' },
-      { value: 'CLP', label: 'CLP (CL$) - Chilean Peso' },
-      { value: 'PEN', label: 'PEN (S/) - Peruvian Sol' },
-      { value: 'COP', label: 'COP (COL$) - Colombian Peso' },
-    ],
-  },
-  {
-    group: 'Asia & Middle East',
-    options: [
-      { value: 'CNY', label: 'CNY (¥) - Chinese Yuan' },
-      { value: 'JPY', label: 'JPY (¥) - Japanese Yen' },
-      { value: 'KRW', label: 'KRW (₩) - South Korean Won' },
-      { value: 'INR', label: 'INR (₹) - Indian Rupee' },
-      { value: 'AED', label: 'AED (د.إ) - UAE Dirham' },
-      { value: 'SAR', label: 'SAR (﷼) - Saudi Riyal' },
-      { value: 'QAR', label: 'QAR (﷼) - Qatari Riyal' },
-      { value: 'BHD', label: 'BHD (BD) - Bahraini Dinar' },
-      { value: 'KWD', label: 'KWD (د.ك) - Kuwaiti Dinar' },
-      { value: 'OMR', label: 'OMR (ر.ع.) - Omani Rial' },
-      { value: 'SGD', label: 'SGD (S$) - Singapore Dollar' },
-      { value: 'MYR', label: 'MYR (RM) - Malaysian Ringgit' },
-      { value: 'THB', label: 'THB (฿) - Thai Baht' },
-      { value: 'IDR', label: 'IDR (Rp) - Indonesian Rupiah' },
-      { value: 'PHP', label: 'PHP (₱) - Philippine Peso' },
       { value: 'VND', label: 'VND (₫) - Vietnamese Dong' },
-      { value: 'HKD', label: 'HKD (HK$) - Hong Kong Dollar' },
-      { value: 'TWD', label: 'TWD (NT$) - Taiwan Dollar' },
-      { value: 'ILS', label: 'ILS (₪) - Israeli Shekel' },
-      { value: 'JOD', label: 'JOD (JD) - Jordanian Dinar' },
-      { value: 'LBP', label: 'LBP (ل.ل) - Lebanese Pound' },
-      { value: 'PKR', label: 'PKR (₨) - Pakistani Rupee' },
-      { value: 'BDT', label: 'BDT (৳) - Bangladeshi Taka' },
-      { value: 'LKR', label: 'LKR (Rs) - Sri Lankan Rupee' },
-    ],
-  },
-  {
-    group: 'Africa',
-    options: [
-      { value: 'ZAR', label: 'ZAR (R) - South African Rand' },
-      { value: 'EGP', label: 'EGP (E£) - Egyptian Pound' },
-      { value: 'NGN', label: 'NGN (₦) - Nigerian Naira' },
-      { value: 'KES', label: 'KES (KSh) - Kenyan Shilling' },
-      { value: 'MAD', label: 'MAD (د.م.) - Moroccan Dirham' },
-      { value: 'TND', label: 'TND (DT) - Tunisian Dinar' },
-      { value: 'GHS', label: 'GHS (GH₵) - Ghanaian Cedi' },
-      { value: 'TZS', label: 'TZS (TSh) - Tanzanian Shilling' },
-      { value: 'UGX', label: 'UGX (USh) - Ugandan Shilling' },
-      { value: 'ETB', label: 'ETB (Br) - Ethiopian Birr' },
-    ],
-  },
-  {
-    group: 'Oceania',
-    options: [
-      { value: 'AUD', label: 'AUD (A$) - Australian Dollar' },
-      { value: 'NZD', label: 'NZD (NZ$) - New Zealand Dollar' },
-      { value: 'FJD', label: 'FJD (FJ$) - Fijian Dollar' },
+      { value: 'USD', label: 'USD ($) - US Dollar' },
     ],
   },
   {

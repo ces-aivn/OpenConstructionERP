@@ -1,9 +1,11 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
-// Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 // OpenConstructionERP — DataDrivenConstruction (DDC)
 // Tests for first-run language selection: resolveInitialLanguage asks for the
 // full browser code before stripping the region, and detectCountry reads a
 // country from the region subtag or, failing that, from the resolved language.
+//
+// This build offers exactly vi and en-US. Any English browser resolves to en-US,
+// any other unoffered browser language resolves to the Vietnamese fallback.
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { detectCountry, resolveInitialLanguage, SUPPORTED_LANGUAGES } from '../i18n';
@@ -46,49 +48,63 @@ afterEach(() => {
 });
 
 describe('resolveInitialLanguage', () => {
-  it('keeps a region the UI ships, so Brazil does not open in Portugal', () => {
-    // The regression this test exists for. The browser code was split on '-'
-    // and only the base kept, so pt-BR resolved to pt and a Brazilian first
-    // run opened in European Portuguese with pt-BR.ts sitting unused. Same
-    // for the three Spanish variants.
-    firstRunWith('pt-BR');
-    expect(resolveInitialLanguage()).toBe('pt-BR');
+  it('keeps a region the UI ships, so an en-US browser opens in en-US', () => {
+    // The regression this guards: the browser code was split on '-' and only the
+    // base kept, so a regional file the UI ships sat unused. en-US is the one
+    // regional code we offer.
+    firstRunWith('en-US');
+    expect(resolveInitialLanguage()).toBe('en-US');
   });
 
-  it('keeps every regional variant we actually ship', () => {
-    for (const code of ['pt-BR', 'es-MX', 'es-CL', 'es-CO', 'en-US']) {
+  it('keeps every regional code the picker offers', () => {
+    for (const { code } of SUPPORTED_LANGUAGES) {
       firstRunWith(code);
       expect(resolveInitialLanguage()).toBe(code);
     }
   });
 
   it('normalises the region the way i18next spells it', () => {
-    // A browser is free to send 'pt-br'; the resource bundle is registered
-    // under 'pt-BR' and that is the only spelling that finds it.
-    firstRunWith('pt-br');
-    expect(resolveInitialLanguage()).toBe('pt-BR');
+    // A browser is free to send 'en-us' or 'EN-us'; the resource bundle is
+    // registered under 'en-US' and that is the only spelling that finds it.
+    firstRunWith('en-us');
+    expect(resolveInitialLanguage()).toBe('en-US');
     firstRunWith('EN-us');
     expect(resolveInitialLanguage()).toBe('en-US');
   });
 
-  it('still falls back to the base language for a region we do not ship', () => {
-    // The behaviour that was already correct and must stay correct: there is
-    // no de-CH file, so a Swiss German browser gets German.
-    firstRunWith('de-CH');
-    expect(resolveInitialLanguage()).toBe('de');
-    firstRunWith('fr-CA');
-    expect(resolveInitialLanguage()).toBe('fr');
+  it('maps every English browser to en-US, because en-GB is not offered', () => {
+    // en-GB and the day-first English regions only resolve to en-GB when the
+    // picker offers it. It does not, so they all read in American English.
+    for (const browser of ['en-GB', 'en-AU', 'en']) {
+      firstRunWith(browser);
+      expect(resolveInitialLanguage(), browser).toBe('en-US');
+    }
   });
 
-  it('falls back to English for a language we do not ship at all', () => {
+  it('falls back to Vietnamese for a region or language we do not offer', () => {
+    // No vi-VN file and no de-CH, fr-CA or pt-BR file: the base is not offered
+    // either, so the final fallback applies.
+    for (const browser of ['vi-VN', 'de-CH', 'fr-CA', 'pt-BR']) {
+      firstRunWith(browser);
+      expect(resolveInitialLanguage(), browser).toBe('vi');
+    }
+  });
+
+  it('falls back to Vietnamese for a language we do not ship at all', () => {
     firstRunWith('is-IS');
-    expect(resolveInitialLanguage()).toBe('en');
+    expect(resolveInitialLanguage()).toBe('vi');
   });
 
   it('lets a stored choice beat the browser, region and all', () => {
-    firstRunWith('pt-BR');
+    firstRunWith('vi-VN');
+    window.localStorage.setItem('i18nextLng', 'en-US');
+    expect(resolveInitialLanguage()).toBe('en-US');
+  });
+
+  it('ignores a stored choice the picker does not offer', () => {
+    firstRunWith('en-US');
     window.localStorage.setItem('i18nextLng', 'de');
-    expect(resolveInitialLanguage()).toBe('de');
+    expect(resolveInitialLanguage()).toBe('en-US');
   });
 });
 
@@ -108,33 +124,25 @@ describe('detectCountry', () => {
   });
 
   it('falls back to the language country when the browser sends no region', () => {
-    // The half that matters for Europe: a bare 'de' or 'pl' carries no region
-    // at all, so region-only detection would answer null for most of the
-    // continent. The language is passed explicitly so the fallback half is
-    // deterministic rather than a property of whatever i18n booted into.
-    firstRunWith('de');
-    expect(detectCountry('de')).toBe('de');
-    firstRunWith('pl');
-    expect(detectCountry('pl')).toBe('pl');
-    firstRunWith('ar');
-    expect(detectCountry('ar')).toBe('sa');
-    // And the one that surprises people: bare English names no country. It
-    // used to answer 'gb', which read a preference out of a reader who had
-    // expressed none. Now the two English entries that DO name a region
-    // answer, and the unqualified one answers the code this codebase uses for
-    // "not tied to a market" - which resolveCountryOffer already turns into no
-    // offer, exactly as it does for null.
+    // The half that matters for the offered languages: a bare 'vi' carries no
+    // region, so region-only detection would answer null. The language is passed
+    // explicitly so the fallback half is deterministic.
+    firstRunWith('vi');
+    expect(detectCountry('vi')).toBe('vn');
     firstRunWith('en');
-    expect(detectCountry('en')).toBe('xx');
-    expect(detectCountry('en-GB')).toBe('gb');
     expect(detectCountry('en-US')).toBe('us');
+    // Bare English names no country on its own, and an unoffered language names
+    // none either. Both answer null, which resolveCountryOffer treats as no offer.
+    expect(detectCountry('en')).toBeNull();
+    expect(detectCountry('de')).toBeNull();
+    expect(detectCountry('en-GB')).toBeNull();
   });
 
   it('does not mistake a UN M49 region for a country code', () => {
-    // es-419 is Latin America, not a country. Answering '41' or '419' would
-    // be worse than answering the language's country.
-    firstRunWith('es-419');
-    expect(detectCountry('es')).toBe('es');
+    // en-419 is Latin America, not a country. Answering '41' or '419' would be
+    // worse than answering the language's country.
+    firstRunWith('en-419');
+    expect(detectCountry('en-US')).toBe('us');
   });
 
   it('can name a country for every language we offer', () => {

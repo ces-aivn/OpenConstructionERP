@@ -19,6 +19,7 @@ import { render, cleanup, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { cellRate, pricedRates, unpricedLineCount } from '../analysis';
+import { usePreferencesStore } from '@/stores/usePreferencesStore';
 
 const lang = vi.hoisted(() => ({ value: 'de' }));
 
@@ -187,6 +188,9 @@ describe('the bid chart', () => {
 
 describe('the leveling matrix', () => {
   it('prints units the way the BOQ editor does', async () => {
+    // The en-US jsdom browser defaults to imperial, which prints "sq ft" for
+    // m2. This test asserts the metric unit label, so the preference is set.
+    usePreferencesStore.setState({ measurementSystem: 'metric' });
     apiMocks.getLevelingMatrix.mockResolvedValue({
       package_id: 'pkg',
       package_name: 'Innenausbau',

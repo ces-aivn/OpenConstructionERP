@@ -67,8 +67,8 @@ describe('isValidCurrencyCode', () => {
 });
 
 describe('CURRENCY_CODES', () => {
-  it('contains common ISO codes and excludes the custom sentinel', () => {
-    expect(CURRENCY_CODES.has('EUR')).toBe(true);
+  it('offers the Vietnamese dong and the US dollar and excludes the custom sentinel', () => {
+    expect(CURRENCY_CODES.has('VND')).toBe(true);
     expect(CURRENCY_CODES.has('USD')).toBe(true);
     expect(CURRENCY_CODES.has(CUSTOM_CURRENCY_SENTINEL)).toBe(false);
   });
@@ -79,9 +79,9 @@ describe('Croatia', () => {
     expect(CURRENCY_CODES.has('HRK')).toBe(false);
   });
 
-  it('defaults a Croatian project to the Croatia region and the euro', () => {
-    expect(lookupCountryDefault('HR')).toEqual({ region: 'Croatia', currency: 'EUR' });
-    expect(lookupCountryDefault('hr')).toEqual({ region: 'Croatia', currency: 'EUR' });
+  it('gets no default for a Croatian address, because the build offers no Croatia region', () => {
+    expect(lookupCountryDefault('HR')).toBeNull();
+    expect(lookupCountryDefault('hr')).toBeNull();
   });
 });
 
@@ -96,16 +96,26 @@ describe('Bulgaria', () => {
 });
 
 describe('Ukraine and Hungary', () => {
-  // Both regions are offered in the project form, so an address geocoded to
-  // either country must land on that region and its own currency rather than
-  // leave the user to pick "other".
-  it('defaults a Ukrainian project to the UA region and the hryvnia', () => {
-    expect(lookupCountryDefault('UA')).toEqual({ region: 'UA', currency: 'UAH' });
-    expect(CURRENCY_CODES.has('UAH')).toBe(true);
+  // The project form now offers only Vietnam, US, INTL and Custom regions and
+  // VND, USD and Custom currencies, so neither the hryvnia nor the forint can be
+  // chosen for a new project, and neither country has an auto-fill default.
+  it('does not offer the hryvnia or the forint for a new project', () => {
+    expect(CURRENCY_CODES.has('UAH')).toBe(false);
+    expect(CURRENCY_CODES.has('HUF')).toBe(false);
   });
 
-  it('defaults a Hungarian project to the HU region and the forint', () => {
-    expect(lookupCountryDefault('hu')).toEqual({ region: 'HU', currency: 'HUF' });
-    expect(CURRENCY_CODES.has('HUF')).toBe(true);
+  it('gets no auto-fill default for a Ukrainian or Hungarian address', () => {
+    expect(lookupCountryDefault('UA')).toBeNull();
+    expect(lookupCountryDefault('hu')).toBeNull();
+  });
+});
+
+describe('the offered countries', () => {
+  it('defaults a Vietnamese project to the Vietnam region and the dong', () => {
+    expect(lookupCountryDefault('VN')).toEqual({ region: 'Vietnam', currency: 'VND' });
+  });
+
+  it('defaults a US project to the US region and the dollar', () => {
+    expect(lookupCountryDefault('us')).toEqual({ region: 'US', currency: 'USD' });
   });
 });

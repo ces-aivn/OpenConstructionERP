@@ -7,6 +7,20 @@ import { apiGet } from '@/shared/lib/api';
 vi.mock('@/shared/lib/api', () => ({ apiGet: vi.fn() }));
 const mockApiGet = vi.mocked(apiGet);
 
+/**
+ * A fresh copy of the store for a reader of `lang`. The defaults are computed
+ * once, when the module loads, from the UI language, so a test that needs the
+ * Vietnamese or the English defaults has to load the module again after it
+ * sets `i18nextLng`. The returned `apiGet` is the mock of that same copy.
+ */
+async function freshStore(lang: string) {
+  localStorage.clear();
+  localStorage.setItem('i18nextLng', lang);
+  vi.resetModules();
+  const [store, api] = await Promise.all([import('./usePreferencesStore'), import('@/shared/lib/api')]);
+  return { usePreferencesStore: store.usePreferencesStore, apiGet: vi.mocked(api.apiGet) };
+}
+
 describe('usePreferencesStore', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -14,9 +28,11 @@ describe('usePreferencesStore', () => {
     usePreferencesStore.getState().resetPreferences();
   });
 
-  it('should have correct default values', () => {
-    const state = usePreferencesStore.getState();
-    expect(state.currency).toBe('EUR');
+  it('should have correct default values for a Vietnamese reader', async () => {
+    const { usePreferencesStore: store } = await freshStore('vi');
+    const state = store.getState();
+    expect(state.currency).toBe('VND');
+    expect(state.defaultCurrency).toBe('VND');
     expect(state.measurementSystem).toBe('metric');
     // 'auto' = follow the UI language. See the date-format block below.
     expect(state.dateFormat).toBe('auto');
@@ -25,6 +41,14 @@ describe('usePreferencesStore', () => {
     // separators inside an English UI while every other number followed the
     // language. See `numbersAgreeAcrossSurfaces.test.tsx`.
     expect(state.numberLocale).toBe('auto');
+  });
+
+  it('defaults an English reader to USD and imperial', async () => {
+    const { usePreferencesStore: store } = await freshStore('en-US');
+    const state = store.getState();
+    expect(state.currency).toBe('USD');
+    expect(state.defaultCurrency).toBe('USD');
+    expect(state.measurementSystem).toBe('imperial');
   });
 
   it('carries no country default nobody reads', () => {
@@ -76,10 +100,11 @@ describe('usePreferencesStore', () => {
     expect(state.measurementSystem).toBe('imperial');
   });
 
-  it('should reset to defaults', () => {
-    usePreferencesStore.getState().setPreference('currency', 'CHF');
-    usePreferencesStore.getState().resetPreferences();
-    expect(usePreferencesStore.getState().currency).toBe('EUR');
+  it('should reset to defaults', async () => {
+    const { usePreferencesStore: store } = await freshStore('vi');
+    store.getState().setPreference('currency', 'CHF');
+    store.getState().resetPreferences();
+    expect(store.getState().currency).toBe('VND');
   });
 
   it('should format numbers correctly', () => {
@@ -116,14 +141,15 @@ describe('usePreferencesStore', () => {
     });
 
     it('skips a server value that is not a known option, keeping the default', async () => {
-      mockApiGet.mockResolvedValueOnce({
+      const { usePreferencesStore: store, apiGet } = await freshStore('vi');
+      apiGet.mockResolvedValueOnce({
         measurement_system: 'martian', // not in the union
         currency_code: '', // "not chosen" on the account
       });
-      await usePreferencesStore.getState().hydrateFromServer();
-      const s = usePreferencesStore.getState();
+      await store.getState().hydrateFromServer();
+      const s = store.getState();
       expect(s.measurementSystem).toBe('metric');
-      expect(s.currency).toBe('EUR');
+      expect(s.currency).toBe('VND');
     });
 
     it('swallows a server error and leaves the offline cache untouched', async () => {

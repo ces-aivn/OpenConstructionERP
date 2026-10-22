@@ -10,12 +10,13 @@
  * acceptance here is behavioural: open, close (Escape / commit / invalid
  * revert), and open again — on the same cell and on other cells.
  */
-import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { createElement, StrictMode } from 'react';
 
 import BOQGrid from '../BOQGrid';
 import type { Position } from '../api';
+import { usePreferencesStore } from '@/stores/usePreferencesStore';
 
 // Collab locks degrade silently in production when the service is down; in
 // tests we resolve successfully so the acquire/release lifecycle runs.
@@ -56,6 +57,14 @@ beforeAll(() => {
     configurable: true,
     get() { return this.parentElement; },
   });
+});
+
+beforeEach(() => {
+  // An en-US browser defaults to imperial, which would convert every typed
+  // rate from the displayed system. These tests assert the metric-canonical
+  // write, so they pick metric explicitly.
+  usePreferencesStore.getState().resetPreferences();
+  usePreferencesStore.getState().setPreference('measurementSystem', 'metric');
 });
 
 afterEach(() => {
