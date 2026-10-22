@@ -264,6 +264,8 @@ export function GenerationPreviewPanel({ preview }: { preview: GenerationPreview
   const [showAll, setShowAll] = useState(false);
   const notes = showAll ? preview.notes : preview.notes.slice(0, NOTES_SHOWN);
   const late = preview.requested_end != null && preview.planned_end > preview.requested_end;
+  // No end date was typed, so the window is the project's planned finish.
+  const fromProject = preview.fitted_window?.source === 'project';
 
   return (
     <div className="space-y-3 rounded-lg border border-border bg-surface-secondary/40 p-3" data-testid="generation-preview">
@@ -289,6 +291,15 @@ export function GenerationPreviewPanel({ preview }: { preview: GenerationPreview
               start: fmtDate(preview.planned_start),
               end: fmtDate(preview.planned_end),
             })
+          : fromProject
+            ? t(late ? 'schedule.preview_dates_late_project' : 'schedule.preview_dates_fit_project', {
+                defaultValue: late
+                  ? "Starts {{start}}, ends {{end}}: after the project's planned finish date, {{requested}}."
+                  : "Starts {{start}}, ends {{end}}, inside the project's planned finish date, {{requested}}.",
+                start: fmtDate(preview.planned_start),
+                end: fmtDate(preview.planned_end),
+                requested: fmtDate(preview.requested_end),
+              })
           : late
             ? t('schedule.preview_dates_late', {
                 defaultValue: 'Starts {{start}}, ends {{end}}: after the end date you asked for, {{requested}}.',

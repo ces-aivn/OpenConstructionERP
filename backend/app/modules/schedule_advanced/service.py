@@ -68,6 +68,7 @@ from app.modules.schedule_advanced.schemas import (
     BaselineDeltaResponse,
     BaselineUpdate,
     CalendarCreate,
+    CalendarFromPreset,
     CalendarUpdate,
     CommitmentCreate,
     CommitmentUpdate,
@@ -1747,6 +1748,92 @@ class ScheduleAdvancedService:
         if created.is_default:
             await self.calendar_repo.clear_defaults_except(created.project_id, keep_id=created.id)
         return created
+
+    async def calendar_presets(self, project_id: uuid.UUID) -> dict[str, Any]:
+        """The ready-made calendars, and the one a project of this country starts from."""
+        from app.modules.schedule.holiday_calendars import CALENDAR_PRESETS, default_preset_for_country
+
+        country = await self._project_country(project_id)
+        return {
+            "presets": [
+                {
+                    "key": key,
+                    "name": spec["name"],
+                    "country": spec["country"],
+                    "work_days": list(spec["work_days"]),
+                    "work_hours_per_day": Decimal(str(spec["work_hours_per_day"])),
+                }
+                for key, spec in CALENDAR_PRESETS.items()
+            ],
+            "default_preset": default_preset_for_country(country),
+            "project_country": country,
+        }
+
+    async def create_calendar_from_preset(self, data: CalendarFromPreset) -> Calendar:
+        """A project calendar from a ready-made one, its holidays filled in year by year.
+
+        The years run from the project's planned start to its planned end
+        (both included) unless given; without project dates, this year and the
+        five after it. The holidays are computed on the server, so every client
+        gets the same roster, and the calendar stays editable afterwards.
+
+        Raises:
+            HTTPException: 422 ``calendar_preset_years_invalid`` for a reversed
+                range or one longer than the most a preset spans.
+        """
+        from app.modules.projects.repository import ProjectRepository
+        from app.modules.schedule.holiday_calendars import CALENDAR_PRESETS, MAX_PRESET_YEARS, preset_holidays
+
+        spec = CALENDAR_PRESETS[data.preset]
+        project = await ProjectRepository(self.session).get_by_id(data.project_id)
+
+        def _year(value: object) -> int | None:
+            try:
+                return date.fromisoformat(str(value)[:10]).year if value else None
+            except ValueError:
+                return None
+
+        this_year = datetime.now(UTC).year
+        start_year = data.start_year or _year(getattr(project, "planned_start_date", None)) or this_year
+        end_year = data.end_year or _year(getattr(project, "planned_end_date", None)) or start_year + 5
+        if end_year < start_year or end_year - start_year + 1 > MAX_PRESET_YEARS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "error": "calendar_preset_years_invalid",
+                    "message": f"Pick a span of 1 to {MAX_PRESET_YEARS} years, the end not before the start.",
+                    "start_year": start_year,
+                    "end_year": end_year,
+                    "max_years": MAX_PRESET_YEARS,
+                },
+            )
+        return await self.create_calendar(
+            CalendarCreate(
+                project_id=data.project_id,
+                name=data.name or spec["name"],
+                work_days=list(spec["work_days"]),
+                work_hours_per_day=Decimal(str(spec["work_hours_per_day"])),
+                holidays=preset_holidays(data.preset, start_year, end_year),
+                special_shifts={"preset": data.preset, "years": [start_year, end_year]},
+                is_default=data.is_default,
+            )
+        )
+
+    async def _project_country(self, project_id: uuid.UUID) -> str | None:
+        """The project's ISO country, from its country column or else its region."""
+        from app.core.classification_registry import normalise_region
+        from app.modules.projects.repository import ProjectRepository
+
+        project = await ProjectRepository(self.session).get_by_id(project_id)
+        if project is None:
+            return None
+        code = (getattr(project, "country_code", None) or "").strip().upper()
+        if len(code) == 2 and code.isalpha():
+            return code
+        region = getattr(project, "region", None) or ""
+        if region.strip().upper().replace(" ", "") in ("VIETNAM", "VIỆTNAM"):
+            return "VN"
+        return normalise_region(region)
 
     async def get_calendar(self, cid: uuid.UUID) -> Calendar:
         c = await self.calendar_repo.get_by_id(cid)

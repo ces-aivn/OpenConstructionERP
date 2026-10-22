@@ -10,7 +10,7 @@
 // project's calendar list. Deletion uses an inline confirm affordance rather
 // than a modal / window.confirm, which the environment does not support.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CalendarDays, Plus, Trash2, Star, X, CalendarOff, Loader2 } from 'lucide-react';
@@ -21,9 +21,13 @@ import {
   createCalendar,
   updateCalendar,
   deleteCalendar,
+  listCalendarPresets,
+  createCalendarFromPreset,
+  type CalendarPresetKey,
   type ScheduleCalendar,
   type ScheduleCalendarUpdateBody,
 } from '@/features/schedule-advanced/api';
+import { scheduleErrorMessage } from './errors';
 
 /** The seven weekdays, in Mon..Sun order, mapped to ``work_days`` ints (Mon=0). */
 const WEEKDAYS: { day: number; key: string; label: string }[] = [
@@ -56,6 +60,48 @@ export function WorkCalendarManager({ projectId }: { projectId: string }) {
     enabled: !!projectId,
   });
 
+  // Ready-made calendars (Vietnam six- or five-day, US federal), the one for
+  // the project's country chosen first. Their holidays are filled in by the
+  // server for the project's years.
+  const { data: presetList } = useQuery({
+    queryKey: ['schedule-calendar-presets', projectId],
+    queryFn: () => listCalendarPresets(projectId),
+    enabled: !!projectId,
+    staleTime: 300_000,
+  });
+  const presets = presetList?.presets ?? [];
+  const [presetKey, setPresetKey] = useState<CalendarPresetKey | ''>('');
+  useEffect(() => {
+    if (presetKey || !presetList) return;
+    setPresetKey(presetList.default_preset ?? presetList.presets[0]?.key ?? '');
+  }, [presetList, presetKey]);
+
+  const presetMutation = useMutation({
+    mutationFn: (preset: CalendarPresetKey) =>
+      createCalendarFromPreset({
+        project_id: projectId,
+        preset,
+        name: t(`schedule.calendar.preset_${preset}`, {
+          defaultValue: presets.find((p) => p.key === preset)?.name ?? preset,
+        }),
+        // The first calendar becomes the project default, as with a blank one.
+        is_default: calendars.length === 0,
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: calendarsKey });
+      addToast({
+        type: 'success',
+        title: t('schedule.calendar.created', { defaultValue: 'Calendar created' }),
+      });
+    },
+    onError: (error: Error) =>
+      addToast({
+        type: 'error',
+        title: t('toasts.error', { defaultValue: 'Error' }),
+        message: scheduleErrorMessage(error, t),
+      }),
+  });
+
   const createMutation = useMutation({
     mutationFn: (name: string) =>
       createCalendar({
@@ -81,7 +127,7 @@ export function WorkCalendarManager({ projectId }: { projectId: string }) {
       addToast({
         type: 'error',
         title: t('toasts.error', { defaultValue: 'Error' }),
-        message: error.message,
+        message: scheduleErrorMessage(error, t),
       }),
   });
 
@@ -139,6 +185,47 @@ export function WorkCalendarManager({ projectId }: { projectId: string }) {
             </Button>
           </div>
         </div>
+        {presets.length > 0 && (
+          <div
+            className="mt-3 flex flex-wrap items-end gap-2 border-t border-border-light pt-3"
+            data-testid="calendar-presets"
+          >
+            <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-content-secondary">
+              {t('schedule.calendar.preset_label', { defaultValue: 'Ready-made calendar with public holidays' })}
+              <select
+                data-testid="calendar-preset-select"
+                className="h-9 rounded-lg border border-border bg-surface-primary px-2 text-sm text-content-primary focus:border-oe-blue focus:outline-none"
+                value={presetKey}
+                onChange={(e) => setPresetKey(e.target.value as CalendarPresetKey)}
+              >
+                {presets.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {t(`schedule.calendar.preset_${p.key}`, { defaultValue: p.name })}
+                    {p.key === presetList?.default_preset
+                      ? ` ${t('schedule.calendar.preset_recommended', { defaultValue: '(recommended for this project)' })}`
+                      : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button
+              variant="secondary"
+              icon={<CalendarDays size={15} />}
+              data-testid="calendar-add-preset"
+              disabled={!presetKey}
+              loading={presetMutation.isPending}
+              onClick={() => presetKey && presetMutation.mutate(presetKey)}
+            >
+              {t('schedule.calendar.add_preset', { defaultValue: 'Add ready-made calendar' })}
+            </Button>
+            <p className="basis-full text-xs text-content-tertiary">
+              {t('schedule.calendar.preset_hint', {
+                defaultValue:
+                  "Public holidays are filled in for the project's planned years (Tết, Hùng Kings, 30/4, 1/5 and National Day for Vietnam; federal holidays for the US), with the days given back when a holiday falls on a rest day.",
+              })}
+            </p>
+          </div>
+        )}
       </Card>
 
       {/* Calendar list */}
@@ -189,7 +276,7 @@ function CalendarCard({
     addToast({
       type: 'error',
       title: t('toasts.error', { defaultValue: 'Error' }),
-      message: error.message,
+      message: scheduleErrorMessage(error, t),
     });
 
   const patchMutation = useMutation({

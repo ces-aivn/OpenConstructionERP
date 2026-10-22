@@ -33,6 +33,14 @@ check against the Gantt chart:
    runs from the first day to the last and leaves the sections to overlap as
    rule 3 says. Only when the whole bill is such lump sums are they worked
    like any loose positions.
+6. When the wording of the top-level items names at least two stages of the
+   build (:mod:`app.modules.schedule.trade_sequence`), they are worked in
+   build order: ground and foundations, structure, envelope, services,
+   finishes, external works, keeping bill order inside a stage. Each ground
+   and structure item is a step of its own, so the frame never starts with
+   the piles; the trades of a later stage work side by side. Site overheads
+   span the works as in rule 5, and a lump sum that names a trade is worked
+   as that trade. A bill whose wording names no stage keeps rules 1 to 5.
 
 Durations here are working days; offsets count working days from the first
 day of the plan, with ``finish`` exclusive.
@@ -44,6 +52,8 @@ import math
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+from app.modules.schedule.trade_sequence import PHASE_ORDER, PRELIMINARIES, SEQUENTIAL_PHASES
 
 # Most crews one section is given at once. Four keeps a big section readable on
 # the chart and is a number a site manager recognises as a real gang count.
@@ -71,6 +81,8 @@ class BoqRow:
         has_work: False for a position with no quantity: nothing to build, so
             no task, though rows under it still form a group.
         lump_sum: True for a position priced as a lump sum.
+        trade: The build stage the row's wording names (see
+            :mod:`app.modules.schedule.trade_sequence`), or ``None``.
     """
 
     id: str
@@ -80,6 +92,7 @@ class BoqRow:
     data: dict[str, Any]
     has_work: bool = True
     lump_sum: bool = False
+    trade: str | None = None
 
 
 @dataclass
@@ -325,6 +338,42 @@ def _half_work_offset(item: Item, slots: Mapping[str, Slot]) -> int:
     return half_span
 
 
+def _item_trade(item: Item) -> str | None:
+    """The stage of a top-level item: its own wording, else most of its tasks'."""
+    if item.row.trade is not None or isinstance(item, Task):
+        return item.row.trade
+    votes: dict[str, int] = {}
+    for task in iter_tasks(item.items):
+        if task.row.trade is not None:
+            votes[task.row.trade] = votes.get(task.row.trade, 0) + 1
+    if not votes:
+        return None
+    best = max(votes.values())
+    return next(phase for phase in PHASE_ORDER if votes.get(phase) == best)
+
+
+def _phased(rest: list[Item]) -> list[tuple[Item, str]] | None:
+    """The items in build order with their stage, or ``None`` to keep bill order.
+
+    Bill order is kept when fewer than two stages can be read off the items:
+    there is then no sequence to restore. An item whose wording names no stage
+    takes the stage of the item before it in the bill (the one after, at the
+    top), so an unreadable line stays among its neighbours.
+    """
+    trades = [_item_trade(item) for item in rest]
+    if len({t for t in trades if t is not None and t != PRELIMINARIES}) < 2:
+        return None
+    known = [t for t in trades if t is not None]
+    filled: list[str] = []
+    last = known[0]
+    for trade in trades:
+        last = trade if trade is not None else last
+        filled.append(last)
+    rank = {phase: index for index, phase in enumerate(PHASE_ORDER)}
+    order = sorted(range(len(rest)), key=lambda i: (rank[filled[i]], i))
+    return [(rest[i], filled[i]) for i in order]
+
+
 def _sequence(roots: list[Item]) -> tuple[list[Item], list[Task], dict[str, Group]]:
     """Split the top level into the items worked in turn and the lump sums that span them.
 
@@ -333,13 +382,30 @@ def _sequence(roots: list[Item]) -> tuple[list[Item], list[Task], dict[str, Grou
     staircase of one position after another. Each such run stands in the
     sequence as a stand-in group whose key never leaves the layout.
 
+    When the wording names the stages of the build (rule 6), the top level is
+    put in build order first; a run then only gathers positions of one stage,
+    and in the ground and structure stages every position is a step of its
+    own. Site overheads (a lump sum with no trade, or any loose position of
+    the preliminaries) span the works.
+
     Returns:
         The sequence, the spanning lump sums, and each stand-in by its key.
     """
-    spanning = [item for item in roots if isinstance(item, Task) and item.row.lump_sum]
-    rest = [item for item in roots if not (isinstance(item, Task) and item.row.lump_sum)]
+
+    def _spans(item: Item, phased: bool) -> bool:
+        if not isinstance(item, Task):
+            return False
+        if phased:
+            return item.row.trade == PRELIMINARIES or (item.row.lump_sum and item.row.trade is None)
+        return item.row.lump_sum
+
+    ordered = _phased([item for item in roots if not _spans(item, True)])
+    phased = ordered is not None
+    spanning = [item for item in roots if _spans(item, phased)]
+    rest = [item for item in roots if not _spans(item, phased)]
     if not rest:
-        rest, spanning = list(roots), []
+        rest, spanning, ordered = list(roots), [], None
+    steps: list[tuple[Item, str | None]] = ordered if ordered is not None else [(item, None) for item in rest]
     sequence: list[Item] = []
     stand_ins: dict[str, Group] = {}
     run: list[Item] = []
@@ -358,8 +424,12 @@ def _sequence(roots: list[Item]) -> tuple[list[Item], list[Task], dict[str, Grou
             sequence.extend(run)
         run.clear()
 
-    for item in rest:
-        if isinstance(item, Task):
+    run_phase: str | None = None
+    for item, phase in steps:
+        if phase != run_phase:
+            _close_run()
+            run_phase = phase
+        if isinstance(item, Task) and phase not in SEQUENTIAL_PHASES:
             run.append(item)
             continue
         _close_run()

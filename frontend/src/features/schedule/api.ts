@@ -169,8 +169,18 @@ export interface GenerationPreview {
   workers_assumed?: boolean;
   /** Positions the number applies to; a crew the bill names is kept. */
   positions_without_workers?: number;
-  /** The window the workers were fitted to; ``default`` when no end date was given. */
-  fitted_window?: { days: number; end: string; default: boolean; fits?: boolean } | null;
+  /**
+   * The window the workers were fitted to; ``default`` when neither an end
+   * date nor the project's planned finish gave one. ``source`` says where the
+   * end came from: the request, the project's planned finish, or the default.
+   */
+  fitted_window?: {
+    days: number;
+    end: string;
+    default: boolean;
+    fits?: boolean;
+    source?: 'request' | 'project' | 'default';
+  } | null;
   compressed_pct: number | null;
   fits: boolean;
   planned_start: string;
@@ -209,6 +219,11 @@ export interface GenerateFromBoqOptions {
   replace?: boolean;
   /** Workers per position where the bill gives no crew, 1 to 20; omitted = the fewest that fit. */
   workersPerPosition?: number | null;
+  /**
+   * Write a plan that finishes after the window's end. Without it the server
+   * refuses such a plan with ``plan_exceeds_window``; the preview never refuses.
+   */
+  allowOverrun?: boolean;
 }
 
 function generateBody(boqId: string, options: GenerateFromBoqOptions) {
@@ -218,6 +233,7 @@ function generateBody(boqId: string, options: GenerateFromBoqOptions) {
     ...(options.startDate ? { start_date: options.startDate } : {}),
     ...(options.replace ? { replace: true } : {}),
     ...(options.workersPerPosition != null ? { workers_per_position: options.workersPerPosition } : {}),
+    ...(options.allowOverrun ? { allow_overrun: true } : {}),
   };
 }
 

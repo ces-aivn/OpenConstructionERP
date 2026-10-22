@@ -84,70 +84,26 @@ def _names(days: object) -> str:
 #: because "it happens to be Monday-Friday" and "nobody looked" produce the same
 #: resolver output, and only a written reason tells them apart.
 PICKER_REGIONS_THAT_ARE_MONDAY_TO_FRIDAY: dict[str, str] = {
-    "Australia": "Saturday-Sunday weekend.",
-    "Croatia": "Saturday-Sunday weekend; the Labour Act sets a 40-hour week over five days.",
-    "Czech": "Saturday-Sunday weekend.",
     "INTL": "Multi-region, so no single week applies; DEFAULT is the neutral answer rather than a guess.",
-    "Ireland": "Saturday-Sunday weekend.",
-    "Japan": "Saturday-Sunday weekend.",
-    "Korea": "Saturday-Sunday weekend.",
-    "Mexico": "Saturday-Sunday weekend.",
-    "Netherlands": "Saturday-Sunday weekend.",
-    "NewZealand": "Saturday-Sunday weekend.",
-    "Nordics": (
-        "Saturday-Sunday weekend across all four. Deliberately not routed to the DACH calendar, "
-        "which _CALENDAR_BY_LEGACY_HEAD's 'NORDIC' entry would suggest: DACH is also Monday-Friday "
-        "and eight hours, so routing there changes no computed date and only makes a Stockholm "
-        "project render a badge reading 'Germany/DACH'."
-    ),
-    "SouthAfrica": "Saturday-Sunday weekend.",
-    "UA": "Existing i18n_foundation work_calendars.json UA seed declares ISO weekdays 1-5; holidays are separate.",
 }
 
 #: Options whose week is a genuinely open question, kept apart from the table
 #: above so that "we checked and it is Monday-Friday" is never confused with "we
-#: could not tell". These answer DEFAULT today, which is a guess, and each line
-#: says what would settle it. Splitting the option or sourcing a calendar is a
-#: product decision, not a test's to make.
-PICKER_REGIONS_WHOSE_WEEK_IS_UNSETTLED: dict[str, str] = {
-    "HU": (
-        "JUR-03: neither core working-week registry nor i18n calendar seeds contains Hungary. "
-        "Verify the standard week and annual exchanged working Saturdays before adding a country calendar; "
-        "the selector exposes the existing DEFAULT with week_fallback=true meanwhile."
-    ),
-    "NorthAfrica": (
-        "Genuinely split: Egypt, Libya, Algeria and Sudan rest Friday-Saturday and work "
-        "Sunday-Thursday, while Morocco and Tunisia rest Saturday-Sunday. No single week is right "
-        "for the option as shipped, and Egypt is the largest construction market in it, so DEFAULT "
-        "is wrong there. Settled by splitting the picker option, not by widening a calendar."
-    ),
-    "EastAfrica": (
-        "Kenya, Tanzania and Uganda are Monday-Friday, but Ethiopia and much of the region run a "
-        "six-day site week, which is the same unsourced construction-convention question the CHINA "
-        "and INDIA entries carry. Settled by sourcing a site week, not by assuming one."
-    ),
-    "WestAfrica": (
-        "Nigeria, Ghana and Senegal are Monday-Friday by statute, with a six-day site week common "
-        "in practice. Same unsourced question as EastAfrica."
-    ),
-    "LatinAmerica": (
-        "Covers countries whose statutory weeks differ materially: Brazil already has its own "
-        "Monday-Saturday 44h entry, while Mexico is listed separately. What the residual 'Other' "
-        "option should mean is undecided."
-    ),
-    "SoutheastAsia": (
-        "Monday-Friday for the office week across most of the region, but Indonesia, Malaysia and "
-        "Vietnam commonly run six-day construction weeks. Unsourced, same class as the CHINA entry: "
-        "a longer site week is a deliberate model this product already ships, so what is undecided "
-        "here is whether the region has one, not whether its rest day is misplaced."
-    ),
-}
+#: could not tell". An entry answers DEFAULT today, which is a guess, and says
+#: what would settle it. Splitting the option or sourcing a calendar is a
+#: product decision, not a test's to make. Empty while the picker ships only
+#: Vietnam, the United States and the multi-region option: Vietnam and the
+#: United States each reach a calendar of their own.
+PICKER_REGIONS_WHOSE_WEEK_IS_UNSETTLED: dict[str, str] = {}
 
 
 #: Quote-agnostic on purpose: the repo has no frontend autoformatter, so a file
 #: may be edited into double quotes at any time, and a single-quote-only pattern
 #: would then match nothing and pass over an empty population.
-_OPTION_RE = re.compile(r"""\{\s*value:\s*(['"])(.*?)\1\s*,\s*label:\s*(['"])(.*?)\3\s*\}""")
+#: Each quoted string stops at its own closing quote, and fields after ``label``
+#: (the picker's ``iso`` code) are allowed: a lazy ``.*?`` that may run on to
+#: the closing brace would otherwise read ``Vietnam', iso: 'VN`` as the label.
+_OPTION_RE = re.compile(r"""\{\s*value:\s*(['"])((?:(?!\1).)*)\1\s*,\s*label:\s*(['"])((?:(?!\3).)*)\3[^{}]*\}""")
 
 
 def _picker_block() -> str:

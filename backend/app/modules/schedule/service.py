@@ -111,6 +111,7 @@ from app.modules.schedule.schemas import (
     WorkOrderCreate,
     WorkOrderUpdate,
 )
+from app.modules.schedule.trade_sequence import classify_trade
 from app.modules.schedule.wbs_numbering import (
     order_with_block_under,
     sort_order_changes,
@@ -181,6 +182,15 @@ _FALLBACK_PRODUCTION_RATES: dict[str, float] = {
     "t": 8.0,
     # Quintal (100 kg), as Italian bills measure steel and lime.
     "q": 2.0,
+    # US customary units, the metric rates above converted: a cubic yard is
+    # 0.7646 m3, a square foot 0.0929 m2, a linear foot 0.3048 m, a square
+    # yard 0.8361 m2, a pound 0.4536 kg. Read as one hour a unit, a million
+    # square feet of services was a million hours.
+    "cy": 3.06,
+    "sf": 0.074,
+    "sy": 0.67,
+    "lf": 0.15,
+    "lb": 0.009,
 }
 
 # People working one task together, by kind of unit: a gang of four on a
@@ -197,13 +207,19 @@ _FALLBACK_GANG_SIZE: dict[str, int] = {
     "pcs": 2,
     "stk": 2,
     "lsum": 1,
+    "cy": 4,
+    "sf": 3,
+    "sy": 3,
+    "lf": 2,
+    "lb": 4,
 }
 _FALLBACK_DEFAULT_GANG = 2
 
 # A duration guessed from the unit table may claim at most this many times the
-# position's share of the bill's money in the bill's guessed hours. The table
-# reads 6,252 m2 of scaffold hire (1,250 m2 for five months) as 5,000 hours of
-# work for a position worth 4 % of the bill; the price says otherwise.
+# position's share of the bill's money in the bill's guessed hours, and at
+# least that share divided by it. The table reads 6,252 m2 of scaffold hire
+# (1,250 m2 for five months) as 5,000 hours of work for a position worth 4 % of
+# the bill, and 36 lifts as 36 hours; the price says otherwise both times.
 _FALLBACK_PRICE_SHARE_CAP = 3.0
 
 # The most workers per position the generator assumes on its own when a bill
@@ -268,6 +284,39 @@ _UNIT_ALIASES: dict[str, str] = {
     "pz": "pcs",
     "q.li": "q",
     "ql": "q",
+    # US customary bills.
+    "cy": "cy",
+    "cuyd": "cy",
+    "cu yd": "cy",
+    "yd3": "cy",
+    "sf": "sf",
+    "sqft": "sf",
+    "sq ft": "sf",
+    "ft2": "sf",
+    "sy": "sy",
+    "sqyd": "sy",
+    "yd2": "sy",
+    "lf": "lf",
+    "ft": "lf",
+    "lb": "lb",
+    "lbs": "lb",
+    "tn": "t",
+    "tons": "t",
+    # Vietnamese bills.
+    "md": "m",
+    "m dài": "m",
+    "mét dài": "m",
+    "m2 sàn": "m2",
+    "m2 gfa": "m2",
+    "m2 xây dựng": "m2",
+    "tấn": "t",
+    "cái": "pcs",
+    "chiếc": "pcs",
+    "bộ": "pcs",
+    "cọc": "pcs",
+    "gói": "lsum",
+    "trọn gói": "lsum",
+    "khoán": "lsum",
 }
 
 
@@ -881,6 +930,17 @@ WORK_CALENDARS: dict[str, dict] = {
         "work_days": {0, 1, 2, 3, 4, 5},  # Mon-Sat
         "label": "India (Mon-Sat, 8h)",
     },
+    # Vietnam. Bộ luật Lao động 2019 Điều 105 caps normal hours at 8 a day and
+    # 48 a week, and Điều 111 gives at least one rest day a week; construction
+    # sites work Monday to Saturday and rest on Sunday, which is the planning
+    # week here. A project that works five days picks the five-day Vietnamese
+    # calendar instead. Holidays: core.calendar_vn, with the days given back
+    # for a holiday on Sunday (Điều 111(3)).
+    "VIETNAM": {
+        "hours_per_day": 8,
+        "work_days": {0, 1, 2, 3, 4, 5},  # Mon-Sat
+        "label": "Vietnam (Mon-Sat, 8h)",
+    },
 }
 
 
@@ -917,6 +977,7 @@ _CALENDAR_BY_COUNTRY: dict[str, str] = {
     "SA": "GULF",
     "TR": "TURKEY",
     "US": "US",
+    "VN": "VIETNAM",
 }
 
 # Heads that are not, and can never be, ISO 3166-1 alpha-2 country codes: a
@@ -1008,6 +1069,7 @@ _CALENDAR_BY_LABEL: dict[str, str] = {
     "UNITED ARAB EMIRATES": "UAE",
     "UNITED KINGDOM": "UK",
     "UNITED STATES": "US",
+    "VIET NAM": "VIETNAM",
 }
 
 
@@ -1067,6 +1129,10 @@ def get_work_calendar(region: str | None = None, subdivision_code: str | None = 
 
     week = _get_work_week(region)
     country = None if is_macro_region(region) else normalise_region(region)
+    if country is None and week is WORK_CALENDARS["VIETNAM"]:
+        # "Vietnam" and "Viet Nam" name one country the registry does not
+        # spell out; the week already says which, so its holidays follow.
+        country = "VN"
     sub = (subdivision_code or "").upper().strip()
     if country and sub.startswith(f"{country}-") and has_subdivision_holidays(sub):
         country = sub
@@ -2272,8 +2338,9 @@ class ScheduleService:
         """Reject completing an activity while a predecessor is still open.
 
         Mirrors the dependency guard ``tasks.complete_task`` enforces: reads the
-        canonical predecessor edges of ``activity_id`` and raises HTTP 409 with
-        a message naming every blocking (not-yet-completed) predecessor.
+        canonical predecessor edges of ``activity_id`` and raises HTTP 409
+        ``predecessors_not_complete`` naming every blocking (not-yet-completed)
+        predecessor in ``names``.
 
         Args:
             activity_id: The activity being marked completed.
@@ -2297,13 +2364,15 @@ class ScheduleService:
                 blocking.append(pred.name or str(pred.id))
 
         if blocking:
-            names = ", ".join(f"'{name}'" for name in sorted(blocking))
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Cannot complete: blocked by {len(blocking)} predecessor "
-                    f"activity(ies) that are not yet completed: {names}. Complete them first."
-                ),
+            ordered = sorted(blocking)
+            names = ", ".join(f"'{name}'" for name in ordered)
+            raise coded_http_error(
+                status.HTTP_409_CONFLICT,
+                "predecessors_not_complete",
+                f"Cannot complete: blocked by {len(blocking)} predecessor "
+                f"activity(ies) that are not yet completed: {names}. Complete them first.",
+                count=len(ordered),
+                names=ordered,
             )
 
     async def reconcile_dependency_sources(self, schedule_id: uuid.UUID) -> dict[str, int]:
@@ -3508,8 +3577,32 @@ class ScheduleService:
             default_cal = await self._project_default_calendar(project_id)
             if default_cal is not None:
                 return default_cal
+            regional = await self._project_regional_calendar(schedule)
+            if regional is not None:
+                return regional
 
         return resolve_calendar(schedule)
+
+    async def _project_regional_calendar(self, schedule: Schedule) -> dict | None:
+        """The project region's week and public holidays as ``{work_days, exceptions}``.
+
+        The week dates are counted on when an activity is saved (Monday to
+        Saturday for a Vietnamese project), so a reschedule does not recount
+        them on Monday to Friday. ``None`` for a region with the default week
+        and no holidays, which :func:`resolve_calendar` already answers.
+        Holidays cover the schedule's years (its start to its end, or five
+        years from the start), at most thirty.
+        """
+        region = await self.resolve_project_region(schedule.project_id)
+        cal = get_work_calendar(region, await self.resolve_project_subdivision(schedule.project_id))
+        country = cal.get("holiday_country")
+        if cal["week_fallback"] and not country:
+            return None
+        first = _parse_day(schedule.start_date) or date.today()
+        last = _parse_day(schedule.end_date) or first.replace(year=min(first.year + 5, 9999))
+        years = range(first.year, min(max(last.year, first.year), first.year + 29) + 1)
+        exceptions = sorted({d.isoformat() for year in years for d in calendar_holiday_dates(country, year)})
+        return {"work_days": sorted(cal["work_days"]), "exceptions": exceptions}
 
     async def _project_default_calendar(self, project_id: uuid.UUID) -> dict | None:
         """The project's default named calendar as ``{work_days, exceptions}``, if it has one."""
@@ -3823,6 +3916,7 @@ class ScheduleService:
                     # quantity left empty: it is work all the same.
                     has_work=quantity > 0 or (lump_sum and total > 0),
                     lump_sum=lump_sum,
+                    trade=classify_trade(p.description),
                 )
             )
         tree = build_plan_tree(rows)
@@ -3834,7 +3928,24 @@ class ScheduleService:
                 "This BOQ has no positions with work to schedule. Add positions to its sections first.",
             )
 
+        schedule_start = (
+            start_date
+            or _parse_day(schedule.start_date)
+            or await self._project_planned_start(schedule_project_id)
+            or date.today()
+        )
         window_is_explicit = total_project_days is not None
+        # Where the window came from: the request, the project's planned end
+        # date, or a default length. A project with a planned end has a window
+        # whether or not the caller sent one: generating without it used to
+        # lay a 2017-2021 project out to 2046.
+        window_source = "request" if window_is_explicit else "default"
+        if total_project_days is None:
+            project_end = await self._project_planned_end(schedule_project_id)
+            if project_end is not None and project_end >= schedule_start:
+                total_project_days = (project_end - schedule_start).days + 1
+                window_is_explicit = True
+                window_source = "project"
         if total_project_days is None:
             building_type = boq_meta.get("building_type", "residential")
             total_project_days = 540 if building_type == "office" else 365
@@ -3925,11 +4036,20 @@ class ScheduleService:
                 continue
             cost = float(task.row.data["total"])
             if guessed_cost > 0 and guessed_hours > 0 and cost > 0:
-                cap = _FALLBACK_PRICE_SHARE_CAP * cost / guessed_cost * guessed_hours
+                share_hours = cost / guessed_cost * guessed_hours
+                cap = _FALLBACK_PRICE_SHARE_CAP * share_hours
+                floor = share_hours / _FALLBACK_PRICE_SHARE_CAP
                 if b["hours"] > cap:
                     b["hours_from_unit"] = b["hours"]
                     b["hours"] = cap
                     b["capped_by_price"] = True
+                elif b["hours"] < floor:
+                    # The other way round: a count of pieces says nothing of
+                    # the work in each. 47 operating theatres at 1.5 million
+                    # each read as 47 hours; the price says months.
+                    b["hours_from_unit"] = b["hours"]
+                    b["hours"] = floor
+                    b["raised_by_price"] = True
             b["hours"] = round(b["hours"], 1)
 
         # Positions whose bill gives hours but no crew: one labour row in hours
@@ -3969,12 +4089,6 @@ class ScheduleService:
             # preview says the plan overruns the window.
             return {key: min(days, _MAX_TASK_WORKING_DAYS) for key, days in out.items()}
 
-        schedule_start = (
-            start_date
-            or _parse_day(schedule.start_date)
-            or await self._project_planned_start(schedule_project_id)
-            or date.today()
-        )
         plan_start = schedule_start
         while not _works(plan_start):
             plan_start += timedelta(days=1)
@@ -4141,12 +4255,15 @@ class ScheduleService:
                 recorded["norm_days"] = durations[position_id]
             return resources, recorded
 
+        # Every id up front: a stage the bill lists later can come first in the
+        # build order, so a link may point at an activity written after it.
+        for item, _parent in iter_items(tree.roots):
+            ids[item.key] = uuid.uuid4()
         sort_counter = 0
         for item, parent in iter_items(tree.roots):
             slot = layout.slots[item.key]
             data = item.row.data
-            activity_id = uuid.uuid4()
-            ids[item.key] = activity_id
+            activity_id = ids[item.key]
             parent_key = parent.key if parent is not None else None
             child_counter[parent_key] = child_counter.get(parent_key, 0) + 1
             ordinal = data["ordinal"]
@@ -4381,6 +4498,7 @@ class ScheduleService:
             "days": total_project_days,
             "end": window_end.isoformat(),
             "default": not window_is_explicit,
+            "source": window_source,
             # Whether the plan fits that window at its estimates. False when
             # even the most workers assumed leave it too long, so the preview
             # never calls the number "the fewest that fit".
@@ -4530,6 +4648,13 @@ class ScheduleService:
 
         project = await ProjectRepository(self.session).get_by_id(project_id)
         return _parse_day(getattr(project, "planned_start_date", None)) if project is not None else None
+
+    async def _project_planned_end(self, project_id: uuid.UUID) -> date | None:
+        """The project's planned end, when it has one."""
+        from app.modules.projects.repository import ProjectRepository
+
+        project = await ProjectRepository(self.session).get_by_id(project_id)
+        return _parse_day(getattr(project, "planned_end_date", None)) if project is not None else None
 
     @staticmethod
     def _plan_cost(plan: _BoqGenerationPlan) -> dict[str, Any]:
@@ -4693,6 +4818,7 @@ class ScheduleService:
         replace: bool = False,
         start_date: date | None = None,
         workers_per_position: int | None = None,
+        allow_overrun: bool = True,
     ) -> list[dict]:
         """Generate a schedule from a BOQ, at every depth of the bill.
 
@@ -4727,12 +4853,17 @@ class ScheduleService:
                 :data:`MAX_ASSUMED_WORKERS` that fit the window without
                 shortening any duration; without an end date, the default
                 window, which the preview names as such.
+            allow_overrun: Write a plan that ends after the window. The API
+                sends ``False`` unless the person accepted the overrun; a
+                caller inside the product that records the warning instead
+                keeps the default.
 
         Returns:
             One ``{"id", "activity_type", "end_date"}`` dict per created activity.
 
         Raises:
             HTTPException: 404 ``boq_not_found``, 422 ``boq_has_no_positions``,
+                422 ``plan_exceeds_window`` (only without ``allow_overrun``),
                 409 ``schedule_has_activities``. Each detail carries ``error``
                 (the code) and ``message`` (English, for API clients).
         """
@@ -4743,6 +4874,16 @@ class ScheduleService:
         plan = await self._plan_from_boq(
             schedule_id, boq_id, total_project_days, start_date, workers_per_position=workers_per_position
         )
+        overrun = next((w for w in plan.warnings if w.get("code") == "plan_exceeds_window"), None)
+        if overrun is not None and not allow_overrun:
+            raise coded_http_error(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "plan_exceeds_window",
+                f"The plan ends on {overrun['planned_end']}, after the requested end {overrun['requested_end']}. "
+                "Move the end date, add crews, or generate again with allow_overrun=true.",
+                planned_end=overrun["planned_end"],
+                requested_end=overrun["requested_end"],
+            )
 
         relinks: list[tuple[uuid.UUID, uuid.UUID]] = []
         existing_count = (await self.activity_repo.list_for_schedule(schedule_id, limit=1))[1]

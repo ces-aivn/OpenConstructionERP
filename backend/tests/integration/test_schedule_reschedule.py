@@ -554,3 +554,75 @@ async def test_fs_link_keeps_the_duration_and_starts_the_next_working_day(
                 row.end_date,
             )
         assert rows[2].start_date == _next_working_day(rows[1].end_date, week, off)
+
+
+@pytest.mark.asyncio
+async def test_reschedule_counts_a_vietnamese_project_on_its_six_day_week() -> None:
+    """A project in Vietnam reschedules on Monday to Saturday without a named calendar.
+
+    The predecessor fills Monday 2024-01-01 to Friday 2024-01-05, so its FS
+    successor starts on the Saturday a Vietnamese site works, not on the
+    Monday a Monday-Friday fallback would pick. A Tết day inside the window
+    is not worked.
+    """
+    from app.modules.projects.models import Project
+    from app.modules.users.models import User
+
+    async with transactional_session(disable_fks=True) as session:
+        user = User(
+            email=f"vn-{uuid.uuid4().hex[:8]}@schedule-resched.io",
+            hashed_password="x",
+            full_name="Planner",
+            role="editor",
+            is_active=True,
+        )
+        session.add(user)
+        await session.flush()
+        project = Project(name="Vietnam reschedule QA", owner_id=user.id, region="Vietnam")
+        session.add(project)
+        await session.flush()
+        project_id = project.id
+
+        service = ScheduleService(session)
+        schedule = await service.create_schedule(
+            ScheduleCreate(project_id=project_id, name="VN week QA", start_date="2024-01-01")
+        )
+        schedule_id = schedule.id
+        pred = await service.create_activity(
+            ActivityCreate(schedule_id=schedule_id, name="Trade", start_date="2024-01-01", end_date="2024-01-05")
+        )
+        succ = await service.create_activity(
+            ActivityCreate(schedule_id=schedule_id, name="Follow-on", start_date="2024-01-01", end_date="2024-01-01")
+        )
+        pred_id, succ_id = pred.id, succ.id
+
+        async def _noop_verify(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            return None
+
+        original = schedule_router._verify_schedule_owner
+        schedule_router._verify_schedule_owner = _noop_verify  # type: ignore[assignment]
+        try:
+            await schedule_router.create_relationship(
+                schedule_id=schedule_id,
+                data=RelationshipCreate(
+                    predecessor_id=pred_id, successor_id=succ_id, relationship_type="FS", lag_days=0
+                ),
+                session=session,
+                _user_id=uuid.uuid4(),
+                payload={"role": "admin"},
+                service=service,
+            )
+            activities = await schedule_router.reschedule_schedule(
+                schedule_id=schedule_id,
+                _user_id=uuid.uuid4(),
+                payload={"role": "admin"},
+                session=session,
+                service=service,
+            )
+        finally:
+            schedule_router._verify_schedule_owner = original  # type: ignore[assignment]
+
+        assert _by_id(activities, succ_id).start_date == "2024-01-06"
+        calendar = await service._resolve_schedule_default_calendar(await service.schedule_repo.get_by_id(schedule_id))
+        assert calendar["work_days"] == [0, 1, 2, 3, 4, 5]
+        assert "2024-02-12" in calendar["exceptions"]  # Tết 2024, third day

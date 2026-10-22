@@ -369,7 +369,9 @@ async def test_complete_blocked_when_predecessor_open_update_progress() -> None:
     with pytest.raises(HTTPException) as exc:
         await svc.update_progress(succ.id, 100.0)
     assert exc.value.status_code == 409
-    assert "Predecessor" in exc.value.detail
+    assert exc.value.detail["error"] == "predecessors_not_complete"
+    assert exc.value.detail["names"] == ["Predecessor"]
+    assert "Predecessor" in exc.value.detail["message"]
 
 
 @pytest.mark.asyncio

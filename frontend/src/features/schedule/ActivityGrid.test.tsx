@@ -22,6 +22,7 @@ vi.mock('./api', async () => {
     ...actual,
     scheduleApi: {
       updateActivity: vi.fn(),
+      updateProgress: vi.fn(),
       reschedule: vi.fn(),
       deleteActivity: vi.fn(),
     },
@@ -43,7 +44,9 @@ vi.mock('@/features/schedule-advanced/api', () => ({
 import { scheduleApi } from './api';
 import { listAssignmentsForActivity, listResources } from '@/features/resources/api';
 import { listCalendars } from '@/features/schedule-advanced/api';
-import { ActivityGrid } from './ActivityGrid';
+import { ActivityGrid, parseProgressPct } from './ActivityGrid';
+import { ApiError } from '@/shared/lib/api';
+import { useToastStore } from '@/stores/useToastStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 
 const A = {
@@ -94,6 +97,7 @@ describe('ActivityGrid', () => {
     vi.clearAllMocks();
     (scheduleApi.updateActivity as any).mockResolvedValue({ id: 'a1' });
     (scheduleApi.reschedule as any).mockResolvedValue([]);
+    (scheduleApi.updateProgress as any).mockResolvedValue({ id: 'a1' });
     (listCalendars as any).mockResolvedValue([]);
     (listResources as any).mockResolvedValue({
       items: [
@@ -161,6 +165,83 @@ describe('ActivityGrid', () => {
     fireEvent.change(end, { target: { value: '2023-12-30' } });
     fireEvent.blur(end);
     expect(scheduleApi.updateActivity).not.toHaveBeenCalled();
+  });
+
+  it('edits progress in place through the progress endpoint', async () => {
+    renderGrid();
+    const input = screen.getByTestId('grid-progress-a2');
+    expect(input).toHaveValue(40);
+    fireEvent.change(input, { target: { value: '65' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.blur(input);
+    await waitFor(() => expect(scheduleApi.updateProgress).toHaveBeenCalledWith('a2', 65));
+    expect(scheduleApi.updateActivity).not.toHaveBeenCalled();
+  });
+
+  it('puts the stored progress back for a value outside 0 to 100, without a request', () => {
+    renderGrid();
+    const input = screen.getByTestId('grid-progress-a2');
+    fireEvent.change(input, { target: { value: '140' } });
+    fireEvent.blur(input);
+    expect(scheduleApi.updateProgress).not.toHaveBeenCalled();
+    expect(input).toHaveValue(40);
+  });
+
+  it('says a refused completion in words', async () => {
+    useToastStore.setState({ toasts: [] });
+    (scheduleApi.updateProgress as any).mockRejectedValue(
+      new ApiError(409, 'Conflict', {
+        detail: { error: 'predecessors_not_complete', message: 'Cannot complete', count: 1, names: ['Foundation'] },
+      }),
+    );
+    renderGrid();
+    const input = screen.getByTestId('grid-progress-a2');
+    fireEvent.change(input, { target: { value: '100' } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts[0]?.message).toMatch(/predecessors are open: Foundation/),
+    );
+  });
+
+  it('puts the stored progress back when the server refuses the new one', async () => {
+    (scheduleApi.updateProgress as any).mockRejectedValue(
+      new ApiError(409, 'Conflict', {
+        detail: { error: 'predecessors_not_complete', message: 'Cannot complete', count: 1, names: ['Foundation'] },
+      }),
+    );
+    renderGrid();
+    const input = screen.getByTestId('grid-progress-a2') as HTMLInputElement;
+    const stored = input.value;
+    fireEvent.change(input, { target: { value: '100' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(scheduleApi.updateProgress).toHaveBeenCalledWith('a2', 100));
+    await waitFor(() => expect((screen.getByTestId('grid-progress-a2') as HTMLInputElement).value).toBe(stored));
+    expect(stored).not.toBe('100');
+  });
+
+  it('shows a section progress as rolled up, not editable', () => {
+    renderGrid({ activities: [{ ...A, id: 's9', activity_type: 'summary', progress_pct: 30 }] });
+    const cell = screen.getByTestId('grid-progress-s9');
+    expect(cell.tagName).toBe('SPAN');
+    expect(cell).toHaveTextContent('30%');
+  });
+
+  it('keeps every column a readable width and lets the table scroll sideways', () => {
+    renderGrid();
+    expect(screen.getByTestId('activity-grid').className).toMatch(/w-max/);
+    expect(screen.getByTestId('grid-col-name').className).toMatch(/min-w-\[280px\]/);
+    expect(screen.getByTestId('grid-col-section').className).toMatch(/whitespace-nowrap/);
+  });
+
+  it('reads a typed percentage as a whole number from 0 to 100', () => {
+    expect(parseProgressPct('42')).toBe(42);
+    expect(parseProgressPct('42,6')).toBe(43);
+    expect(parseProgressPct(' 0 ')).toBe(0);
+    expect(parseProgressPct('100')).toBe(100);
+    expect(parseProgressPct('101')).toBeNull();
+    expect(parseProgressPct('-5')).toBeNull();
+    expect(parseProgressPct('')).toBeNull();
+    expect(parseProgressPct('abc')).toBeNull();
   });
 
   it('recomputes dates via reschedule', async () => {

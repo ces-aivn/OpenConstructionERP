@@ -66,6 +66,7 @@ import { ScheduleCodesPanel } from './ScheduleCodesPanel';
 import { ScheduleResourcePanel } from './ScheduleResourcePanel';
 import { ScheduleRealtimePanel } from './ScheduleRealtimePanel';
 import { DependencyEditor } from './DependencyEditor';
+import { ActivityProgressEditor } from './ActivityProgressEditor';
 import { MilestoneClientToggle } from './MilestoneClientToggle';
 import { BoqLinkEditor } from './BoqLinkEditor';
 import { ConfidenceBadge, activityConfidence } from './planConfidence';
@@ -77,6 +78,7 @@ import {
   MAX_WORKERS_PER_POSITION,
   parseWorkers,
   previewInWindow,
+  previewOverruns,
   projectWindowDays,
   refreshAfterGenerate,
 } from './generateWindow';
@@ -1168,6 +1170,14 @@ export function ScheduleDetail({
   const [dismissedStamp, setDismissedStamp] = useState<string | null>(null);
   // What the generation would write, shown for the reader to confirm.
   const [generationPreview, setGenerationPreview] = useState<GenerationPreview | null>(null);
+  // A plan that finishes after the window is written only once the reader
+  // has ticked that they accept it; the server refuses it otherwise.
+  const [acceptOverrun, setAcceptOverrun] = useState(false);
+  useEffect(() => {
+    setAcceptOverrun(false);
+  }, [generationPreview]);
+  const generationOverruns = previewOverruns(generationPreview);
+  const overrunNotAccepted = generationOverruns && !acceptOverrun;
   // The activity whose delete is being confirmed.
   const [deleteTarget, setDeleteTarget] = useState<ActivityDeleteTarget | null>(null);
   // A viewer sees the plan but none of the buttons the server would refuse.
@@ -1216,6 +1226,11 @@ export function ScheduleDetail({
     end_date: '',
     activity_type: 'task',
   });
+  // A finish before the start is refused by the server too; the form says so first.
+  const activityRangeError = activityForm.start_date && activityForm.end_date
+    && activityForm.end_date < activityForm.start_date
+    ? t('schedule.end_before_start', { defaultValue: 'The end date must be after the start date.' })
+    : undefined;
   // Set once the user types a WBS code of their own, so choosing a section
   // afterwards does not overwrite it with the suggested one.
   const wbsTouchedRef = useRef(false);
@@ -1384,7 +1399,7 @@ export function ScheduleDetail({
         setWbsError(wbsTakenMessage(data.wbs_code));
         return;
       }
-      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: error.message });
+      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: scheduleErrorMessage(error, t) });
     },
   });
   const wbsTakenMessage = (code: string) =>
@@ -1416,7 +1431,9 @@ export function ScheduleDetail({
 
   const generateFromBOQ = useMutation({
     mutationFn: ({ boqId, replace }: { boqId: string; replace: boolean }) =>
-      generateInWindow(schedule.id, boqId, generateStartDate, generateEndDate, replace, workersToWrite),
+      generateInWindow(
+        schedule.id, boqId, generateStartDate, generateEndDate, replace, workersToWrite, acceptOverrun,
+      ),
     onSuccess: async () => {
       // The dialog stays open with its button spinning until the new plan is
       // loaded, so the toast lands on the generated schedule and not on the
@@ -1469,7 +1486,9 @@ export function ScheduleDetail({
         start_date: generateStartDate || undefined,
       });
       try {
-        await generateInWindow(created.id, boqId, generateStartDate, generateEndDate, false, workersToWrite);
+        await generateInWindow(
+          created.id, boqId, generateStartDate, generateEndDate, false, workersToWrite, acceptOverrun,
+        );
       } catch (error) {
         // Retain the failed attempt in the archive; never silently purge it.
         try {
@@ -1514,7 +1533,7 @@ export function ScheduleDetail({
       addToast({ type: 'success', title: t('toasts.cpm_calculated', { defaultValue: 'Critical path calculated' }) });
     },
     onError: (error: Error) => {
-      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: error.message });
+      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: scheduleErrorMessage(error, t) });
     },
   });
 
@@ -1527,7 +1546,7 @@ export function ScheduleDetail({
       addToast({ type: 'success', title: t('toasts.risk_analysis_complete', { defaultValue: 'Risk analysis complete' }) });
     },
     onError: (error: Error) => {
-      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: error.message });
+      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: scheduleErrorMessage(error, t) });
     },
   });
 
@@ -1546,11 +1565,11 @@ export function ScheduleDetail({
         addToast({
           type: 'warning',
           title: t('schedule.complete_blocked', { defaultValue: 'Blocked by predecessor' }),
-          message: error.message,
+          message: scheduleErrorMessage(error, t),
         });
         return;
       }
-      addToast({ type: 'error', title: t('toasts.update_failed', { defaultValue: 'Update failed' }), message: error.message });
+      addToast({ type: 'error', title: t('toasts.update_failed', { defaultValue: 'Update failed' }), message: scheduleErrorMessage(error, t) });
     },
   });
 
@@ -1576,7 +1595,7 @@ export function ScheduleDetail({
     },
     onError: (error: Error, _vars, ctx) => {
       if (ctx?.prev) queryClient.setQueryData(['gantt', schedule.id], ctx.prev);
-      addToast({ type: 'error', title: t('toasts.update_failed', { defaultValue: 'Update failed' }), message: error.message });
+      addToast({ type: 'error', title: t('toasts.update_failed', { defaultValue: 'Update failed' }), message: scheduleErrorMessage(error, t) });
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['gantt', schedule.id] });
@@ -1637,7 +1656,7 @@ export function ScheduleDetail({
       addToast({ type: 'success', title: t('schedule.activated', { defaultValue: 'Schedule activated' }) });
     },
     onError: (error: Error) => {
-      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: error.message });
+      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: scheduleErrorMessage(error, t) });
     },
   });
 
@@ -1725,10 +1744,12 @@ export function ScheduleDetail({
         {t('schedule.back_to_schedules', 'Back to schedules')}
       </button>
 
-      {/* Header */}
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <h1 className="text-2xl font-bold text-content-primary">{schedule.name}</h1>
+      {/* Header: the title block has the full width and the toolbar wraps on
+          its own row below it. Side by side, a long toolbar squeezed the
+          title into a narrow column, one word per line. */}
+      <div className="mb-6 space-y-4" data-testid="schedule-detail-header">
+        <div className="min-w-0">
+          <h1 className="break-words text-2xl font-bold text-content-primary">{schedule.name}</h1>
           {schedule.description && (
             <p className="mt-1 text-sm text-content-secondary">{schedule.description}</p>
           )}
@@ -1756,7 +1777,7 @@ export function ScheduleDetail({
             <CalendarCoverageNotice schedule={{ ...schedule, ...scheduleRecord }} />
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2" data-testid="schedule-detail-toolbar">
           {canEditSchedule && (
             <Button
               variant="secondary"
@@ -1796,7 +1817,7 @@ export function ScheduleDetail({
           {hasActivities && (
             <>
               {/* View mode toggle: Table / Gantt / EVM / 4D */}
-              <div className="flex items-center gap-1 rounded-lg border border-border-light p-0.5">
+              <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border-light p-0.5">
                 {([
                   { key: 'table' as const, label: t('schedule.view_table', 'Table') },
                   { key: 'gantt' as const, label: t('schedule.view_gantt', 'Gantt') },
@@ -2303,6 +2324,7 @@ export function ScheduleDetail({
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            if (activityRangeError) return;
             const code = activityForm.wbs_code.trim();
             if (code && (ganttData?.activities ?? []).some((a) => (a.wbs_code ?? '').trim() === code)) {
               setWbsError(wbsTakenMessage(code));
@@ -2371,6 +2393,8 @@ export function ScheduleDetail({
               label={t('schedule.end_date', 'End Date')}
               type="date"
               value={activityForm.end_date}
+              min={activityForm.start_date || undefined}
+              error={activityRangeError}
               onChange={(e) => setActivityForm((f) => ({ ...f, end_date: e.target.value }))}
               required aria-required="true"
             />
@@ -2400,18 +2424,19 @@ export function ScheduleDetail({
             <Button variant="ghost" type="button" onClick={() => setShowAddActivity(false)}>
               {t('common.cancel', 'Cancel')}
             </Button>
-            <Button variant="primary" type="submit" loading={addActivity.isPending}>
+            <Button variant="primary" type="submit" loading={addActivity.isPending} disabled={Boolean(activityRangeError)}>
               {t('schedule.create_activity', 'Create Activity')}
             </Button>
           </div>
         </form>
       </Modal>
 
-      {/* Edit dependencies Modal (#348) - opens when a Gantt bar is clicked */}
+      {/* The activity panel a Gantt bar or a grid row opens: progress,
+          dependencies and BOQ links (#348). */}
       <Modal
         open={!!selectedActivity}
         onClose={() => setSelectedActivityId(null)}
-        title={t('schedule.edit_activity_links', { defaultValue: 'Dependencies and BOQ links' })}
+        title={t('schedule.activity_details', { defaultValue: 'Activity details' })}
       >
         {selectedActivity && (
           <div className="space-y-4">
@@ -2421,6 +2446,12 @@ export function ScheduleDetail({
                 {formatDate(selectedActivity.start_date)} &ndash; {formatDate(selectedActivity.end_date)}
               </p>
             </div>
+            <ActivityProgressEditor
+              activity={selectedActivity}
+              disabled={!canEditSchedule}
+              saving={updateProgress.isPending}
+              onSave={(pct) => updateProgress.mutate({ activityId: selectedActivity.id, progress: pct })}
+            />
             {selectedActivity.activity_type === 'milestone' && (
               <MilestoneClientToggle scheduleId={schedule.id} activity={selectedActivity} />
             )}
@@ -2504,9 +2535,9 @@ export function ScheduleDetail({
             />
             <p className="mt-1 text-xs text-content-tertiary">
               {!generateEndDate
-                ? t('schedule.end_date_optional', {
+                ? t('schedule.end_date_optional_project', {
                     defaultValue:
-                      'No end date: the plan takes as long as the work needs and nothing is shortened. Enter one to fit the plan between the two dates.',
+                      "No end date: the plan is fitted to the project's planned finish date, if the project has one; otherwise it takes as long as the work needs. Enter a date to fit the plan between the two dates.",
                   })
                 : generateWindowDays == null
                   ? t('schedule.end_before_start', { defaultValue: 'The end date must be after the start date.' })
@@ -2590,6 +2621,27 @@ export function ScheduleDetail({
             </div>
           )}
           {generationPreview && <GenerationPreviewPanel preview={generationPreview} />}
+          {generationPreview && generationOverruns && (
+            <label
+              className="flex items-start gap-2 rounded-lg border border-semantic-warning/40 bg-semantic-warning-bg px-3 py-2 text-sm text-content-primary"
+              data-testid="generate-accept-overrun"
+            >
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={acceptOverrun}
+                onChange={(e) => setAcceptOverrun(e.target.checked)}
+              />
+              <span>
+                {t('schedule.generate_accept_overrun', {
+                  defaultValue:
+                    'Accept a finish after the project finish date: the plan ends on {{planned}}, the window ends on {{requested}}. Otherwise move the end date or set more workers and check the plan again.',
+                  planned: formatDate(generationPreview.planned_end),
+                  requested: formatDate(generationPreview.requested_end ?? ''),
+                })}
+              </span>
+            </label>
+          )}
           {generationPreview && generationPreview.existing_activity_count > 0 && (
             <div className="space-y-1 text-sm">
               <p className="text-content-primary">
@@ -2648,7 +2700,7 @@ export function ScheduleDetail({
                     variant="secondary"
                     type="button"
                     loading={generateIntoNewSchedule.isPending}
-                    disabled={generateFromBOQ.isPending}
+                    disabled={generateFromBOQ.isPending || overrunNotAccepted}
                     onClick={() => generateIntoNewSchedule.mutate(generationPreview.boq_id)}
                   >
                     {t('schedule.generate_conflict_new_schedule', { defaultValue: 'Create a new schedule' })}
@@ -2659,7 +2711,7 @@ export function ScheduleDetail({
                   type="button"
                   data-testid="generate-replace"
                   loading={generateFromBOQ.isPending}
-                  disabled={generateIntoNewSchedule.isPending}
+                  disabled={generateIntoNewSchedule.isPending || overrunNotAccepted}
                   onClick={() => generateFromBOQ.mutate({ boqId: generationPreview.boq_id, replace: true })}
                 >
                   {t('schedule.generate_replace_and_create', { defaultValue: 'Replace them and create the plan' })}
@@ -2670,6 +2722,7 @@ export function ScheduleDetail({
                 variant="primary"
                 data-testid="generate-create"
                 loading={generateFromBOQ.isPending}
+                disabled={overrunNotAccepted}
                 onClick={() => generateFromBOQ.mutate({ boqId: generationPreview.boq_id, replace: false })}
               >
                 {t('schedule.generate_create', { defaultValue: 'Create the plan' })}
@@ -2857,9 +2910,14 @@ export function ProjectSchedules({
       if (generateBoqId) setSelectedSchedule(created);
     },
     onError: (error: Error) => {
-      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: error.message });
+      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: scheduleErrorMessage(error, t) });
     },
   });
+  // ISO dates compare as strings; the server refuses the same range, but the
+  // form says so before a request is sent.
+  const createRangeError = form.start_date && form.end_date && form.end_date < form.start_date
+    ? t('schedule.end_before_start', { defaultValue: 'The end date must be after the start date.' })
+    : undefined;
 
   // If a schedule is selected, show its detail
   if (selectedSchedule) {
@@ -3172,7 +3230,7 @@ export function ProjectSchedules({
         onOpenSchedule={(result) => {
           setShowSpreadsheetImport(false);
           scheduleApi.getSchedule(result.schedule_id).then(setSelectedSchedule, (error: Error) =>
-            addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: error.message }),
+            addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: scheduleErrorMessage(error, t) }),
           );
         }}
       />
@@ -3186,6 +3244,7 @@ export function ProjectSchedules({
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            if (createRangeError) return;
             submitCreateOnce(() => createSchedule.mutateAsync(form));
           }}
           className="space-y-4"
@@ -3214,6 +3273,8 @@ export function ProjectSchedules({
               label={t('schedule.end_date', 'End Date')}
               type="date"
               value={form.end_date}
+              min={form.start_date || undefined}
+              error={createRangeError}
               onChange={(e) => setForm((f) => ({ ...f, end_date: e.target.value }))}
             />
           </div>
@@ -3221,7 +3282,7 @@ export function ProjectSchedules({
             <Button variant="ghost" type="button" onClick={() => setShowCreate(false)}>
               {t('common.cancel', 'Cancel')}
             </Button>
-            <Button variant="primary" type="submit" loading={createSchedule.isPending}>
+            <Button variant="primary" type="submit" loading={createSchedule.isPending} disabled={Boolean(createRangeError)}>
               {t('common.create', 'Create')}
             </Button>
           </div>

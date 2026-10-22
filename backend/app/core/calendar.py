@@ -74,6 +74,7 @@ from typing import Any
 from dateutil.easter import EASTER_ORTHODOX, easter  # type: ignore[import]
 from hijridate import Gregorian, Hijri  # type: ignore[import]
 
+from app.core.calendar_vn import vn_public_holidays
 from app.core.holiday_observances import apply_observances
 from app.core.provenance import Provenance, declared, fell_back, unavailable, weakest
 from app.core.seeded_holidays import seeded_holiday_dates
@@ -1709,6 +1710,11 @@ _WORKING_WEEK: dict[str, frozenset[int]] = {
     # French calendar. Sunday rest is the statute (L3132-3); Saturday is the
     # convention, and a site working Saturdays sets its own calendar.
     "FR": frozenset({0, 1, 2, 3, 4}),
+    # Vietnam: Bộ luật Lao động 2019 Điều 105 caps normal hours at 8 a day and
+    # 48 a week and encourages 40; the public service and offices work Monday
+    # to Friday. Construction sites usually work Saturdays too, which the
+    # planning table carries as its own longer week. Holidays: core.calendar_vn.
+    "VN": frozenset({0, 1, 2, 3, 4}),
 }
 
 _DEFAULT_WORKING_WEEK: frozenset[int] = frozenset({0, 1, 2, 3, 4})
@@ -1741,6 +1747,7 @@ _HOLIDAY_FUNCS: dict[str, Any] = {
     "IT": _holidays_it,
     "EG": _holidays_eg,
     "FR": _holidays_fr,
+    "VN": lambda y: set(vn_public_holidays(y)),
 }
 
 

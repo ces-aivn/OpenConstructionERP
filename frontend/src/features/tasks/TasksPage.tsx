@@ -646,8 +646,14 @@ const TaskCard = React.memo(function TaskCard({
                 task.metadata && typeof task.metadata.source_id === 'string'
                   ? task.metadata.source_id
                   : '';
+              const meetingNumber =
+                task.metadata && typeof task.metadata.meeting_number === 'string'
+                  ? task.metadata.meeting_number
+                  : '';
               const label = task.meeting_id
-                ? t('tasks.from_meeting', { defaultValue: 'Meeting' })
+                ? meetingNumber
+                  ? t('tasks.from_meeting_number', { defaultValue: 'Meeting {{number}}', number: meetingNumber })
+                  : t('tasks.from_meeting', { defaultValue: 'Meeting' })
                 : src === 'rfi'
                   ? t('tasks.from_rfi', { defaultValue: 'RFI' })
                   : src === 'inspection'
@@ -660,8 +666,9 @@ const TaskCard = React.memo(function TaskCard({
               // Correspondence and inbound_capture both surface only on the
               // list page (no per-record detail route today), so both link
               // there; RFI has a real detail route to deep-link into.
-              const to =
-                !task.meeting_id && srcId
+              const to = task.meeting_id
+                ? '/meetings'
+                : srcId
                   ? src === 'rfi'
                     ? `/rfi/${srcId}`
                     : src === 'correspondence' || src === 'inbound_capture'

@@ -107,6 +107,7 @@ vi.mock('./api', async () => {
         startDate: options.startDate,
         replace: !!options.replace,
         workers: options.workersPerPosition,
+        allowOverrun: !!options.allowOverrun,
       });
       if (state.generateFail.length) throw state.generateFail.shift();
       return [];
@@ -376,7 +377,7 @@ describe('generating from a BOQ', () => {
     state.preview = { ...PREVIEW, requested_end: null };
     renderDetail({ generateBoqId: 'b1' });
     await screen.findByTestId('generate-end-date');
-    expect(screen.getByText(/No end date: the plan takes as long as the work needs/)).toBeInTheDocument();
+    expect(screen.getByText(/No end date: the plan is fitted to the project's planned finish date/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Check the plan' }));
     expect(await screen.findByTestId('generation-preview')).toHaveTextContent(/No end date was given/);
     expect(state.previewCalls[0].days).toBeUndefined();
@@ -738,6 +739,64 @@ describe('deleting', () => {
     expect(preview).not.toHaveTextContent('To fit the dates you asked for');
   });
 
+  it('writes a plan past the end date only after the reader accepts the later finish', async () => {
+    state.preview = {
+      ...PREVIEW,
+      fits: false,
+      planned_end: '2046-06-27',
+      requested_end: '2021-07-31',
+      warnings: [{ code: 'plan_exceeds_window', planned_end: '2046-06-27', requested_end: '2021-07-31' }],
+    };
+    renderDetail({ generateBoqId: 'b1' });
+    await previewFromDeepLink();
+    const create = screen.getByRole('button', { name: 'Create the plan' });
+    expect(create).toBeDisabled();
+    const consent = screen.getByTestId('generate-accept-overrun');
+    expect(consent).toHaveTextContent(/Accept a finish after the project finish date/);
+    fireEvent.click(within(consent).getByRole('checkbox'));
+    expect(create).not.toBeDisabled();
+    fireEvent.click(create);
+    await waitFor(() => expect(state.generateCalls).toHaveLength(1));
+    expect(state.generateCalls[0]).toMatchObject({ allowOverrun: true });
+  });
+
+  it('writes a plan inside its window without asking for consent', async () => {
+    renderDetail({ generateBoqId: 'b1' });
+    await generateFromDeepLink();
+    await waitFor(() => expect(state.generateCalls).toHaveLength(1));
+    expect(state.generateCalls[0]).toMatchObject({ allowOverrun: false });
+    expect(screen.queryByTestId('generate-accept-overrun')).toBeNull();
+  });
+
+  it("names the project's planned finish when that is the window", async () => {
+    state.preview = {
+      ...PREVIEW,
+      requested_end: '2021-07-31',
+      planned_end: '2021-06-30',
+      fitted_window: { days: 1551, end: '2021-07-31', default: false, fits: true, source: 'project' },
+    };
+    renderDetail({ generateBoqId: 'b1' });
+    expect(await previewFromDeepLink()).toHaveTextContent(/inside the project's planned finish date/);
+  });
+
+  it('says a refused overrun in words, with both dates', async () => {
+    state.generateFail = [
+      new ApiError(422, 'x', {
+        detail: {
+          error: 'plan_exceeds_window',
+          message: 'The plan ends on 2046-06-27, after the requested end 2021-07-31.',
+          planned_end: '2046-06-27',
+          requested_end: '2021-07-31',
+        },
+      }),
+    ];
+    renderDetail({ generateBoqId: 'b1' });
+    await generateFromDeepLink();
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts[0]?.message).toMatch(/finish on 2046-06-27, after the project finish date 2021-07-31/),
+    );
+  });
+
   it('clears all activities after a confirmation that counts them', async () => {
     state.activities = THREE;
     renderDetail();
@@ -869,5 +928,17 @@ describe('schedule list', () => {
     wrap(<ProjectSchedules project={PROJECT} onBack={vi.fn()} generateBoqId="b1" onConsumeGenerateBoq={vi.fn()} />);
     const create = await screen.findByRole('dialog', { name: 'Create Schedule' });
     expect(within(create).getByLabelText(/Schedule Name/)).toHaveValue('Construction schedule');
+  });
+
+  it('refuses a schedule that ends before it starts in the form, before any request', async () => {
+    wrap(<ProjectSchedules project={PROJECT} onBack={vi.fn()} generateBoqId="b1" onConsumeGenerateBoq={vi.fn()} />);
+    const create = within(await screen.findByRole('dialog', { name: 'Create Schedule' }));
+    fireEvent.change(create.getByLabelText(/Start Date/), { target: { value: '2021-10-30' } });
+    fireEvent.change(create.getByLabelText(/End Date/), { target: { value: '2017-05-03' } });
+    expect(create.getByText('The end date must be after the start date.')).toBeInTheDocument();
+    const submit = create.getByRole('button', { name: 'Create' });
+    expect(submit).toBeDisabled();
+    fireEvent.submit(submit.closest('form'));
+    expect(state.created).toHaveLength(0);
   });
 });

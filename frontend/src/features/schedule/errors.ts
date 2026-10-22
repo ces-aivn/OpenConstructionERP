@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 import type { TFunction } from 'i18next';
 import { ApiError, getErrorMessage } from '@/shared/lib/api';
+import { fmtList } from '@/shared/lib/formatters';
 
 /**
  * A refusal the schedule endpoints send as ``{detail: {error, message, ...}}``.
@@ -26,6 +27,37 @@ export function scheduleErrorDetail(err: unknown): ScheduleErrorDetail | null {
   return typeof code === 'string' && code.length > 0 ? (detail as ScheduleErrorDetail) : null;
 }
 
+/** One entry of a 422 validation list: its stable ``type`` and the values in ``ctx``. */
+interface ValidationIssue {
+  type: string;
+  ctx: Record<string, unknown>;
+}
+
+/** Date refusals the schedule schemas raise with a code of their own. */
+const DATE_ISSUE_TYPES = new Set(['date_range_invalid', 'invalid_calendar_date']);
+
+/** The first coded date refusal in a 422 validation list, or ``null``. */
+function dateValidationIssue(err: unknown): ValidationIssue | null {
+  if (!(err instanceof ApiError)) return null;
+  const detail = (err.body as { detail?: unknown } | null | undefined)?.detail;
+  if (!Array.isArray(detail)) return null;
+  for (const entry of detail) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { type, ctx } = entry as { type?: unknown; ctx?: unknown };
+    if (typeof type === 'string' && DATE_ISSUE_TYPES.has(type)) {
+      return { type, ctx: ctx && typeof ctx === 'object' ? (ctx as Record<string, unknown>) : {} };
+    }
+  }
+  return null;
+}
+
+/** The name of a date field in the reader's language. */
+function dateFieldLabel(field: unknown, t: TFunction): string {
+  return field === 'end_date'
+    ? t('schedule.field_end_date', { defaultValue: 'Finish date' })
+    : t('schedule.field_start_date', { defaultValue: 'Start date' });
+}
+
 /**
  * Say a schedule API error in the reader's language.
  *
@@ -33,8 +65,40 @@ export function scheduleErrorDetail(err: unknown): ScheduleErrorDetail | null {
  * shared message (which already prefers the server's detail).
  */
 export function scheduleErrorMessage(err: unknown, t: TFunction): string {
+  const issue = dateValidationIssue(err);
+  if (issue?.type === 'date_range_invalid') {
+    return t('schedule.error_date_range_invalid', {
+      defaultValue: 'The finish date ({{end}}) is before the start date ({{start}}). Pick a finish on or after the start.',
+      start: String(issue.ctx.start_date ?? ''),
+      end: String(issue.ctx.end_date ?? ''),
+    });
+  }
+  if (issue?.type === 'invalid_calendar_date') {
+    return t('schedule.error_invalid_calendar_date', {
+      defaultValue: '{{field}} ({{value}}) is not a real calendar date.',
+      field: dateFieldLabel(issue.ctx.field, t),
+      value: String(issue.ctx.value ?? ''),
+    });
+  }
   const detail = scheduleErrorDetail(err);
   switch (detail?.error) {
+    case 'plan_exceeds_window':
+      return t('schedule.error_plan_exceeds_window', {
+        defaultValue:
+          'The plan would finish on {{planned}}, after the project finish date {{requested}}. Move the finish date, add crews, or tick "Accept a finish after the project finish date" and generate again.',
+        planned: String(detail.planned_end ?? ''),
+        requested: String(detail.requested_end ?? ''),
+      });
+    case 'predecessors_not_complete':
+      return t('schedule.error_predecessors_not_complete', {
+        defaultValue: 'This activity cannot reach 100% while its predecessors are open: {{names}}. Complete them first.',
+        names: Array.isArray(detail.names) ? fmtList(detail.names.map(String)) : '',
+      });
+    case 'calendar_preset_years_invalid':
+      return t('schedule.error_calendar_preset_years_invalid', {
+        defaultValue: 'Pick a span of 1 to {{max}} years, the last year not before the first.',
+        max: Number(detail.max_years ?? 30),
+      });
     case 'schedule_not_archived':
       return t('schedule.archive_before_purge');
     case 'schedule_restore_status_mismatch':

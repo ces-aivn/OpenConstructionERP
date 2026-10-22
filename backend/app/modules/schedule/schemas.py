@@ -15,6 +15,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from app.core.cpm import canonical_exception_dates, check_work_days_in_range
 
@@ -116,24 +117,37 @@ def _parse_iso_date(value: str | None, field_name: str) -> date | None:
     impossible dates like ``2026-02-30`` or ``2026-13-99``. We re-parse via
     :func:`datetime.date.fromisoformat` to reject those before they propagate
     into compute_duration() and yield bogus durations.
+
+    The error carries the stable type ``invalid_calendar_date`` and the
+    offending field in its context, so a client can name the field in its own
+    language instead of showing the English message.
     """
     if not value:
         return None
     try:
         return date.fromisoformat(value[:10])
     except ValueError as exc:
-        raise ValueError(f"{field_name} ({value[:10]}) is not a valid calendar date") from exc
+        raise PydanticCustomError(
+            "invalid_calendar_date",
+            "{field} ({value}) is not a valid calendar date",
+            {"field": field_name, "value": value[:10]},
+        ) from exc
 
 
 def _validate_date_range(start: str | None, end: str | None) -> None:
     """Reject schedules/activities where end_date is before start_date,
     and reject impossible calendar dates (Feb 30, month 13, etc.).
+
+    A reversed range raises the stable type ``date_range_invalid`` with the
+    field to correct (``end_date``) and both dates in its context.
     """
     parsed_start = _parse_iso_date(start, "start_date")
     parsed_end = _parse_iso_date(end, "end_date")
     if parsed_start and parsed_end and parsed_start > parsed_end:
-        raise ValueError(
-            f"end_date ({parsed_end.isoformat()}) must be on or after start_date ({parsed_start.isoformat()})"
+        raise PydanticCustomError(
+            "date_range_invalid",
+            "end_date ({end_date}) must be on or after start_date ({start_date})",
+            {"field": "end_date", "start_date": parsed_start.isoformat(), "end_date": parsed_end.isoformat()},
         )
 
 
@@ -804,6 +818,14 @@ class GenerateFromBOQRequest(BaseModel):
             "Workers on each position whose bill gives hours but no crew, at least. When omitted, the "
             "fewest from 1 to 20 that fit the window without shortening any duration (without "
             "total_project_days, the default window). Send the value the preview returned to write that plan."
+        ),
+    )
+    allow_overrun: bool = Field(
+        default=False,
+        description=(
+            "Write the plan even when it ends after the window (total_project_days, else the project's "
+            "planned end date). Without it such a plan is refused with 422 plan_exceeds_window, carrying "
+            "planned_end and requested_end, so a plan past the contract end is only written on purpose."
         ),
     )
 

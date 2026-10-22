@@ -42,6 +42,8 @@ from app.modules.schedule_advanced.schemas import (
     BaselineResponse,
     BaselineUpdate,
     CalendarCreate,
+    CalendarFromPreset,
+    CalendarPresetList,
     CalendarResponse,
     CalendarUpdate,
     CommitmentCreate,
@@ -1090,6 +1092,32 @@ async def baseline_delta_endpoint(
 
 
 # ── Calendars ─────────────────────────────────────────────────────────────
+
+
+@router.get("/calendars/presets/", response_model=CalendarPresetList)
+async def list_calendar_presets(
+    session: SessionDep,
+    user_id: CurrentUserId,
+    project_id: uuid.UUID = Query(...),
+    service: ScheduleAdvancedService = Depends(_get_service),
+) -> CalendarPresetList:
+    """Ready-made calendars (Vietnam six- and five-day, US federal) and the project's default one."""
+    await verify_project_access(project_id, user_id, session)
+    return CalendarPresetList.model_validate(await service.calendar_presets(project_id))
+
+
+@router.post("/calendars/from-preset/", response_model=CalendarResponse, status_code=201)
+async def create_calendar_from_preset(
+    data: CalendarFromPreset,
+    session: SessionDep,
+    user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("schedule_advanced.create")),
+    service: ScheduleAdvancedService = Depends(_get_service),
+) -> CalendarResponse:
+    """Create a project calendar from a ready-made one, public holidays filled in for the project's years."""
+    await verify_project_access(data.project_id, user_id, session)
+    c = await service.create_calendar_from_preset(data)
+    return CalendarResponse.model_validate(c)
 
 
 @router.get("/calendars/", response_model=list[CalendarResponse])

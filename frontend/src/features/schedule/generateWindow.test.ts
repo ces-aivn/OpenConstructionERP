@@ -10,7 +10,7 @@ vi.mock('./api', () => ({
 }));
 
 import { scheduleApi } from './api';
-import { generateInWindow, previewInWindow, projectWindowDays } from './generateWindow';
+import { generateInWindow, previewInWindow, previewOverruns, projectWindowDays } from './generateWindow';
 
 describe('projectWindowDays', () => {
   it('counts both ends', () => {
@@ -76,12 +76,31 @@ describe('generateInWindow', () => {
     });
   });
 
+  it('consents to a finish after the window only when the person accepted it', async () => {
+    vi.mocked(scheduleApi.generateFromBOQ).mockClear();
+    await generateInWindow('s1', 'b1', '2017-05-03', '2021-07-31', false, null, true);
+    expect(scheduleApi.generateFromBOQ).toHaveBeenCalledWith('s1', 'b1', {
+      startDate: '2017-05-03',
+      totalProjectDays: 1551,
+      replace: false,
+      allowOverrun: true,
+    });
+  });
+
   it('previews the same window', async () => {
     await previewInWindow('s1', 'b1', '2026-05-04', '2026-10-31');
     expect(scheduleApi.previewGenerateFromBOQ).toHaveBeenCalledWith('s1', 'b1', {
       startDate: '2026-05-04',
       totalProjectDays: 181,
     });
+  });
+});
+
+describe('previewOverruns', () => {
+  it('is true only for a preview whose plan finishes after its window', () => {
+    expect(previewOverruns({ warnings: [{ code: 'plan_exceeds_window', planned_end: '2046-06-27', requested_end: '2021-07-31' }] })).toBe(true);
+    expect(previewOverruns({ warnings: [{ code: 'durations_shortened', percent: 80 }] })).toBe(false);
+    expect(previewOverruns(null)).toBe(false);
   });
 });
 

@@ -26,6 +26,21 @@ const DATE_INPUT_CLS =
   'rounded-md border border-transparent bg-transparent px-1.5 py-1 text-sm tabular-nums text-content-primary ' +
   'hover:border-border-light focus:border-oe-blue focus:bg-surface-primary focus:outline-none disabled:opacity-60';
 
+const PROGRESS_INPUT_CLS =
+  'w-16 rounded-md border border-border-light bg-transparent px-1.5 py-1 text-right text-sm tabular-nums ' +
+  'text-content-primary hover:border-oe-blue/40 focus:border-oe-blue focus:bg-surface-primary focus:outline-none disabled:opacity-60';
+
+/**
+ * A typed percentage as a whole number from 0 to 100, or ``null`` when it is
+ * not one (empty, not a number, out of range).
+ */
+export function parseProgressPct(raw: string): number | null {
+  const text = raw.trim().replace(',', '.');
+  if (!/^\d+(\.\d+)?$/.test(text)) return null;
+  const value = Math.round(Number(text));
+  return value >= 0 && value <= 100 ? value : null;
+}
+
 /** Whole calendar-day count from ISO ``a`` to ISO ``b`` (b - a); may be negative. */
 function isoDeltaDays(a: string, b: string): number {
   const ms = new Date(b).getTime() - new Date(a).getTime();
@@ -233,9 +248,24 @@ export function ActivityGrid({
       addToast({
         type: 'error',
         title: t('toasts.update_failed', { defaultValue: 'Update failed' }),
-        message: error.message,
+        message: scheduleErrorMessage(error, t),
       });
       // Refetch so a rejected cell reverts to the stored value.
+      invalidateGantt();
+    },
+  });
+
+  // Progress has its own endpoint: it sets the status from the percentage,
+  // rolls the section up and refuses 100% while a predecessor is open.
+  const progressMutation = useMutation({
+    mutationFn: ({ id, pct }: { id: string; pct: number }) => scheduleApi.updateProgress(id, pct),
+    onSuccess: invalidateGantt,
+    onError: (error: Error) => {
+      addToast({
+        type: 'error',
+        title: t('toasts.update_failed', { defaultValue: 'Update failed' }),
+        message: scheduleErrorMessage(error, t),
+      });
       invalidateGantt();
     },
   });
@@ -316,7 +346,10 @@ export function ActivityGrid({
   };
 
   const busy =
-    updateMutation.isPending || rescheduleMutation.isPending || setCalendarMutation.isPending;
+    updateMutation.isPending ||
+    progressMutation.isPending ||
+    rescheduleMutation.isPending ||
+    setCalendarMutation.isPending;
   // Only an operation that moves rows (a full reschedule, or a calendar change
   // that reschedules) locks editing; per-cell PATCHes leave the grid editable.
   const cellsDisabled = rescheduleMutation.isPending || setCalendarMutation.isPending;
@@ -360,6 +393,31 @@ export function ActivityGrid({
     updateMutation.mutate({ id: a.id, body: { end_date: end } });
   };
 
+  const commitProgress = (a: Activity, input: HTMLInputElement) => {
+    const pct = parseProgressPct(input.value);
+    if (pct == null) {
+      // Not a percentage: put the stored value back.
+      input.value = String(a.progress_pct);
+      return;
+    }
+    if (pct === Math.round(Number(a.progress_pct))) {
+      input.value = String(a.progress_pct);
+      return;
+    }
+    // A refused value (a predecessor still open) must not stay on screen: the
+    // refetch brings the same stored percentage, so the input keyed on it is
+    // not remounted and would keep showing what the server refused.
+    const stored = String(a.progress_pct);
+    progressMutation.mutate(
+      { id: a.id, pct },
+      {
+        onError: () => {
+          if (input.isConnected) input.value = stored;
+        },
+      },
+    );
+  };
+
   const commitCalendar = (a: Activity, raw: string) => {
     // Empty value -> clear (fall back to the project default). No-op if unchanged.
     const next = raw || null;
@@ -370,19 +428,21 @@ export function ActivityGrid({
 
   const columns = useMemo(
     () => [
-      { key: 'wbs', label: t('schedule.wbs_code', { defaultValue: 'WBS' }), align: 'left' as const },
-      { key: 'name', label: t('schedule.activity_name', { defaultValue: 'Activity' }), align: 'left' as const },
-      { key: 'type', label: t('schedule.activity_type', { defaultValue: 'Type' }), align: 'left' as const },
-      { key: 'section', label: t('schedule.parent_section', { defaultValue: 'Parent section' }), align: 'left' as const },
-      { key: 'start', label: t('schedule.start_date', { defaultValue: 'Start' }), align: 'left' as const },
-      { key: 'end', label: t('schedule.end_date', { defaultValue: 'End' }), align: 'left' as const },
-      { key: 'duration', label: t('schedule.duration', { defaultValue: 'Duration' }), align: 'right' as const },
-      { key: 'progress', label: t('schedule.progress', { defaultValue: 'Progress' }), align: 'right' as const },
-      { key: 'calendar', label: t('schedule.calendar.column', { defaultValue: 'Calendar' }), align: 'left' as const },
-      { key: 'resources', label: t('schedule.assigned_resources', { defaultValue: 'Resources' }), align: 'left' as const },
-      { key: 'assignee', label: t('schedule.assignee', { defaultValue: 'Assignee' }), align: 'left' as const },
-      { key: 'deps', label: t('schedule.predecessors', { defaultValue: 'Predecessors' }), align: 'left' as const },
-      { key: 'actions', label: '', align: 'right' as const },
+      // Each column keeps a readable least width; the table grows past the
+      // card and scrolls sideways instead of cutting names to a few letters.
+      { key: 'wbs', label: t('schedule.wbs_code', { defaultValue: 'WBS' }), align: 'left' as const, width: 'min-w-[72px]' },
+      { key: 'name', label: t('schedule.activity_name', { defaultValue: 'Activity' }), align: 'left' as const, width: 'min-w-[280px]' },
+      { key: 'type', label: t('schedule.activity_type', { defaultValue: 'Type' }), align: 'left' as const, width: 'min-w-[130px]' },
+      { key: 'section', label: t('schedule.parent_section', { defaultValue: 'Parent section' }), align: 'left' as const, width: 'min-w-[220px]' },
+      { key: 'start', label: t('schedule.start_date', { defaultValue: 'Start' }), align: 'left' as const, width: 'min-w-[140px]' },
+      { key: 'end', label: t('schedule.end_date', { defaultValue: 'End' }), align: 'left' as const, width: 'min-w-[140px]' },
+      { key: 'duration', label: t('schedule.duration', { defaultValue: 'Duration' }), align: 'right' as const, width: 'min-w-[90px]' },
+      { key: 'progress', label: t('schedule.progress', { defaultValue: 'Progress' }), align: 'right' as const, width: 'min-w-[110px]' },
+      { key: 'calendar', label: t('schedule.calendar.column', { defaultValue: 'Calendar' }), align: 'left' as const, width: 'min-w-[160px]' },
+      { key: 'resources', label: t('schedule.assigned_resources', { defaultValue: 'Resources' }), align: 'left' as const, width: 'min-w-[140px]' },
+      { key: 'assignee', label: t('schedule.assignee', { defaultValue: 'Assignee' }), align: 'left' as const, width: 'min-w-[180px]' },
+      { key: 'deps', label: t('schedule.predecessors', { defaultValue: 'Predecessors' }), align: 'left' as const, width: 'min-w-[150px]' },
+      { key: 'actions', label: '', align: 'right' as const, width: '' },
     ],
     [t],
   );
@@ -394,7 +454,7 @@ export function ActivityGrid({
         <span className="text-xs text-content-tertiary">
           {t('schedule.grid_hint', {
             defaultValue:
-              'Edit names, dates and types inline. Duration is working days and updates automatically.',
+              'Edit names, dates, types and progress inline. Duration is working days and updates automatically.',
           })}
         </span>
         <div className="flex items-center gap-2">
@@ -429,14 +489,15 @@ export function ActivityGrid({
       <div className="overflow-x-auto">
         <table
           data-testid="activity-grid"
-          className="w-full min-w-[1000px] border-collapse text-sm"
+          className="w-max min-w-full border-collapse text-sm"
         >
           <thead>
             <tr className="border-b border-border-light bg-surface-secondary/30 text-2xs font-semibold uppercase tracking-wider text-content-tertiary">
               {columns.map((c) => (
                 <th
                   key={c.key}
-                  className={`px-3 py-2 font-semibold ${c.align === 'right' ? 'text-right' : 'text-left'}`}
+                  data-testid={`grid-col-${c.key}`}
+                  className={`whitespace-nowrap px-3 py-2 font-semibold ${c.width} ${c.align === 'right' ? 'text-right' : 'text-left'}`}
                 >
                   {c.label}
                 </th>
@@ -604,9 +665,38 @@ export function ActivityGrid({
                       {a.duration_days} {t('schedule.days_short', { defaultValue: 'd' })}
                     </td>
                     <td className="px-3 py-1.5 text-right align-middle">
-                      <Badge variant={isCritical ? 'error' : 'neutral'} size="sm">
-                        {a.progress_pct}%
-                      </Badge>
+                      {isSummary ? (
+                        // A section's progress is rolled up from its activities.
+                        <span data-testid={`grid-progress-${a.id}`}>
+                          <Badge variant={isCritical ? 'error' : 'neutral'} size="sm">
+                            {a.progress_pct}%
+                          </Badge>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center justify-end gap-1">
+                          <input
+                            key={`progress-${a.id}-${a.progress_pct}`}
+                            type="number"
+                            inputMode="numeric"
+                            min={0}
+                            max={100}
+                            step={1}
+                            data-testid={`grid-progress-${a.id}`}
+                            aria-label={t('schedule.progress_pct_label', {
+                              defaultValue: 'Progress of {{name}}, percent',
+                              name: a.name,
+                            })}
+                            className={PROGRESS_INPUT_CLS}
+                            defaultValue={a.progress_pct}
+                            disabled={cellsDisabled || progressMutation.isPending}
+                            onBlur={(e) => commitProgress(a, e.currentTarget)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') e.currentTarget.blur();
+                            }}
+                          />
+                          <span className="text-xs text-content-tertiary">%</span>
+                        </span>
+                      )}
                     </td>
                     <td className="px-2 py-1.5 align-middle">
                       <select

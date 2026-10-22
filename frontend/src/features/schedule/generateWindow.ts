@@ -56,7 +56,10 @@ export function generationWindow(start: string, end: string): GenerateFromBoqOpt
  *
  * ``replace`` lets the server delete the schedule's activities first, in the
  * same transaction; without it a populated schedule is refused with
- * ``schedule_has_activities``.
+ * ``schedule_has_activities``. ``allowOverrun`` is the person's consent to a
+ * plan that finishes after the window (theirs or the project's planned
+ * finish); without it the server refuses such a plan with
+ * ``plan_exceeds_window``.
  */
 export async function generateInWindow(
   scheduleId: string,
@@ -65,12 +68,19 @@ export async function generateInWindow(
   end: string,
   replace = false,
   workers: number | null = null,
+  allowOverrun = false,
 ): Promise<unknown> {
   return scheduleApi.generateFromBOQ(scheduleId, boqId, {
     ...generationWindow(start, end),
     replace,
     ...(workers != null ? { workersPerPosition: workers } : {}),
+    ...(allowOverrun ? { allowOverrun: true } : {}),
   });
+}
+
+/** Whether a preview's plan finishes after the window it was asked to fit. */
+export function previewOverruns(preview: { warnings?: Array<Record<string, unknown>> } | null | undefined): boolean {
+  return (preview?.warnings ?? []).some((w) => w?.code === 'plan_exceeds_window');
 }
 
 /** What :func:`generateInWindow` would write, for the person to confirm. Writes nothing. */

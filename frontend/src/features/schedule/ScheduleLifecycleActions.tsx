@@ -12,7 +12,7 @@ import { scheduleApi, type Schedule } from './api';
 import { scheduleErrorMessage } from './errors';
 import {
   scheduleArchiveConfirmation, scheduleRestoreConfirmation,
-  scheduleDeleteBlocked, scheduleDeleteConfirmation, scheduleDeleteNeedsArchiveConfirmation,
+  scheduleDeleteBlocked, scheduleDeleteConfirmation,
 } from './confirmations';
 
 /** Shared by cards and detail: archive is never a disguised permanent delete. */
@@ -38,12 +38,9 @@ export function ScheduleLifecycleActions({ schedule, onChanged, compact = false 
   const canPurge = archived && (isPurgeAdmin || impact.data?.can_delete === true
     || impact.data?.blocked_reason === 'schedule_has_baselines');
 
-  // ``delete_active`` is Delete pressed on a schedule that is still in use:
-  // it cannot be deleted directly, so the dialog says why and offers the
-  // archive that has to come first.
   const purgeBlocked = !canPurge && impact.data ? scheduleDeleteBlocked(t, impact.data) : null;
 
-  const act = async (action: 'archive' | 'restore' | 'purge' | 'delete_active') => {
+  const act = async (action: 'archive' | 'restore' | 'purge') => {
     if (busy) return;
     setBusy(true);
     try {
@@ -56,14 +53,12 @@ export function ScheduleLifecycleActions({ schedule, onChanged, compact = false 
           return;
         }
         confirmed = await confirm(scheduleDeleteConfirmation(t, schedule, impact));
-      } else if (action === 'delete_active') {
-        confirmed = await confirm(scheduleDeleteNeedsArchiveConfirmation(t, schedule));
       } else {
         confirmed = await confirm(action === 'archive'
           ? scheduleArchiveConfirmation(t, schedule) : scheduleRestoreConfirmation(t, schedule));
       }
       if (!confirmed) return;
-      if (action === 'archive' || action === 'delete_active') {
+      if (action === 'archive') {
         await scheduleApi.archiveSchedule(schedule.id);
         toast({ type: 'success', title: t('schedule.archived') });
       } else if (action === 'restore') {
@@ -98,15 +93,8 @@ export function ScheduleLifecycleActions({ schedule, onChanged, compact = false 
       onClick={() => void act(archived ? 'restore' : 'archive')}>
       {!compact && t(archived ? 'common.restore' : 'common.archive')}
     </Button>}
-    {/* Delete is always where people look for it. On a schedule still in use
-        it explains that archiving comes first, says who may delete the
-        archive, and offers the archiving. */}
-    {canArchive && !archived && <Button variant="ghost" size="sm" disabled={busy}
-      aria-label={t('schedule.delete_named', { defaultValue: 'Delete {{name}}', name: schedule.name })}
-      title={t('schedule.delete_needs_archive_title', { defaultValue: 'Deleting starts with archiving' })}
-      icon={<Trash2 size={14} />} onClick={() => void act('delete_active')}>
-      {!compact && t('common.delete', { defaultValue: 'Delete' })}
-    </Button>}
+    {/* A schedule still in use offers no Delete: deleting starts with
+        archiving, which the archive button's title says. */}
     {archived && canPurge && <Button variant="ghost" size="sm" disabled={busy}
       aria-label={t('schedule.purge_named', { name: schedule.name })} title={t('schedule.purge')}
       icon={<Trash2 size={14} />} onClick={() => void act('purge')}>

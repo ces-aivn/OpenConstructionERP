@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
@@ -554,6 +554,37 @@ class CalendarResponse(BaseModel):
     is_default: bool = False
     created_at: datetime
     updated_at: datetime
+
+
+class CalendarPreset(BaseModel):
+    """A ready-made calendar a project can start from."""
+
+    key: str
+    name: str
+    country: str
+    work_days: list[int]
+    work_hours_per_day: Decimal
+
+
+class CalendarPresetList(BaseModel):
+    """The ready-made calendars, and the one a project of this country starts from."""
+
+    presets: list[CalendarPreset]
+    default_preset: str | None = None
+    project_country: str | None = None
+
+
+class CalendarFromPreset(BaseModel):
+    """Create a project calendar from a ready-made one, holidays filled in for a span of years."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    project_id: UUID
+    preset: Literal["vn_6day", "vn_5day", "us_federal"]
+    name: str | None = Field(default=None, max_length=255)
+    start_year: int | None = Field(default=None, ge=1900, le=2199)
+    end_year: int | None = Field(default=None, ge=1900, le=2199)
+    is_default: bool = False
 
 
 # ── Aggregate / dashboard responses ────────────────────────────────────────

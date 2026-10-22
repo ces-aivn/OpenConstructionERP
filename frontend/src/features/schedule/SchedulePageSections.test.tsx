@@ -182,3 +182,38 @@ describe('ScheduleDetail: a new activity lands inside its section', () => {
     );
   });
 });
+
+describe('ScheduleDetail: header and dates', () => {
+  beforeEach(() => {
+    useAuthStore.setState({ userRole: 'editor' });
+    state.activities = SEED.map((a) => ({ ...a }));
+    state.created = [];
+  });
+
+  it('gives the title its own full-width row and wraps the toolbar below it', async () => {
+    renderDetail();
+    await screen.findByTestId('svg-gantt');
+    const header = screen.getByTestId('schedule-detail-header');
+    expect(header.className).not.toMatch(/\bflex\b/);
+    const toolbar = within(header).getByTestId('schedule-detail-toolbar');
+    expect(toolbar.className).toMatch(/flex-wrap/);
+    const title = within(header).getByRole('heading', { name: 'Main schedule' });
+    // The title block comes first and the toolbar is a later row, not a column beside it.
+    expect(title.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(toolbar.contains(title)).toBe(false);
+  });
+
+  it('refuses a new activity that finishes before it starts, before any request', async () => {
+    renderDetail();
+    fireEvent.click(screen.getAllByRole('button', { name: /Add Activity/i })[0]);
+    const d = within(await screen.findByRole('dialog'));
+    fireEvent.change(d.getByLabelText(/Activity Name/i), { target: { value: 'Backfill' } });
+    fireEvent.change(d.getByLabelText(/Start Date/i), { target: { value: '2026-05-15' } });
+    fireEvent.change(d.getByLabelText(/End Date/i), { target: { value: '2026-05-11' } });
+    expect(d.getByText('The end date must be after the start date.')).toBeInTheDocument();
+    const create = d.getByRole('button', { name: /Create Activity/i });
+    expect(create).toBeDisabled();
+    fireEvent.submit(create.closest('form'));
+    expect(state.created).toHaveLength(0);
+  });
+});

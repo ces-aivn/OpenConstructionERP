@@ -103,34 +103,16 @@ describe('reversible archive actions', () => {
   });
 });
 
-describe('Delete on a schedule that is still in use', () => {
-  it.each([false, true])('is offered to an editor and explains that archiving comes first (compact %s)', async (compact) => {
-    const { onChanged } = view({}, compact);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Contract plan' }));
-    const dialog = await screen.findByRole('alertdialog');
-    expect(dialog).toHaveTextContent('Deleting starts with archiving');
-    expect(dialog).toHaveTextContent('cannot be deleted directly');
-    expect(dialog).toHaveTextContent('project owner or an administrator');
-    expect(dialog).toHaveTextContent('with saved baselines, only an administrator');
-    expect(scheduleApi.archiveSchedule).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Archive' }));
-    await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
-    expect(scheduleApi.archiveSchedule).toHaveBeenCalledExactlyOnceWith('s1');
-    expect(scheduleApi.purgeSchedule).not.toHaveBeenCalled();
-  });
-
-  it('does nothing when the dialog is cancelled', async () => {
-    view();
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Contract plan' }));
-    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
-    expect(scheduleApi.archiveSchedule).not.toHaveBeenCalled();
-  });
-
-  it('is not shown to a viewer, who may not archive either', () => {
-    useAuthStore.setState({ userRole: 'viewer' });
-    view();
+describe('a schedule that is still in use', () => {
+  it.each([
+    ['editor', 'active'], ['editor', 'draft'], ['admin', 'active'], ['admin', 'frozen'],
+  ])('offers a %s no Delete on a %s schedule, only the archive that comes first', (role, status) => {
+    useAuthStore.setState({ userRole: role });
+    view({ status });
     expect(screen.queryByRole('button', { name: 'Delete Contract plan' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Permanently delete/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Archive Contract plan' }).getAttribute('title'))
+      .toMatch(/Once archived/);
   });
 });
 

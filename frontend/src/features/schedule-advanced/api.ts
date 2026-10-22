@@ -341,6 +341,51 @@ export function deleteCalendar(calendarId: string): Promise<void> {
   );
 }
 
+/** The ready-made calendars the server offers. */
+export type CalendarPresetKey = 'vn_6day' | 'vn_5day' | 'us_federal';
+
+/** A ready-made calendar: a work week and a country's public holidays. */
+export interface CalendarPreset {
+  key: CalendarPresetKey;
+  name: string;
+  /** ISO 3166-1 alpha-2 country whose public holidays the calendar carries. */
+  country: string;
+  work_days: number[];
+  work_hours_per_day: string | number;
+}
+
+/** The ready-made calendars, and the one a project of its country starts from. */
+export interface CalendarPresetList {
+  presets: CalendarPreset[];
+  default_preset: CalendarPresetKey | null;
+  project_country: string | null;
+}
+
+export interface CalendarFromPresetBody {
+  project_id: string;
+  preset: CalendarPresetKey;
+  name?: string;
+  /** First and last year of holidays; omitted = the project's planned years. */
+  start_year?: number;
+  end_year?: number;
+  is_default?: boolean;
+}
+
+/** The ready-made calendars for a project, with the one its country defaults to. */
+export function listCalendarPresets(projectId: string): Promise<CalendarPresetList> {
+  return apiGet<CalendarPresetList>(
+    `/v1/schedule-advanced/calendars/presets/?project_id=${encodeURIComponent(projectId)}`,
+  );
+}
+
+/** Create a project calendar from a ready-made one; the server fills in the public holidays. */
+export function createCalendarFromPreset(body: CalendarFromPresetBody): Promise<ScheduleCalendar> {
+  return apiPost<ScheduleCalendar, CalendarFromPresetBody>(
+    '/v1/schedule-advanced/calendars/from-preset/',
+    body,
+  );
+}
+
 /* ── Phase plans ──────────────────────────────────────────────────────── */
 
 export function listPhasePlans(masterScheduleId: string): Promise<PhasePlan[]> {

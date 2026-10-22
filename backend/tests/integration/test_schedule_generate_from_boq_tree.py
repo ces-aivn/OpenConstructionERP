@@ -806,6 +806,7 @@ async def test_without_an_end_date_the_workers_fit_the_default_window_and_say_so
             "days": 365,
             "end": (date.fromisoformat(START) + timedelta(days=364)).isoformat(),
             "default": True,
+            "source": "default",
             "fits": True,
         }
         assert preview["requested_end"] is None and preview["compressed_pct"] is None

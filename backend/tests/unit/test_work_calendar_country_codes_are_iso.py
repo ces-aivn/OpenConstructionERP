@@ -337,6 +337,8 @@ EXPECTED_CALENDAR_BY_COUNTRY = {
     "IN": "INDIA",
     "IT": "ITALY",
     "PL": "POLAND",
+    # Vietnam plans the Monday-to-Saturday week its construction sites work.
+    "VN": "VIETNAM",
 }
 
 # Region ids the CWICR v3 catalogue ships today, for countries where the ISO
