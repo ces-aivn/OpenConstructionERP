@@ -9,7 +9,9 @@
 #
 # The repo's .dockerignore drops frontend/dist, so build from a staging
 # directory holding only what this file copies, in the same layout:
-#   <ctx>/frontend/dist/, <ctx>/backend/app/core/i18n_data.py, <ctx>/backend/app/main.py
+#   <ctx>/frontend/dist/ and <ctx>/backend/app/ holding every file under
+#   backend/app that differs from the upstream release (changed or new;
+#   nothing on this branch deletes an upstream file)
 #   docker build -f Dockerfile.overlay --build-arg BASE_TAG=18.8.0 \
 #     -t openconstructionerp-vnus:18.8.0 <ctx>
 #
@@ -29,13 +31,11 @@ COPY frontend/dist/ ${SITE}/_frontend_dist/
 COPY frontend/dist/ /app/frontend/dist/
 COPY frontend/dist/ /app/backend/app/_frontend_dist/
 
-# Backend files changed on this branch.
-COPY backend/app/core/i18n_data.py ${SITE}/core/i18n_data.py
-COPY backend/app/core/i18n_data.py /app/backend/app/core/i18n_data.py
-COPY backend/app/main.py ${SITE}/main.py
-COPY backend/app/main.py /app/backend/app/main.py
+# Backend files changed on this branch, laid over the installed package.
+COPY backend/app/ ${SITE}/
+COPY backend/app/ /app/backend/app/
 
-RUN python -m compileall -q ${SITE}/core/i18n_data.py ${SITE}/main.py \
+RUN python -m compileall -q ${SITE} \
  && chown -R oe:oe ${SITE}/_frontend_dist /app/frontend/dist /app/backend/app/_frontend_dist
 
 USER oe
