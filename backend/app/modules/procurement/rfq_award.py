@@ -333,7 +333,8 @@ async def _draft(
         status="draft",
         payment_terms=None,
         notes=notes[:5000],
-        created_by=None,
+        # The awarder raises the order, so four-eyes keeps them from approving it.
+        created_by=actor_id,
         metadata_={
             "origin": ORIGIN,
             "rfq_id": rfq_key,

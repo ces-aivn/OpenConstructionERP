@@ -791,7 +791,9 @@ class TestPaymentCurrencyNormalization:
                     exchange_rate_snapshot="1",  # default = no FX
                 )
             )
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 422
+        assert exc_info.value.detail["code"] == "payment_exchange_rate_missing"
+        assert exc_info.value.detail["field"] == "exchange_rate_snapshot"
         assert "exchange_rate_snapshot" in str(exc_info.value.detail).lower()
 
     @pytest.mark.asyncio
@@ -810,6 +812,63 @@ class TestPaymentCurrencyNormalization:
             )
         )
         assert payment is not None
+
+    @pytest.mark.asyncio
+    async def test_a_dong_payment_on_a_dollar_invoice_counts_at_its_rate(self) -> None:
+        """USD 10,000 invoice: VND 250,000,000 at 0.00004 USD per dong settles it in full."""
+        svc = _make_finance_service()
+        invoice = await _create_test_invoice(svc, currency_code="USD", amount_subtotal="10000", tax_amount="0")
+
+        await svc.create_payment(
+            PaymentCreate(
+                invoice_id=invoice.id,
+                payment_date="2026-05-25",
+                amount="250000000",
+                currency_code="VND",
+                exchange_rate_snapshot="0.00004",
+            )
+        )
+        position = await svc.settlement_for(invoice)
+        assert position.paid == Decimal("10000.00")
+        assert position.open == Decimal("0.00")
+        assert position.payment_status == "paid"
+
+    @pytest.mark.asyncio
+    async def test_a_dong_payment_beyond_the_dollar_total_is_refused(self) -> None:
+        """VND 300,000,000 at 0.00004 is USD 12,000, more than the USD 10,000 open."""
+        svc = _make_finance_service()
+        invoice = await _create_test_invoice(svc, currency_code="USD", amount_subtotal="10000", tax_amount="0")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await svc.create_payment(
+                PaymentCreate(
+                    invoice_id=invoice.id,
+                    payment_date="2026-05-25",
+                    amount="300000000",
+                    currency_code="VND",
+                    exchange_rate_snapshot="0.00004",
+                )
+            )
+        assert exc_info.value.status_code == 422
+        assert exc_info.value.detail["code"] == "payment_amount_over_open"
+
+    @pytest.mark.asyncio
+    async def test_a_dong_payment_on_a_dollar_invoice_without_a_rate_is_refused(self) -> None:
+        svc = _make_finance_service()
+        invoice = await _create_test_invoice(svc, currency_code="USD", amount_subtotal="10000", tax_amount="0")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await svc.create_payment(
+                PaymentCreate(
+                    invoice_id=invoice.id,
+                    payment_date="2026-05-25",
+                    amount="250000000",
+                    currency_code="VND",
+                )
+            )
+        assert exc_info.value.status_code == 422
+        assert exc_info.value.detail["code"] == "payment_exchange_rate_missing"
+        assert svc.payments_repo.rows == []
 
     @pytest.mark.asyncio
     async def test_same_currency_no_fx_rate_required(self) -> None:
@@ -1229,3 +1288,29 @@ class TestMoneyDecimalHelpers:
         # the schema validators block inf/nan before it reaches the service.
         result = _safe_decimal("1e10")
         assert result == Decimal("1e10")
+
+
+class TestSettleRace:
+    """Two settle requests for one invoice at the same moment."""
+
+    @pytest.mark.asyncio
+    async def test_the_second_settle_of_the_same_invoice_is_a_coded_conflict(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from sqlalchemy.exc import IntegrityError
+
+        svc = _make_finance_service()
+        invoice = await _create_test_invoice(svc, currency_code="VND", amount_subtotal="1000000", tax_amount="0")
+        invoice.status = "approved"
+        svc.session.rollback = AsyncMock()
+
+        async def _first_one_already_wrote_it(_payment: Any) -> Any:
+            raise IntegrityError("INSERT INTO oe_finance_payment", {}, Exception("ix_finance_payment_idempotency"))
+
+        svc.payments_repo.create = _first_one_already_wrote_it
+
+        with pytest.raises(HTTPException) as exc_info:
+            await svc.settle_invoice(invoice.id, payment_date="2026-10-23")
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == "invoice_settle_in_progress"
+        svc.session.rollback.assert_awaited_once()

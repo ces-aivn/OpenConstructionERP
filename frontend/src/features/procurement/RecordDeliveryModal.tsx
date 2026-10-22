@@ -71,6 +71,11 @@ interface RecordDeliveryModalProps {
 // lists POs the create call will accept.
 const RECEIVABLE_STATUSES = ['issued', 'partially_received'];
 
+/** The picker's query key: under the PO register's key, so changing an order refreshes it. */
+export function receivablePOsKey(projectId: string): readonly unknown[] {
+  return ['procurement-po', projectId, 'receivable'] as const;
+}
+
 /** Per-line received-quantity validity tags surfaced as inline errors. */
 export type DeliveryLineIssue = 'invalid' | 'over_ordered' | null;
 
@@ -140,11 +145,18 @@ export function RecordDeliveryModal({
   // List receivable POs for the picker. We pull the project's POs and keep
   // only the issued / partially_received ones (the only states the create
   // endpoint accepts).
+  //
+  // The key sits under ['procurement-po', projectId] so every action that
+  // changes an order (issue above all) invalidates this list with the PO
+  // register; under a key of its own it kept serving the list cached before
+  // the order was issued, and the picker said there was nothing to receive
+  // until the page was reloaded. It also refetches each time the dialog opens.
   const { data: receivablePage, isLoading: posLoading } = useQuery({
-    queryKey: ['procurement-receivable-po', projectId],
+    queryKey: receivablePOsKey(projectId),
     queryFn: () =>
       apiGet<Page<POListItem>>(`/v1/procurement/?project_id=${projectId}&limit=100`),
     enabled: open && Boolean(projectId),
+    refetchOnMount: 'always',
   });
   // The status narrowing happens here rather than in the queryFn so the cache
   // holds the server page and the notice below can say how much of the

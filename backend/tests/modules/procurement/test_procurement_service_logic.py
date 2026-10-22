@@ -47,6 +47,8 @@ from app.modules.procurement.service import (
 D = Decimal
 PROJECT_A = uuid.uuid4()
 USER_A = str(uuid.uuid4())
+# Somebody other than the creator: an order is never approved by whoever raised it.
+APPROVER = str(uuid.uuid4())
 
 
 # ── In-memory repository stubs ────────────────────────────────────────────
@@ -214,7 +216,7 @@ async def _make_issued_po(svc: ProcurementService, *, quantity: str = "100") -> 
         ),
         user_id=USER_A,
     )
-    await svc.approve_po(po.id, approver_id=USER_A)
+    await svc.approve_po(po.id, approver_id=APPROVER)
     await svc.issue_po(po.id)
     return await svc.po_repo.get(po.id)
 
@@ -350,7 +352,7 @@ async def test_approve_then_issue_happy_path() -> None:
         _approvable_po(amount_subtotal="100"),
         user_id=USER_A,
     )
-    approved = await svc.approve_po(po.id, approver_id=USER_A)
+    approved = await svc.approve_po(po.id, approver_id=APPROVER)
     assert approved.status == "approved"
     issued = await svc.issue_po(po.id)
     assert issued.status == "issued"
@@ -363,9 +365,9 @@ async def test_approve_is_idempotent() -> None:
         _approvable_po(amount_subtotal="100"),
         user_id=USER_A,
     )
-    await svc.approve_po(po.id, approver_id=USER_A)
+    await svc.approve_po(po.id, approver_id=APPROVER)
     # Second approve returns the same PO, no 409.
-    again = await svc.approve_po(po.id, approver_id=USER_A)
+    again = await svc.approve_po(po.id, approver_id=APPROVER)
     assert again.status == "approved"
 
 
@@ -387,7 +389,7 @@ async def test_approve_non_draft_is_409() -> None:
     svc = _make_service()
     po = await _make_issued_po(svc, quantity="10")  # already issued
     with pytest.raises(HTTPException) as exc_info:
-        await svc.approve_po(po.id, approver_id=USER_A)
+        await svc.approve_po(po.id, approver_id=APPROVER)
     assert exc_info.value.status_code == 409
 
 
@@ -401,7 +403,7 @@ async def _issued_po_with_retainage(svc: ProcurementService) -> PurchaseOrder:
         user_id=USER_A,
     )
     await svc.po_repo.update(po.id, retention_percent=Decimal("10.00"))
-    await svc.approve_po(po.id, approver_id=USER_A)
+    await svc.approve_po(po.id, approver_id=APPROVER)
     await svc.issue_po(po.id)
     return await svc.po_repo.get(po.id)
 

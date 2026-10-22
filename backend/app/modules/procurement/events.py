@@ -93,6 +93,20 @@ def _to_decimal(value: object) -> Decimal:
         return Decimal("0")
 
 
+def _actor_uuid(value: object) -> uuid.UUID | None:
+    """The user who made the award, as recorded on the drafted order.
+
+    The award is the decision to buy, so its maker raises the order; recording
+    them as its creator is what keeps them from approving it as well.
+    """
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError):
+        return None
+
+
 async def _find_existing_po(
     session: AsyncSession,
     project_id: uuid.UUID,
@@ -324,7 +338,7 @@ async def _create_po_from_award(event: Event) -> None:
                 status="draft",
                 payment_terms=None,
                 notes=(f"Auto-created from awarded tender: {package.name} - bid by {bid.company_name}")[:5000],
-                created_by=None,
+                created_by=_actor_uuid(data.get("awarded_by")),
                 metadata_={
                     "tender_package_id": str(package_id),
                     "tender_bid_id": str(bid_id),
@@ -544,7 +558,7 @@ async def _create_po_from_bid_award(event: Event) -> None:
                     f"Auto-created from awarded bid package: {package.title or package.code} "
                     f"- bid by {bidder.company_name}"
                 )[:5000],
-                created_by=None,
+                created_by=_actor_uuid(data.get("actor_id")),
                 metadata_={
                     "bid_package_id": str(package_id),
                     "bid_package_code": package.code,

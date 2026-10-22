@@ -39,7 +39,11 @@ import { PageHeader } from '@/shared/ui/PageHeader';
 import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
 import { OrderInvoicedSummary } from './OrderInvoicedSummary';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
-import { ContactSearchInput } from '@/shared/ui/ContactSearchInput';
+import { ConfirmDialog } from '@/shared/ui/ConfirmDialog';
+import { useConfirm } from '@/shared/hooks/useConfirm';
+import { PartnerSearchInput } from './PartnerSearchInput';
+import { isPOFormDirty } from './poFormDirty';
+import { describePOActionError } from './poApiErrors';
 import { apiGet, apiPost, apiPatch, type Page } from '@/shared/lib/api';
 import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { useToastStore } from '@/stores/useToastStore';
@@ -828,15 +832,42 @@ function PurchaseOrdersTab({
     setPoErrors({});
   };
 
+  // Closing the form by Escape, the close button, Cancel or a click outside
+  // it asks first when that would throw away what the user entered.
+  const { confirm: confirmDiscard, ...discardConfirm } = useConfirm();
+  const poTaxChanged = poBase
+    ? poTaxInput !== poBase.tax || poTaxRateInput.trim() !== poBase.taxRate.trim()
+    : poTaxRateTouched || !['', '0'].includes(poTaxInput.trim());
+  const poFormDirty = showCreate && isPOFormDirty(poForm, poBase?.form ?? null, poTaxChanged);
+  const requestClose = async () => {
+    if (createPOMut.isPending || editPOMut.isPending) return;
+    if (poFormDirty) {
+      const discard = await confirmDiscard({
+        title: t('procurement.discard_po_title', { defaultValue: 'Discard this purchase order?' }),
+        message: t('procurement.discard_po_message', {
+          defaultValue: 'What you entered has not been saved and will be lost.',
+        }),
+        confirmLabel: t('procurement.discard_po_confirm', { defaultValue: 'Discard' }),
+        cancelLabel: t('procurement.discard_po_keep', { defaultValue: 'Keep editing' }),
+        variant: 'warning',
+      });
+      if (!discard) return;
+    }
+    closeModal();
+  };
+  // The keydown listener is installed once per opening; it reads the latest
+  // close request (with the latest form) through this ref.
+  const requestCloseRef = useRef(requestClose);
+  requestCloseRef.current = requestClose;
+
   // Escape key handler
   useEffect(() => {
     if (!showCreate) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeModal();
+      if (e.key === 'Escape') void requestCloseRef.current();
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showCreate]);
 
   // F4 interop: when Procurement was opened from the Resource Summary buy-list,
@@ -942,6 +973,10 @@ function PurchaseOrdersTab({
     const e: Record<string, string> = {};
     const hasAnyItem = poForm.items.some((li) => li.description.trim());
     if (!hasAnyItem) e.items = t('validation.required', { defaultValue: 'Add at least one item' });
+    // The server refuses an order without a supplier; say so before the round trip.
+    if (!figuresLocked && !poForm.vendor_contact_id.trim()) {
+      e.vendor = t('procurement.vendor_required', { defaultValue: 'Select the supplier of this purchase order.' });
+    }
     if (poRateInvalid) {
       e.tax_rate = t('procurement.vat_rate_invalid', { defaultValue: 'VAT rate must be between 0 and 100.' });
     }
@@ -992,7 +1027,7 @@ function PurchaseOrdersTab({
       warnIfVendorFlagged(res?.vendor_warnings);
     },
     onError: (e: Error) =>
-      addToast({ type: 'error', title: t('common.error', { defaultValue: 'Error' }), message: e.message }),
+      addToast({ type: 'error', title: t('common.error', { defaultValue: 'Error' }), message: describePOActionError(e) }),
   });
 
   /* ── PO edit ──
@@ -1078,7 +1113,7 @@ function PurchaseOrdersTab({
       warnIfVendorFlagged(res?.vendor_warnings);
     },
     onError: (e: Error) =>
-      addToast({ type: 'error', title: t('common.error', { defaultValue: 'Error' }), message: e.message }),
+      addToast({ type: 'error', title: t('common.error', { defaultValue: 'Error' }), message: describePOActionError(e) }),
   });
 
   /* Fetch full PO (incl. line items the list omits) then prefill the shared
@@ -1133,7 +1168,7 @@ function PurchaseOrdersTab({
       addToast({
         type: 'error',
         title: t('common.error', { defaultValue: 'Error' }),
-        message: e.message,
+        message: describePOActionError(e),
       }),
   });
 
@@ -1160,7 +1195,7 @@ function PurchaseOrdersTab({
       addToast({
         type: 'error',
         title: t('common.error', { defaultValue: 'Error' }),
-        message: e.message,
+        message: describePOActionError(e),
       }),
   });
 
@@ -1289,14 +1324,22 @@ function PurchaseOrdersTab({
       ? t('procurement.edit_po', { defaultValue: 'Edit purchase order' })
       : t('procurement.new_po', { defaultValue: 'New Purchase Order' });
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-lg animate-fade-in">
+      <>
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-lg animate-fade-in"
+        onMouseDown={(e) => {
+          // A press that starts on the backdrop itself, not one that began
+          // inside the dialog and was dragged out (selecting text).
+          if (e.target === e.currentTarget) void requestClose();
+        }}
+      >
         <div className="w-full max-w-5xl bg-surface-elevated rounded-xl shadow-xl border border-border animate-card-in mx-4 max-h-[88vh] flex flex-col" role="dialog" aria-modal="true" aria-label={modalTitle}>
           <div className="flex items-center justify-between px-6 py-4 border-b border-border-light sticky top-0 z-10 bg-surface-elevated rounded-t-xl">
             <h2 className="text-lg font-semibold text-content-primary">
               {modalTitle}
             </h2>
             <button
-              onClick={closeModal}
+              onClick={() => void requestClose()}
               aria-label={t('common.close', { defaultValue: 'Close' })}
               className="flex h-8 w-8 items-center justify-center rounded-lg text-content-tertiary hover:bg-surface-secondary hover:text-content-primary transition-colors"
             >
@@ -1341,6 +1384,7 @@ function PurchaseOrdersTab({
                 <div ref={firstFieldRef} className="lg:col-span-2">
                   <label className="block text-sm font-medium text-content-primary mb-1.5">
                     {t('procurement.vendor', { defaultValue: 'Vendor' })}
+                    {!figuresLocked && <span className="ml-0.5 text-semantic-error" aria-hidden>*</span>}
                   </label>
                   {figuresLocked ? (
                     <input
@@ -1352,14 +1396,22 @@ function PurchaseOrdersTab({
                       className={clsx(inputCls, 'bg-surface-secondary/50 cursor-not-allowed')}
                     />
                   ) : (
-                    <ContactSearchInput
+                    <PartnerSearchInput
                       value={poForm.vendor_contact_id}
                       displayValue={poForm.vendor_display}
-                      onChange={(id, name) => setPoForm((f) => ({ ...f, vendor_contact_id: id, vendor_display: name }))}
-                      placeholder={t('procurement.search_vendor', { defaultValue: 'Search vendor...' })}
-                      showBrowse
-                      browseContactTypes={['supplier', 'subcontractor']}
+                      onChange={(id, name) => {
+                        setPoForm((f) => ({ ...f, vendor_contact_id: id, vendor_display: name }));
+                        if (id) setPoErrors((prev) => ({ ...prev, vendor: '' }));
+                      }}
+                      ariaLabel={t('procurement.vendor', { defaultValue: 'Vendor' })}
+                      invalid={Boolean(poErrors.vendor)}
+                      errorId={poErrors.vendor ? 'po-vendor-error' : undefined}
                     />
+                  )}
+                  {poErrors.vendor && (
+                    <p id="po-vendor-error" className="mt-1.5 text-xs text-semantic-error">
+                      {poErrors.vendor}
+                    </p>
                   )}
                 </div>
                 {/* Delivery date */}
@@ -1694,7 +1746,7 @@ function PurchaseOrdersTab({
             </div>
           </div>
           <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-border-light sticky bottom-0 z-10 bg-surface-elevated rounded-b-xl">
-            <Button variant="ghost" onClick={closeModal} disabled={createPOMut.isPending || editPOMut.isPending}>
+            <Button variant="ghost" onClick={() => void requestClose()} disabled={createPOMut.isPending || editPOMut.isPending}>
               {t('common.cancel', { defaultValue: 'Cancel' })}
             </Button>
             <Button
@@ -1725,6 +1777,8 @@ function PurchaseOrdersTab({
           </div>
         </div>
       </div>
+      <ConfirmDialog {...discardConfirm} />
+      </>
     );
   }
 

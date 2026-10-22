@@ -14,6 +14,10 @@ Endpoints:
     GET    /certificate-types/         - The certificate-type catalogue
     PATCH  /{id}/items/{item_id}/requirements/ - Receiving requirements of a PO line
     GET    /{id}/payment-release/      - The payment release rules for the PO's invoices
+    GET    /approval-limits/           - Approval ceilings per role and currency
+    PUT    /approval-limits/           - Replace them (administrators)
+    GET    /partners/                  - Contacts, vendors and subcontractors in one search
+    POST   /partners/resolve/          - The contact a PO stores for a picked partner
     GET    /{id}                       - Get single PO
     PATCH  /{id}                       - Update PO (auth required)
     POST   /{id}/issue                 - Issue PO (auth required)
@@ -40,6 +44,7 @@ from app.dependencies import (
     RequirePermission,
     SessionDep,
     accessible_project_ids,
+    get_current_user_payload,
     verify_project_access,
 )
 from app.modules.contacts.models import Contact
@@ -61,12 +66,17 @@ from app.modules.procurement.schemas import (
     GRRouteOption,
     InvoiceCheckRequest,
     POAcknowledgeRequest,
+    POApprovalLimitsResponse,
+    POApprovalLimitsUpdate,
     POCancelRequest,
     POCreate,
     POInvoiceCreatedResponse,
     POItemRequirementsUpdate,
     POListResponse,
     POMatchStatusResponse,
+    POPartnerListResponse,
+    POPartnerResolveRequest,
+    POPartnerResolveResponse,
     POResponse,
     PORetainageReleaseListResponse,
     PORetainageReleaseRequest,
@@ -76,7 +86,7 @@ from app.modules.procurement.schemas import (
     ProjectDeliveryPerformanceResponse,
     SupplierScorecardResponse,
 )
-from app.modules.procurement.service import ProcurementService, _validate_3way_match
+from app.modules.procurement.service import ProcurementService, _validate_3way_match, vendor_required_error
 
 router = APIRouter(tags=["procurement"])
 
@@ -241,6 +251,11 @@ async def create_purchase_order(
     # create POs against any project in any tenant. Mirrors the same check
     # on ``create_goods_receipt`` / ``create_invoice_from_po``.
     await verify_project_access(data.project_id, str(user_id), session)
+    # A purchase order is an order to somebody: one saved without a supplier
+    # cannot be approved, issued or matched to an invoice. Drafts the system
+    # raises itself (award, requisition conversion) go through the service.
+    if not (data.vendor_contact_id or "").strip():
+        raise vendor_required_error()
     po = await service.create_po(data, user_id=user_id)
     return await _po_response(service.session, po)
 
@@ -266,6 +281,108 @@ async def procurement_stats(
     """
     await verify_project_access(project_id, str(user_id), session)
     return await service.get_stats(project_id)
+
+
+# ── Approval limits (fixed paths - before /{po_id}) ─────────────────────────
+
+
+@router.get(
+    "/approval-limits/",
+    response_model=POApprovalLimitsResponse,
+    dependencies=[Depends(RequirePermission("procurement.read"))],
+)
+async def get_po_approval_limits(
+    user_id: CurrentUserId,
+    session: SessionDep,
+    project_id: uuid.UUID = Query(...),
+    service: ProcurementService = Depends(_get_service),
+) -> POApprovalLimitsResponse:
+    """The value ceilings purchase-order approval is checked against on a project."""
+    await verify_project_access(project_id, str(user_id), session)
+    return POApprovalLimitsResponse(**(await service.approval_limits(project_id)))
+
+
+@router.put(
+    "/approval-limits/",
+    response_model=POApprovalLimitsResponse,
+    dependencies=[Depends(RequirePermission("procurement.manage_approval_limits"))],
+)
+async def set_po_approval_limits(
+    data: POApprovalLimitsUpdate,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    project_id: uuid.UUID = Query(...),
+    service: ProcurementService = Depends(_get_service),
+) -> POApprovalLimitsResponse:
+    """Replace a project's approval ceilings per role and currency (administrators).
+
+    ``{}`` returns the project to the defaults. A manager may not change the
+    ceiling they are measured against, so this needs
+    ``procurement.manage_approval_limits``.
+    """
+    await verify_project_access(project_id, str(user_id), session)
+    return POApprovalLimitsResponse(
+        **(await service.set_approval_limits(project_id, data.overrides, user_id=str(user_id)))
+    )
+
+
+# ── Partner directory for the supplier picker (fixed paths) ─────────────────
+
+
+@router.get(
+    "/partners/",
+    response_model=POPartnerListResponse,
+    dependencies=[Depends(RequirePermission("procurement.read"))],
+)
+async def search_po_partners(
+    user_id: CurrentUserId,
+    session: SessionDep,
+    payload: dict[str, Any] = Depends(get_current_user_payload),
+    q: str = Query(default="", max_length=200),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> POPartnerListResponse:
+    """Search contacts, the vendor register and the subcontractor register together.
+
+    The one place the purchase-order supplier picker looks, so a firm kept in
+    any of the three can be ordered from. See ``procurement.partners``.
+    """
+    from app.modules.procurement.partners import search_partners
+
+    return await search_partners(
+        session,
+        q=q,
+        limit=limit,
+        user_id=str(user_id),
+        role=str(payload.get("role") or ""),
+        permissions=list(payload.get("permissions") or []),
+    )
+
+
+@router.post(
+    "/partners/resolve/",
+    response_model=POPartnerResolveResponse,
+    dependencies=[Depends(RequirePermission("procurement.create"))],
+)
+async def resolve_po_partner(
+    data: POPartnerResolveRequest,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    payload: dict[str, Any] = Depends(get_current_user_payload),
+) -> POPartnerResolveResponse:
+    """The contact a purchase order stores for a picked partner.
+
+    A vendor or subcontractor not yet linked to a contact is linked to one
+    (an existing contact with the same tax id or company name, else a new one).
+    """
+    from app.modules.procurement.partners import resolve_partner
+
+    return await resolve_partner(
+        session,
+        source=data.source,
+        partner_id=data.id,
+        user_id=str(user_id),
+        role=str(payload.get("role") or ""),
+    )
 
 
 # -- Supplier delivery performance / OTIF (fixed path - before /{po_id}) -----
@@ -595,12 +712,25 @@ async def update_purchase_order(
     data: POUpdate,
     user_id: CurrentUserId,
     session: SessionDep,
+    payload: dict[str, Any] = Depends(get_current_user_payload),
     service: ProcurementService = Depends(_get_service),
 ) -> POResponse:
-    """Update a purchase order."""
+    """Update a purchase order.
+
+    A PATCH that moves the order into ``approved`` is held to the same
+    approval rules as the approve action: the caller needs
+    ``procurement.approve``, may not be the order's creator, and may not be
+    above their value ceiling.
+    """
     existing = await service.get_po(po_id)
     await verify_project_access(existing.project_id, str(user_id), session)
-    po = await service.update_po(po_id, data)
+    po = await service.update_po(
+        po_id,
+        data,
+        actor_id=str(user_id),
+        actor_role=str(payload.get("role") or ""),
+        actor_permissions=list(payload.get("permissions") or []),
+    )
     return await _po_response(service.session, po)
 
 
@@ -946,16 +1076,25 @@ async def approve_purchase_order(
     po_id: uuid.UUID,
     user_id: CurrentUserId,
     session: SessionDep,
+    payload: dict[str, Any] = Depends(get_current_user_payload),
     service: ProcurementService = Depends(_get_service),
 ) -> POResponse:
     """Approve a draft purchase order so it can be issued (TOP-30 #10).
 
     Approval commits the amount against the project budget; the PO must be
-    approved before it is issued to the vendor.
+    approved before it is issued to the vendor. The creator cannot approve
+    their own order, and an approver above their value ceiling in the order's
+    currency is refused (403 with a ``code``); see
+    ``procurement.approval_policy``.
     """
     existing = await service.get_po(po_id)
     await verify_project_access(existing.project_id, str(user_id), session)
-    po = await service.approve_po(po_id, approver_id=str(user_id))
+    po = await service.approve_po(
+        po_id,
+        approver_id=str(user_id),
+        approver_role=str(payload.get("role") or ""),
+        approver_permissions=list(payload.get("permissions") or []),
+    )
     return await _po_response(service.session, po)
 
 

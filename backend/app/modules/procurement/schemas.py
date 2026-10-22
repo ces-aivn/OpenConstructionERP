@@ -1544,6 +1544,71 @@ class ProcurementSettingsUpdate(BaseModel):
     default_approval_chain: list[UUID] | None = Field(default=None, max_length=10)
 
 
+class POApprovalLimitsResponse(BaseModel):
+    """Purchase-order approval ceilings of a project, gross value per role and currency.
+
+    ``defaults`` apply everywhere, ``overrides`` are this project's own and
+    ``effective`` is the two merged, the table approval is checked against.
+    An administrator, or a holder of ``high_value_permission``, approves
+    without a ceiling. A role without a ceiling in an order's currency cannot
+    approve that order.
+    """
+
+    project_id: UUID
+    defaults: dict[str, dict[str, str]] = Field(default_factory=dict)
+    overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
+    effective: dict[str, dict[str, str]] = Field(default_factory=dict)
+    high_value_permission: str = "procurement.approve_high_value"
+
+
+class POApprovalLimitsUpdate(BaseModel):
+    """Replace a project's approval-ceiling overrides; ``{}`` returns it to the defaults."""
+
+    overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+
+class POPartner(BaseModel):
+    """One business partner a purchase order can be placed with.
+
+    The shared directory behind the supplier picker: a contact, a vendor of
+    the supplier register or a subcontractor. ``contact_id`` is the contact a
+    purchase order stores as its vendor; it is empty for a register entry not
+    yet linked to one, and resolving that entry links it.
+    """
+
+    source: Literal["contact", "vendor", "subcontractor"]
+    id: str
+    contact_id: str | None = None
+    name: str
+    code: str | None = None
+    contact_type: str | None = None
+    tax_id: str | None = None
+    country_code: str | None = None
+    also_in: list[str] = Field(default_factory=list)
+
+
+class POPartnerListResponse(BaseModel):
+    """Partner search results, one row per partner."""
+
+    items: list[POPartner] = Field(default_factory=list)
+    total: int = 0
+
+
+class POPartnerResolveRequest(BaseModel):
+    """Turn a picked partner into the contact a purchase order stores."""
+
+    source: Literal["contact", "vendor", "subcontractor"]
+    id: UUID
+
+
+class POPartnerResolveResponse(BaseModel):
+    """The contact a purchase order stores for the picked partner."""
+
+    contact_id: str
+    name: str
+    created: bool = False
+
+
 class ExternalOrderLineIn(BaseModel):
     """One external order line as the purchasing system reports it.
 

@@ -45,7 +45,7 @@ from app.modules.contacts.schemas import (
     ContactStatsResponse,
     ContactUpdate,
 )
-from app.modules.contacts.service import ContactService
+from app.modules.contacts.service import PREQUAL_NEEDS_INSURANCE_CODE, ContactService
 
 router = APIRouter(tags=["contacts"])
 logger = logging.getLogger(__name__)
@@ -720,6 +720,19 @@ async def import_contacts_file(
             prequal = str(row.get("prequalification_status", "")).strip().lower() or None
             if prequal and prequal not in _ALLOWED_PREQUAL:
                 prequal = None
+            # An imported row carries no insurance and no stated reason, so it
+            # cannot arrive approved: prequalification approval needs either.
+            if prequal == "approved":
+                errors.append(
+                    {
+                        "row": row_idx,
+                        "error": PREQUAL_NEEDS_INSURANCE_CODE,
+                        "code": PREQUAL_NEEDS_INSURANCE_CODE,
+                        "field": "prequalification_status",
+                        "data": _redact_row_for_log(row),
+                    }
+                )
+                continue
 
             payment_terms = str(row.get("payment_terms_days", "")).strip() or None
             notes = str(row.get("notes", "")).strip() or None

@@ -46,9 +46,11 @@ import {
   WideModalField,
 } from '@/shared/ui/WideModal';
 import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
+import { CurrencyPicker } from '@/shared/ui/CurrencyPicker';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { getErrorMessage } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
+import { getFallbackCurrency } from '@/stores/usePreferencesStore';
 import {
   listVendors,
   listCatalogItems,
@@ -1339,13 +1341,14 @@ function CreateModal({
   const [busy, setBusy] = useState(false);
 
   // Vendor currency is the vendor's OWN trading currency, not a project
-  // currency, so there is no sensible default to pre-fill: leave it blank
-  // (the backend treats an empty value as "unset") rather than hardcoding EUR.
+  // currency. It starts on the user's own default (VND or USD) because an
+  // empty value made the server fall back to EUR while the picker showed the
+  // first option; the buyer changes it for a supplier that invoices otherwise.
   const [vendorForm, setVendorForm] = useState({
     code: '',
     name: '',
     legal_name: '',
-    currency: '',
+    currency: getFallbackCurrency(),
     payment_terms_days: '30',
     country_code: '',
   });
@@ -1362,7 +1365,9 @@ function CreateModal({
     setBusy(true);
     try {
       if (kind === 'vendors') {
-        if (!vendorForm.code.trim() || !vendorForm.name.trim()) throw new Error('Code and name required');
+        if (!vendorForm.code.trim() || !vendorForm.name.trim()) {
+          throw new Error(t('supplier_catalogs.vendor_code_name_required', { defaultValue: 'Code and name are required.' }));
+        }
         await createVendor({
           code: vendorForm.code,
           name: vendorForm.name,
@@ -1374,7 +1379,9 @@ function CreateModal({
         addToast({ type: 'success', title: t('supplier_catalogs.vendor_created', { defaultValue: 'Vendor created' }) });
         qc.invalidateQueries({ queryKey: ['sc', 'vendors'] });
       } else if (kind === 'catalog') {
-        if (!itemForm.sku.trim() || !itemForm.name.trim()) throw new Error('SKU and name required');
+        if (!itemForm.sku.trim() || !itemForm.name.trim()) {
+          throw new Error(t('supplier_catalogs.item_sku_name_required', { defaultValue: 'SKU and name are required.' }));
+        }
         await createCatalogItem({
           sku: itemForm.sku,
           name: itemForm.name,
@@ -1472,11 +1479,11 @@ function CreateModal({
           <WideModalField
             label={t('common.currency', { defaultValue: 'Currency' })}
           >
-            <input
+            {/* An ISO 4217 picker, not free text: a typed "dollar" used to be
+                cut to the field width and saved as "dol". */}
+            <CurrencyPicker
               value={vendorForm.currency}
-              onChange={(e) => setVendorForm({ ...vendorForm, currency: e.target.value })}
-              className={inputCls}
-              maxLength={3}
+              onChange={(code) => setVendorForm({ ...vendorForm, currency: code })}
             />
           </WideModalField>
           <WideModalField
@@ -1699,12 +1706,7 @@ function EditVendorModal({ vendor, onClose }: { vendor: Vendor; onClose: () => v
           />
         </WideModalField>
         <WideModalField label={t('common.currency', { defaultValue: 'Currency' })}>
-          <input
-            value={form.currency}
-            onChange={(e) => setForm({ ...form, currency: e.target.value })}
-            className={inputCls}
-            maxLength={3}
-          />
+          <CurrencyPicker value={form.currency} onChange={(code) => setForm({ ...form, currency: code })} />
         </WideModalField>
         <WideModalField
           label={t('supplier_catalogs.payment_terms', { defaultValue: 'Payment terms (days)' })}

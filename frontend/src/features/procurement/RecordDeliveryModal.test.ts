@@ -9,8 +9,9 @@
 // the numeric behaviour AND the mirror of the backend over-receipt cap.
 
 import { describe, it, expect } from 'vitest';
+import { QueryClient } from '@tanstack/react-query';
 
-import { validateDeliveryLine } from './RecordDeliveryModal';
+import { receivablePOsKey, validateDeliveryLine } from './RecordDeliveryModal';
 
 describe('validateDeliveryLine', () => {
   it('accepts received equal to ordered', () => {
@@ -62,5 +63,19 @@ describe('validateDeliveryLine', () => {
     // With no usable ordered quantity we cannot say "over" - only the
     // received value itself must be valid.
     expect(validateDeliveryLine('5', 'xyz')).toBeNull();
+  });
+});
+
+// The delivery dialog's order list must refresh when an order changes. The
+// order register invalidates ['procurement-po', projectId] on issue, approve
+// and edit, so the dialog's key has to sit under it.
+describe('receivablePOsKey', () => {
+  it('is invalidated by a change to the project order register', async () => {
+    const qc = new QueryClient();
+    qc.setQueryData(receivablePOsKey('p1'), { items: [] });
+    qc.setQueryData(receivablePOsKey('p2'), { items: [] });
+    await qc.invalidateQueries({ queryKey: ['procurement-po', 'p1'] });
+    expect(qc.getQueryState(receivablePOsKey('p1'))?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(receivablePOsKey('p2'))?.isInvalidated).toBe(false);
   });
 });

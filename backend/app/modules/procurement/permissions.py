@@ -27,6 +27,13 @@ def register_procurement_permissions() -> None:
             # TOP-30 #10: approving a PO commits budget, so it is a
             # MANAGER-level gate, the same tier as issuing it.
             "procurement.approve": Role.MANAGER,
+            # Approving a purchase order above the approver's value ceiling
+            # (``procurement.approval_policy``). Admin-only by default so a
+            # manager cannot wave through an order beyond their limit.
+            "procurement.approve_high_value": Role.ADMIN,
+            # Changing those ceilings. Admin-only for the same reason: the
+            # people measured against a limit do not get to move it.
+            "procurement.manage_approval_limits": Role.ADMIN,
             # Issue #516: approving or rejecting a material requisition is
             # the approver's decision, not the requester's. Its own key so a
             # tenant can hand it to a site manager without the right to

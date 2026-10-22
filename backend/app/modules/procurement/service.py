@@ -678,6 +678,34 @@ def _perf_to_schema(perf: DeliveryPerformance) -> SupplierDeliveryPerformance:
     )
 
 
+def vendor_required_error() -> HTTPException:
+    """The coded 422 for a purchase order saved without a supplier."""
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail={
+            "code": "po_vendor_required",
+            "message": "Select the supplier of this purchase order before saving it.",
+            "field": "vendor_contact_id",
+            "params": {},
+        },
+    )
+
+
+def _holds_permission(role: str | None, permissions: Sequence[str] | None, permission: str) -> bool:
+    """Whether a caller with ``role`` and token ``permissions`` holds ``permission``.
+
+    Same answer :class:`app.dependencies.RequirePermission` gives: admin holds
+    everything, then the token's list, then the live role registry.
+    """
+    if (role or "").strip().lower() == "admin":
+        return True
+    if permission in set(permissions or ()):
+        return True
+    from app.core.permissions import permission_registry
+
+    return bool(role) and permission_registry.role_has_permission(str(role), permission)
+
+
 class ProcurementService:
     """Business logic for procurement operations."""
 
@@ -1133,6 +1161,10 @@ class ProcurementService:
         self,
         po_id: uuid.UUID,
         data: POUpdate,
+        *,
+        actor_id: str | None = None,
+        actor_role: str | None = None,
+        actor_permissions: Sequence[str] | None = None,
     ) -> PurchaseOrder:
         """Update PO fields and optionally replace items.
 
@@ -1160,6 +1192,8 @@ class ProcurementService:
         # if blocked, collect the non-blocking warnings for the response.
         vendor_warnings: list[str] = []
         if "vendor_contact_id" in fields:
+            if not str(fields["vendor_contact_id"] or "").strip():
+                raise vendor_required_error()
             vendor_warnings = await self._enforce_vendor_gate(fields["vendor_contact_id"])
 
         # Validate status transition if status is being changed
@@ -1276,6 +1310,28 @@ class ProcurementService:
                     ).strip(),
                 )
 
+        # Approval is a decision about the order as somebody else last saw it.
+        # A PATCH that rewrites the vendor, the lines or the money and approves
+        # in the same call lets one person both shape and sign off the
+        # commitment, with nobody having looked at the figures being approved.
+        # The changes are saved first; approval is the next, separate step.
+        if prior_status != "approved" and resulting_status == "approved":
+            changed = _frozen_po_changes(po, fields, data.items, item_cost_line_ids)
+            if changed:
+                what = changed[0] if len(changed) == 1 else f"{', '.join(changed[:-1])} and {changed[-1]}"
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "po_approve_with_changes",
+                        "message": (
+                            f"Purchase order {po.po_number}: save the change to its {what} first, "
+                            "then approve it as a separate step."
+                        ),
+                        "field": "status",
+                        "params": {"po_number": po.po_number, "changed": ", ".join(changed)},
+                    },
+                )
+
         # Recompute total if subtotal or tax changed
         new_subtotal = fields.get("amount_subtotal", po.amount_subtotal)
         new_tax = fields.get("tax_amount", po.tax_amount)
@@ -1381,13 +1437,30 @@ class ProcurementService:
         # let a caller commit an arithmetically broken PO to the budget by
         # avoiding one endpoint. A gate with a second door is not a gate.
         #
-        # It runs on the POST-patch state, not on the PO as it was read: a PATCH
-        # that repairs the amounts and approves in the same call is legitimate
-        # and must pass. Raising here rolls the whole PATCH back, since the
+        # It runs on the POST-patch state, not on the PO as it was read. A PATCH
+        # that changes the commercial figures cannot reach here with an approval
+        # (refused above), so what is validated is what was saved before. Raising
+        # here rolls the whole PATCH back, since the
         # request session commits only on a clean return and the repository
         # flushes rather than commits, and it happens before any event is
         # published so no listener sees a change that was undone.
         if prior_status != "approved" and updated.status == "approved":
+            if actor_role is not None and not _holds_permission(actor_role, actor_permissions, "procurement.approve"):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "code": "po_approve_permission_required",
+                        "message": "Approving a purchase order needs the procurement.approve permission.",
+                        "field": "status",
+                        "params": {"po_number": updated.po_number},
+                    },
+                )
+            await self._assert_approval_authority(
+                updated,
+                approver_id=actor_id,
+                approver_role=actor_role,
+                approver_permissions=actor_permissions,
+            )
             await self._validate_po_or_raise(updated, operation="approve")
 
         await _safe_publish(
@@ -1941,6 +2014,11 @@ class ProcurementService:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail={
+                    # Coded so the screen states the refusal in the reader's
+                    # language and lists ``errors`` (each message is already
+                    # in the request locale) under it.
+                    "code": "po_validation_failed",
+                    "params": {"operation": operation, "count": len(report.errors)},
                     "message": (
                         f"This purchase order has problems that must be fixed before you can "
                         f"{operation} it. See the errors listed below, correct each one, then try again."
@@ -2117,7 +2195,111 @@ class ProcurementService:
         report = await self._validate_po(po, operation="read")
         return self._po_report_to_dict(report)
 
-    async def approve_po(self, po_id: uuid.UUID, approver_id: str | None = None) -> PurchaseOrder:
+    async def _assert_approval_authority(
+        self,
+        po: PurchaseOrder,
+        *,
+        approver_id: str | None,
+        approver_role: str | None,
+        approver_permissions: Sequence[str] | None,
+    ) -> None:
+        """Four eyes and the value ceiling, the two controls in front of approval.
+
+        The creator may not approve their own order (when both are known), and
+        an approver whose role is known may not approve above their ceiling in
+        the order's currency. See ``procurement.approval_policy``. Called from
+        both doors into ``approved``: :meth:`approve_po` and a PATCH of the
+        status, so neither can be used to walk around the other.
+        """
+        from app.modules.procurement.approval_policy import (
+            assert_not_self_approval,
+            assert_within_approval_limit,
+        )
+        from app.modules.procurement.order_owner import load_settings
+
+        assert_not_self_approval(creator_id=po.created_by, approver_id=approver_id, po_number=po.po_number)
+        if approver_role is None:
+            return
+        settings_row = await load_settings(self.session, po.project_id)
+        assert_within_approval_limit(
+            amount_total=po.amount_total,
+            currency=po.currency_code,
+            approver_role=approver_role,
+            approver_permissions=approver_permissions,
+            overrides=settings_row.po_approval_limits if settings_row is not None else None,
+            po_number=po.po_number,
+        )
+
+    async def approval_limits(self, project_id: uuid.UUID) -> dict[str, Any]:
+        """The project's approval ceilings: defaults, its overrides and the merged table."""
+        from app.modules.procurement.approval_policy import (
+            DEFAULT_PO_APPROVAL_LIMITS,
+            effective_limits,
+            limits_as_strings,
+            validate_limit_overrides,
+        )
+        from app.modules.procurement.order_owner import load_settings
+
+        row = await load_settings(self.session, project_id)
+        stored = (row.po_approval_limits if row is not None else None) or {}
+        try:
+            overrides = validate_limit_overrides(stored)
+        except HTTPException:
+            # A hand-edited row the write path would refuse; show what applies.
+            overrides = {}
+        return {
+            "project_id": project_id,
+            "defaults": limits_as_strings(DEFAULT_PO_APPROVAL_LIMITS),
+            "overrides": overrides,
+            "effective": limits_as_strings(effective_limits(stored)),
+        }
+
+    async def set_approval_limits(
+        self,
+        project_id: uuid.UUID,
+        overrides: dict[str, Any],
+        *,
+        user_id: str | None,
+    ) -> dict[str, Any]:
+        """Replace the project's approval-ceiling overrides (validated, audited)."""
+        from app.modules.procurement.approval_policy import validate_limit_overrides
+        from app.modules.procurement.models import ProcurementProjectSettings
+        from app.modules.procurement.order_owner import OCERP, load_settings
+
+        cleaned = validate_limit_overrides(overrides)
+        row = await load_settings(self.session, project_id)
+        if row is None:
+            row = ProcurementProjectSettings(project_id=project_id, order_owner=OCERP, default_approval_chain=[])
+            self.session.add(row)
+        before = dict(row.po_approval_limits or {})
+        row.po_approval_limits = cleaned or None
+        row.updated_by = user_id
+        await self.session.flush()
+        if before != cleaned:
+            try:
+                from app.core.audit_log import log_activity
+
+                await log_activity(
+                    self.session,
+                    actor_id=user_id,
+                    entity_type="procurement_project_settings",
+                    entity_id=str(project_id),
+                    action="updated",
+                    reason="Purchase-order approval limits changed",
+                    metadata={"before": before, "after": cleaned},
+                )
+            except Exception:
+                logger.warning("Audit log failed for approval-limit change (project=%s)", project_id, exc_info=True)
+        return await self.approval_limits(project_id)
+
+    async def approve_po(
+        self,
+        po_id: uuid.UUID,
+        approver_id: str | None = None,
+        *,
+        approver_role: str | None = None,
+        approver_permissions: Sequence[str] | None = None,
+    ) -> PurchaseOrder:
         """Approve a draft PO so it can be issued (TOP-30 #10).
 
         Approval is the commitment moment: it transitions ``draft -> approved``
@@ -2131,6 +2313,10 @@ class ProcurementService:
         otherwise commit one number to the budget and show another to the buyer.
         WARNING findings (uncoded lines, a delivery date before issue) do not
         block; they are returned by :meth:`validate_po` for the buyer to see.
+
+        Before that, :meth:`_assert_approval_authority` refuses (403) an
+        approval by the order's creator and, when ``approver_role`` is given,
+        one above the approver's value ceiling.
         """
         po = await self.get_po(po_id)
         prior_status = po.status
@@ -2148,6 +2334,12 @@ class ProcurementService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Cannot approve PO in status '{prior_status}'",
             )
+        await self._assert_approval_authority(
+            po,
+            approver_id=approver_id,
+            approver_role=approver_role,
+            approver_permissions=approver_permissions,
+        )
         await self._validate_po_or_raise(po, operation="approve")
         await self._check_commitment_release(po, actor_id=approver_id)
         await self.po_repo.update(po_id, status="approved")

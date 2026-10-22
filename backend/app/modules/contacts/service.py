@@ -12,6 +12,7 @@ Stateless service layer. Handles:
 import logging
 import re
 import uuid
+from datetime import UTC, date, datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
@@ -26,6 +27,101 @@ logger = logging.getLogger(__name__)
 _logger_audit = logging.getLogger(__name__ + ".audit")
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+# ── Prequalification needs insurance ──────────────────────────────────────
+#
+# The same rule the subcontractor register applies: a party's prequalification
+# is not approved while it holds no valid insurance, unless whoever approves it
+# states why. The machine code is shared with the subcontractor refusal so the
+# UI translates both under one ``api_errors.<code>`` key.
+PREQUAL_NEEDS_INSURANCE_CODE = "prequal_approval_needs_insurance"
+PREQUAL_OVERRIDE_METADATA_KEY = "prequal_approval_override"
+_INSURANCE_EXPIRY_KEYS = ("expiry_date", "valid_until", "expires_at", "expires_on", "expiry", "end_date")
+_INSURANCE_DEAD_STATES = frozenset({"expired", "revoked", "cancelled", "canceled", "lapsed", "void"})
+
+
+def _parse_day(raw: object) -> date | None:
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return date.fromisoformat(raw.strip()[:10])
+    except ValueError:
+        return None
+
+
+def contact_insurance_state(insurance: object, *, as_at: date) -> str:
+    """Whether a contact is insured on ``as_at``: ``valid``, ``expired`` or ``missing``.
+
+    ``insurance`` is the free-form list kept on the contact. An entry counts as
+    cover when it is not marked dead and its expiry date (under any of the
+    usual keys) is not before ``as_at``; an entry with no expiry date is cover
+    on file. A plain non-empty string entry (a policy reference) is cover too.
+    """
+    if not isinstance(insurance, list) or not insurance:
+        return "missing"
+    saw_expired = False
+    for entry in insurance:
+        if isinstance(entry, str):
+            if entry.strip():
+                return "valid"
+            continue
+        if not isinstance(entry, dict) or not entry:
+            continue
+        state = str(entry.get("status") or entry.get("state") or "").strip().lower()
+        if state in _INSURANCE_DEAD_STATES:
+            saw_expired = True
+            continue
+        expiry = next((_parse_day(entry.get(k)) for k in _INSURANCE_EXPIRY_KEYS if entry.get(k)), None)
+        if expiry is not None and expiry < as_at:
+            saw_expired = True
+            continue
+        return "valid"
+    return "expired" if saw_expired else "missing"
+
+
+def contact_prequal_override(
+    insurance: object,
+    override_reason: str | None,
+    *,
+    actor_id: str | None,
+    as_at: date | None = None,
+) -> dict | None:
+    """Allow an approval, refuse it, or record why it was allowed without insurance.
+
+    Returns ``None`` when the contact is insured. Without insurance a stated
+    reason is required: with one, the record of who approved, when, why and the
+    insurance state is returned for the contact's metadata; without one a 422
+    with a stable code and the field to fill is raised.
+    """
+    state = contact_insurance_state(insurance, as_at=as_at or date.today())
+    if state == "valid":
+        return None
+    reason = (override_reason or "").strip()
+    if not reason:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": PREQUAL_NEEDS_INSURANCE_CODE,
+                "error": PREQUAL_NEEDS_INSURANCE_CODE,
+                "field": "prequal_override_reason",
+                "params": {"insurance_state": state},
+                "message": (
+                    "This contact has no valid insurance on file, so prequalification cannot be "
+                    "approved. Record a valid insurance, or state the reason for approving without one."
+                ),
+            },
+        )
+    return {
+        "reason": reason,
+        "insurance_state": state,
+        "by": actor_id,
+        "at": datetime.now(UTC).isoformat(),
+    }
 
 
 # ── PII safety ─────────────────────────────────────────────────────────────
@@ -125,6 +221,14 @@ class ContactService:
                     detail=(f"A contact with email '{normalised_email}' already exists (id={existing.id})."),
                 )
 
+        metadata = dict(data.metadata or {})
+        if data.prequalification_status == "approved":
+            override = contact_prequal_override(
+                data.insurance, data.prequal_override_reason, actor_id=user_id
+            )
+            if override is not None:
+                metadata[PREQUAL_OVERRIDE_METADATA_KEY] = override
+
         contact = Contact(
             contact_type=data.contact_type,
             is_platform_user=data.is_platform_user,
@@ -154,7 +258,7 @@ class ContactService:
             # siloed per user. ``created_by`` stays as the audit field.
             tenant_id=user_id,
             created_by=user_id,
-            metadata_=data.metadata,
+            metadata_=metadata,
         )
         try:
             contact = await self.repo.create(contact)
@@ -270,6 +374,13 @@ class ContactService:
         contact = await self.get_contact(contact_id)
 
         fields = data.model_dump(exclude_unset=True)
+        override_reason = fields.pop("prequal_override_reason", None)
+        # Approving prequalification (from any other state) needs insurance on
+        # the contact as it will stand after this update, or a stated reason.
+        override: dict | None = None
+        if fields.get("prequalification_status") == "approved" and contact.prequalification_status != "approved":
+            insurance_after = fields.get("insurance", contact.insurance)
+            override = contact_prequal_override(insurance_after, override_reason, actor_id=user_id)
         # Merge a partial metadata patch into the existing column instead of
         # replacing it wholesale, so a PATCH touching one key keeps the rest
         # (tags, internal notes, etc.).
@@ -279,6 +390,10 @@ class ContactService:
                 fields["metadata_"] = merge_metadata(getattr(contact, "metadata_", None), incoming_meta)
             else:
                 fields["metadata_"] = incoming_meta
+
+        if override is not None:
+            base_meta = fields.get("metadata_", getattr(contact, "metadata_", None))
+            fields["metadata_"] = merge_metadata(base_meta, {PREQUAL_OVERRIDE_METADATA_KEY: override})
 
         # Validate and normalise email if being updated
         if "primary_email" in fields and fields["primary_email"] is not None:

@@ -65,9 +65,20 @@ const PICKER_LABEL = 'Bill position for line 1';
 /** The description input on the same line, used to show the form did open. */
 const LINE_ONE_DESCRIPTION = 'Description for line 1';
 
+/** The supplier the buyer picks; every order needs one. */
+const SUPPLIER = { source: 'contact', id: 'c-1', contact_id: 'c-1', name: 'Acme Supplies' };
+
+/** Every answer below serves the partner directory the supplier picker reads. */
+function partnerDirectory(path: string): Promise<unknown> | null {
+  return path.startsWith('/v1/procurement/partners/')
+    ? Promise.resolve({ items: [SUPPLIER], total: 1 })
+    : null;
+}
+
 /** The shape this page posts. Only the parts under test are named. */
 interface SubmittedPO {
   project_id: string;
+  vendor_contact_id?: string;
   items: Array<{ description: string; boq_position_id?: string; sort_order: number }>;
 }
 
@@ -99,6 +110,8 @@ function spineLine(): CostSpineLine {
  */
 function serveApi(spine: CostSpineLine[]) {
   mockGet.mockImplementation((path: string) => {
+    const partners = partnerDirectory(path);
+    if (partners) return partners;
     if (path.includes('/spine/lines/')) return Promise.resolve(spine);
     if (path.includes('/v1/finance/dashboard/')) return Promise.resolve({ currency: 'EUR' });
     return Promise.resolve({ items: [], total: 0 });
@@ -125,6 +138,12 @@ function picker() {
 async function openCreateForm(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('button', { name: NEW_PO }));
   return screen.findByRole('dialog', { name: NEW_PO });
+}
+
+/** Pick the supplier from the partner directory, as a buyer does. */
+async function pickSupplier(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('combobox', { name: 'Vendor' }));
+  await user.click(await screen.findByText(SUPPLIER.name));
 }
 
 /** The one order line the form starts with, filled enough to be submittable. */
@@ -231,6 +250,7 @@ describe('the picked position reaching the server', () => {
     renderProcurementPage();
 
     await openCreateForm(user);
+    await pickSupplier(user);
     await describeFirstLine(user, 'Concrete for the raft');
     await user.selectOptions(await screen.findByLabelText(PICKER_LABEL), 'pos-1');
 
@@ -243,6 +263,8 @@ describe('the picked position reaching the server', () => {
     expect(body.project_id).toBe(PROJECT_ID);
     expect(body.items).toHaveLength(1);
 
+    expect(body.vendor_contact_id).toBe('c-1');
+
     const line = firstLineOf(body);
     expect(line.description).toBe('Concrete for the raft');
     expect(line.boq_position_id).toBe('pos-1');
@@ -254,6 +276,7 @@ describe('the picked position reaching the server', () => {
     renderProcurementPage();
 
     await openCreateForm(user);
+    await pickSupplier(user);
     await describeFirstLine(user, 'Sundries');
 
     await user.click(screen.getByRole('button', { name: 'Create' }));
@@ -270,6 +293,48 @@ describe('the picked position reaching the server', () => {
     // value drops the key on serialisation, so the request carries no mention
     // of the field at all.
     expect(JSON.stringify(body)).not.toContain('boq_position_id');
+  });
+});
+
+describe('the supplier an order is placed with', () => {
+  it('refuses to create an order with no supplier and says why', async () => {
+    const user = userEvent.setup();
+    serveApi([]);
+    renderProcurementPage();
+
+    await openCreateForm(user);
+    await describeFirstLine(user, 'Rebar');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+
+    expect(await screen.findByText('Select the supplier of this purchase order.')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Vendor' })).toHaveAttribute('aria-invalid', 'true');
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+});
+
+describe('closing a form that holds input', () => {
+  it('closes an untouched form at once', async () => {
+    const user = userEvent.setup();
+    serveApi([]);
+    renderProcurementPage();
+
+    await openCreateForm(user);
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: NEW_PO })).toBeNull());
+  });
+
+  it('asks before Escape discards what was typed, and keeps it on Keep editing', async () => {
+    const user = userEvent.setup();
+    serveApi([]);
+    renderProcurementPage();
+
+    await openCreateForm(user);
+    await describeFirstLine(user, 'Rebar');
+    await user.keyboard('{Escape}');
+
+    expect(await screen.findByText('Discard this purchase order?')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect(screen.getByLabelText(LINE_ONE_DESCRIPTION)).toHaveValue('Rebar');
   });
 });
 
@@ -378,6 +443,8 @@ describe('editing an order past draft', () => {
 describe('the VAT rate a new order starts with (issue #515)', () => {
   function serveProjectVat(rate: string | null) {
     mockGet.mockImplementation((path: string) => {
+      const partners = partnerDirectory(path);
+      if (partners) return partners;
       if (path.includes('/spine/lines/')) return Promise.resolve([]);
       if (path.includes('/v1/finance/dashboard/')) return Promise.resolve({ currency: 'EUR' });
       if (path === `/v1/projects/${PROJECT_ID}`) return Promise.resolve({ id: PROJECT_ID, default_vat_rate: rate });
@@ -394,6 +461,7 @@ describe('the VAT rate a new order starts with (issue #515)', () => {
     await waitFor(() => expect(within(dialog).getByLabelText('VAT %')).toHaveValue('5'));
     expect(within(dialog).getByLabelText('Tax')).toBeDisabled();
 
+    await pickSupplier(user);
     await describeFirstLine(user, 'Rebar');
     await user.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
@@ -416,6 +484,7 @@ describe('the VAT rate a new order starts with (issue #515)', () => {
     await user.clear(tax);
     await user.type(tax, '12.50');
 
+    await pickSupplier(user);
     await describeFirstLine(user, 'Rebar');
     await user.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));

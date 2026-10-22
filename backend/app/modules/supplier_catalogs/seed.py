@@ -36,6 +36,42 @@ from app.modules.supplier_catalogs.models import (
 
 logger = logging.getLogger(__name__)
 
+# The demo's fixed rows, at module level so ``repairs.py`` recognises exactly
+# what this seed wrote by the same constants it writes from.
+#: (code, name, region, categories, rating). Every one is written in EUR, DE.
+DEMO_VENDOR_SPECS: tuple[tuple[str, str, str, list[str], int], ...] = (
+    ("V001", "Beton AG", "concrete", ["concrete", "rebar"], 4),
+    ("V002", "Stahl GmbH", "steel", ["rebar", "structural_steel"], 5),
+    ("V003", "MEP Supply Co", "mep", ["pipe", "fittings", "cable"], 3),
+    ("V004", "Finishing Trade", "finishing", ["paint", "drywall"], 4),
+    ("V005", "Generic Supplies", "general", [], 2),
+)
+DEMO_CURRENCY = "EUR"
+DEMO_COUNTRY = "DE"
+DEMO_ITEM_COUNT = 100
+DEMO_CATEGORY_CODES: tuple[str, ...] = ("C30_37", "CONCRETE", "MATERIALS")
+#: Name and level the seed gives each of its categories, by code.
+DEMO_CATEGORY_SPECS: dict[str, tuple[str, int]] = {
+    "C30_37": ("C30/37 concrete", 2),
+    "CONCRETE": ("Concrete", 1),
+    "MATERIALS": ("Materials", 0),
+}
+DEMO_PO_NUMBERS: tuple[str, ...] = tuple(f"PO-S{i:04d}" for i in range(1, 5))
+DEMO_PR_NUMBERS: tuple[str, ...] = tuple(f"PR-S{i:04d}" for i in range(1, 6))
+DEMO_GR_NUMBERS: tuple[str, ...] = ("GR-S0001", "GR-S0002")
+DEMO_INVOICE_NUMBERS: tuple[str, ...] = ("INV-OK-001", "INV-EXC-001")
+DEMO_WAREHOUSE = ("WH-MAIN", "Main warehouse")
+
+
+def demo_item_sku(index: int) -> str:
+    """The SKU of the ``index``-th (zero-based) demo catalogue item."""
+    return f"SKU-{index + 1:05d}"
+
+
+def demo_item_description(sku: str) -> str:
+    """The description the seed writes on a demo catalogue item."""
+    return f"Construction material, catalogue reference {sku}"
+
 
 async def seed_supplier_catalogs(
     session: AsyncSession,
@@ -46,6 +82,9 @@ async def seed_supplier_catalogs(
     Returns a summary dict with row counts inserted per entity. Existing
     vendors / catalog items (matched by code/sku) are skipped silently.
     """
+    # The vendor register is company-wide: these rows sit beside the tenant's
+    # real suppliers. The caller runs this only for a live demo project, and
+    # ``repairs.py`` removes them again once no demo project is installed.
     project_id = project_id or uuid.uuid4()
     counts: dict[str, int] = {}
 
@@ -61,24 +100,17 @@ async def seed_supplier_catalogs(
         return {"skipped": 1}
 
     # --- 5 vendors ---
-    vendor_specs = [
-        ("V001", "Beton AG", "concrete", ["concrete", "rebar"], 4),
-        ("V002", "Stahl GmbH", "steel", ["rebar", "structural_steel"], 5),
-        ("V003", "MEP Supply Co", "mep", ["pipe", "fittings", "cable"], 3),
-        ("V004", "Finishing Trade", "finishing", ["paint", "drywall"], 4),
-        ("V005", "Generic Supplies", "general", [], 2),
-    ]
     vendors: list[Vendor] = []
-    for code, name, region, cats, rating in vendor_specs:
+    for code, name, region, cats, rating in DEMO_VENDOR_SPECS:
         v = Vendor(
             code=code,
             name=name,
             status="active",
-            currency="EUR",
+            currency=DEMO_CURRENCY,
             payment_terms_days=30,
             rating=rating,
             categories_json=list(cats),
-            country_code="DE",
+            country_code=DEMO_COUNTRY,
             region=region,
         )
         session.add(v)
@@ -87,12 +119,12 @@ async def seed_supplier_catalogs(
     counts["vendors"] = len(vendors)
 
     # --- 3-level category tree ---
-    cat_l1 = ItemCategory(code="MATERIALS", name="Materials", level=0)
+    cat_l1 = ItemCategory(code="MATERIALS", name=DEMO_CATEGORY_SPECS["MATERIALS"][0], level=0)
     session.add(cat_l1)
     await session.flush()
     cat_l2 = ItemCategory(
         code="CONCRETE",
-        name="Concrete",
+        name=DEMO_CATEGORY_SPECS["CONCRETE"][0],
         parent_id=cat_l1.id,
         level=1,
     )
@@ -100,7 +132,7 @@ async def seed_supplier_catalogs(
     await session.flush()
     cat_l3 = ItemCategory(
         code="C30_37",
-        name="C30/37 concrete",
+        name=DEMO_CATEGORY_SPECS["C30_37"][0],
         parent_id=cat_l2.id,
         level=2,
         classification_ref="03 30 00",
@@ -112,11 +144,11 @@ async def seed_supplier_catalogs(
     # --- 100 catalog items ---
     items: list[CatalogItem] = []
     units = ["m3", "kg", "pcs", "m", "m2", "ton", "l"]
-    for i in range(100):
+    for i in range(DEMO_ITEM_COUNT):
         item = CatalogItem(
-            sku=f"SKU-{i + 1:05d}",
+            sku=demo_item_sku(i),
             name=f"Item {i + 1}",
-            description=f"Construction material, catalogue reference SKU-{i + 1:05d}",
+            description=demo_item_description(demo_item_sku(i)),
             category_id=cat_l3.id if i < 30 else cat_l2.id,
             unit_of_measure=units[i % len(units)],
             reorder_point=Decimal("10") if i % 5 == 0 else Decimal("0"),

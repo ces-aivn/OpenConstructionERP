@@ -500,3 +500,42 @@ async def test_a_project_without_settings_keeps_drafting_award_orders(patched: _
     project_id = uuid.uuid4()
     await proc_events._create_po_from_award(_tender_award(patched, project_id))
     assert len(patched.purchase_orders) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_bid_awarder_is_recorded_as_the_order_creator(patched: _FakeStore) -> None:
+    package, bidder = _seed_bid_award(patched, project_id=uuid.uuid4())
+    awarder = uuid.uuid4()
+    event = _bid_award_event(package, bidder)
+    event.data["actor_id"] = str(awarder)
+
+    await proc_events._create_po_from_bid_award(event)
+
+    assert patched.purchase_orders[0].created_by == awarder
+
+
+@pytest.mark.asyncio
+async def test_the_tender_awarder_is_recorded_as_the_order_creator(patched: _FakeStore) -> None:
+    tender_pkg = TenderPackage(id=uuid.uuid4(), project_id=uuid.uuid4(), name="Concrete works")
+    patched.tender_packages.append(tender_pkg)
+    tender_bid = TenderBid(
+        id=uuid.uuid4(),
+        package_id=tender_pkg.id,
+        company_name="ACME Bau GmbH",
+        contact_email="bids@acme.example",
+        total_amount="95000.00",
+        currency="EUR",
+        line_items=[],
+    )
+    patched.tender_bids.append(tender_bid)
+    awarder = uuid.uuid4()
+
+    await proc_events._create_po_from_award(
+        Event(
+            name="tendering.package.awarded",
+            data={"package_id": str(tender_pkg.id), "bid_id": str(tender_bid.id), "awarded_by": str(awarder)},
+            source_module="oe_tendering",
+        )
+    )
+
+    assert patched.purchase_orders[0].created_by == awarder

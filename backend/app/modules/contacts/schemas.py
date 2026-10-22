@@ -109,6 +109,14 @@ class ContactCreate(BaseModel):
         pattern=r"^(pending|approved|rejected|expired)$",
     )
     qualified_until: str | None = Field(default=None, max_length=20)
+    prequal_override_reason: str | None = Field(
+        default=None,
+        max_length=1000,
+        description=(
+            "Why prequalification is approved although the contact holds no valid insurance. "
+            "Required for that approval; ignored otherwise. Kept on the contact's metadata."
+        ),
+    )
 
     payment_terms_days: str | None = Field(default=None, max_length=10)
     currency_code: str | None = Field(default=None, max_length=10)
@@ -163,6 +171,14 @@ class ContactUpdate(BaseModel):
         pattern=r"^(pending|approved|rejected|expired)$",
     )
     qualified_until: str | None = Field(default=None, max_length=20)
+    prequal_override_reason: str | None = Field(
+        default=None,
+        max_length=1000,
+        description=(
+            "Why prequalification is approved although the contact holds no valid insurance. "
+            "Required for that approval; ignored otherwise. Kept on the contact's metadata."
+        ),
+    )
 
     payment_terms_days: str | None = Field(default=None, max_length=10)
     currency_code: str | None = Field(default=None, max_length=10)

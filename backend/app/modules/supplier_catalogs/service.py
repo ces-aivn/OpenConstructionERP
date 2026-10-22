@@ -369,6 +369,29 @@ def _in_use_conflict(
     )
 
 
+def vendor_currency(raw: str | None) -> str:
+    """An ISO 4217 code for a vendor's trading currency, or a coded 422.
+
+    The register used to keep whatever was typed, cut to the field width, so
+    "dollar" was stored as "dol". The code is upper-cased and must be one the
+    platform knows how to round and print.
+    """
+    from app.core.currency_registry import CURRENCIES
+
+    code = (raw or "").strip().upper()
+    if code in CURRENCIES:
+        return code
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail={
+            "code": "currency_not_iso4217",
+            "message": f"'{raw}' is not an ISO 4217 currency code, such as VND or USD.",
+            "field": "currency",
+            "params": {"value": str(raw or "")},
+        },
+    )
+
+
 class SupplierCatalogsService:
     """High-level facade exposing all supplier-catalogs business operations."""
 
@@ -429,8 +452,14 @@ class SupplierCatalogsService:
         if await self.vendors.get_by_code(data.code) is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Vendor with code '{data.code}' already exists.",
+                detail={
+                    "code": "vendor_code_taken",
+                    "message": f"Vendor with code '{data.code}' already exists.",
+                    "field": "code",
+                    "params": {"code": data.code},
+                },
             )
+        currency = vendor_currency(data.currency)
         vendor = Vendor(
             code=data.code,
             name=data.name,
@@ -438,7 +467,7 @@ class SupplierCatalogsService:
             tax_id=data.tax_id,
             contact_id=data.contact_id,
             status="active",
-            currency=data.currency,
+            currency=currency,
             payment_terms_days=data.payment_terms_days,
             country_code=data.country_code,
             region=data.region,
@@ -470,6 +499,8 @@ class SupplierCatalogsService:
         if vendor is None:
             raise HTTPException(status_code=404, detail=translate("errors.vendor_not_found", locale=get_locale()))
         payload = data.model_dump(exclude_unset=True)
+        if "currency" in payload:
+            payload["currency"] = vendor_currency(payload["currency"])
         if "categories" in payload:
             payload["categories_json"] = list(payload.pop("categories") or [])
         if "preferred_for" in payload:
@@ -674,7 +705,12 @@ class SupplierCatalogsService:
         if await self.items.get_by_sku(data.sku) is not None:
             raise HTTPException(
                 status_code=409,
-                detail=f"Catalog item with SKU '{data.sku}' already exists.",
+                detail={
+                    "code": "catalog_item_sku_taken",
+                    "message": f"Catalog item with SKU '{data.sku}' already exists.",
+                    "field": "sku",
+                    "params": {"sku": data.sku},
+                },
             )
         item = CatalogItem(
             sku=data.sku,

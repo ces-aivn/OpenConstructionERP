@@ -328,6 +328,25 @@ async def test_an_award_drafts_one_order_with_the_quoted_lines(session: AsyncSes
     assert _sum(items) == Decimal(po.amount_total)
 
 
+async def test_the_awarder_raises_the_order_and_so_cannot_approve_it(
+    session: AsyncSession, actor_id: uuid.UUID
+) -> None:
+    from fastapi import HTTPException
+
+    from app.modules.procurement.approval_policy import assert_not_self_approval
+
+    contact = await make_contact(session, tenant=actor_id)
+    rfq, bid, award = await priced_award(session, bidder=str(contact.id))
+
+    await rfq_award.draft_po_from_rfq_award(awarded(rfq, bid, award, actor=actor_id))
+
+    [po] = await orders(session, rfq.project_id)
+    assert po.created_by == actor_id
+    with pytest.raises(HTTPException) as refused:
+        assert_not_self_approval(creator_id=po.created_by, approver_id=actor_id, po_number=po.po_number)
+    assert refused.value.detail["code"] == "po_self_approval"
+
+
 async def test_the_same_award_delivered_twice_is_one_order(session: AsyncSession, actor_id: uuid.UUID) -> None:
     contact = await make_contact(session, tenant=actor_id)
     rfq, bid, award = await priced_award(session, bidder=str(contact.id))

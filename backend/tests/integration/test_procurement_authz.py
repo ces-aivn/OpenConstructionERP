@@ -136,6 +136,12 @@ async def owner_a(http_client):
 
 
 @pytest_asyncio.fixture(scope="module")
+async def approver_c(http_client):
+    """Approver C - a second admin. The creator of an order never approves it."""
+    return await _register_login(http_client, tenant="approver-c", role="admin")
+
+
+@pytest_asyncio.fixture(scope="module")
 async def outsider_b(http_client):
     """Outsider B - a default viewer with no relationship to A's project.
 
@@ -309,7 +315,7 @@ async def test_get_missing_po_is_404(http_client, owner_a):
 
 
 @pytest.mark.asyncio
-async def test_full_po_lifecycle_to_completed(http_client, owner_a):
+async def test_full_po_lifecycle_to_completed(http_client, owner_a, approver_c):
     """create draft -> approve -> issue -> record GR -> confirm -> completed.
 
     Also pins the Decimal-as-string money contract end-to-end: a 100 x 120.50
@@ -337,7 +343,7 @@ async def test_full_po_lifecycle_to_completed(http_client, owner_a):
     # Approve (MANAGER) -> approved.
     resp = await http_client.post(
         f"/api/v1/procurement/{po_id}/approve/",
-        headers=owner_a["headers"],
+        headers=approver_c["headers"],
     )
     assert resp.status_code == 200, f"approve failed: {resp.text}"
     assert resp.json()["status"] == "approved"
@@ -387,7 +393,7 @@ async def test_full_po_lifecycle_to_completed(http_client, owner_a):
 
 
 @pytest.mark.asyncio
-async def test_partial_receipt_sets_partially_received(http_client, owner_a):
+async def test_partial_receipt_sets_partially_received(http_client, owner_a, approver_c):
     """A GR for less than the ordered quantity rolls the PO to
     partially_received, not completed."""
     project_id = await _create_project(http_client, owner_a["headers"])
@@ -395,7 +401,7 @@ async def test_partial_receipt_sets_partially_received(http_client, owner_a):
     po_id = po["id"]
     po_item_id = po["items"][0]["id"]
 
-    await http_client.post(f"/api/v1/procurement/{po_id}/approve/", headers=owner_a["headers"])
+    await http_client.post(f"/api/v1/procurement/{po_id}/approve/", headers=approver_c["headers"])
     await http_client.post(f"/api/v1/procurement/{po_id}/issue/", headers=owner_a["headers"])
 
     resp = await http_client.post(
@@ -421,7 +427,7 @@ async def test_partial_receipt_sets_partially_received(http_client, owner_a):
 
 
 @pytest.mark.asyncio
-async def test_match_status_reflects_confirmed_receipt(http_client, owner_a):
+async def test_match_status_reflects_confirmed_receipt(http_client, owner_a, approver_c):
     """After a partial confirmed receipt, the 3-way match overall status is
     ``partial`` (received < ordered, nothing invoiced)."""
     project_id = await _create_project(http_client, owner_a["headers"])
@@ -429,7 +435,7 @@ async def test_match_status_reflects_confirmed_receipt(http_client, owner_a):
     po_id = po["id"]
     po_item_id = po["items"][0]["id"]
 
-    await http_client.post(f"/api/v1/procurement/{po_id}/approve/", headers=owner_a["headers"])
+    await http_client.post(f"/api/v1/procurement/{po_id}/approve/", headers=approver_c["headers"])
     await http_client.post(f"/api/v1/procurement/{po_id}/issue/", headers=owner_a["headers"])
     gr_resp = await http_client.post(
         "/api/v1/procurement/goods-receipts/",
@@ -462,7 +468,7 @@ async def test_match_status_reflects_confirmed_receipt(http_client, owner_a):
 
 
 @pytest.mark.asyncio
-async def test_list_goods_receipts_by_project(http_client, owner_a):
+async def test_list_goods_receipts_by_project(http_client, owner_a, approver_c):
     """The GR tab lists receipts by project_id and stamps the parent PO
     number on each row."""
     project_id = await _create_project(http_client, owner_a["headers"])
@@ -471,7 +477,7 @@ async def test_list_goods_receipts_by_project(http_client, owner_a):
     po_item_id = po["items"][0]["id"]
     po_number = po["po_number"]
 
-    await http_client.post(f"/api/v1/procurement/{po_id}/approve/", headers=owner_a["headers"])
+    await http_client.post(f"/api/v1/procurement/{po_id}/approve/", headers=approver_c["headers"])
     await http_client.post(f"/api/v1/procurement/{po_id}/issue/", headers=owner_a["headers"])
     await http_client.post(
         "/api/v1/procurement/goods-receipts/",
@@ -517,6 +523,7 @@ async def test_create_po_with_non_draft_status_is_400(http_client, owner_a):
             "project_id": project_id,
             "po_type": "standard",
             "currency_code": "EUR",
+            "vendor_contact_id": str(uuid.uuid4()),
             "status": "approved",  # illegal initial state
         },
         headers=owner_a["headers"],
@@ -556,7 +563,7 @@ async def test_goods_receipt_against_draft_po_is_400(http_client, owner_a):
 
 @pytest.mark.tenant_isolation
 @pytest.mark.asyncio
-async def test_cumulative_over_receipt_is_blocked(http_client, owner_a):
+async def test_cumulative_over_receipt_is_blocked(http_client, owner_a, approver_c):
     """Two confirmed receipts cannot exceed the ordered quantity in total.
 
     Order 100; receive+confirm 80; then a further 30 (cumulative 110) must be
@@ -567,7 +574,7 @@ async def test_cumulative_over_receipt_is_blocked(http_client, owner_a):
     po_id = po["id"]
     po_item_id = po["items"][0]["id"]
 
-    await http_client.post(f"/api/v1/procurement/{po_id}/approve/", headers=owner_a["headers"])
+    await http_client.post(f"/api/v1/procurement/{po_id}/approve/", headers=approver_c["headers"])
     await http_client.post(f"/api/v1/procurement/{po_id}/issue/", headers=owner_a["headers"])
 
     # First receipt: 80, confirmed.
@@ -602,7 +609,7 @@ async def test_cumulative_over_receipt_is_blocked(http_client, owner_a):
 
 
 @pytest.mark.asyncio
-async def test_retainage_release_over_held_is_400(http_client, owner_a):
+async def test_retainage_release_over_held_is_400(http_client, owner_a, approver_c):
     """Releasing more retainage than is held is a 400.
 
     ``retention_percent`` is not exposed on POCreate / POUpdate, so a PO
@@ -614,7 +621,7 @@ async def test_retainage_release_over_held_is_400(http_client, owner_a):
     project_id = await _create_project(http_client, owner_a["headers"])
     po = await _create_po(http_client, owner_a["headers"], project_id, quantity="100")
     po_id = po["id"]
-    await http_client.post(f"/api/v1/procurement/{po_id}/approve/", headers=owner_a["headers"])
+    await http_client.post(f"/api/v1/procurement/{po_id}/approve/", headers=approver_c["headers"])
     await http_client.post(f"/api/v1/procurement/{po_id}/issue/", headers=owner_a["headers"])
 
     resp = await http_client.post(
@@ -642,3 +649,69 @@ async def test_create_po_rejects_negative_money_422(http_client, owner_a):
         headers=owner_a["headers"],
     )
     assert resp.status_code == 422, resp.text
+
+
+# ── 4. Approval controls ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_po_without_vendor_is_refused_with_code(http_client, owner_a):
+    """A purchase order names its supplier; saving one without is a coded 422."""
+    project_id = await _create_project(http_client, owner_a["headers"])
+    resp = await http_client.post(
+        "/api/v1/procurement/",
+        json={"project_id": project_id, "po_type": "standard", "currency_code": "EUR", "status": "draft"},
+        headers=owner_a["headers"],
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "po_vendor_required"
+
+
+@pytest.mark.asyncio
+async def test_creator_cannot_approve_own_po(http_client, owner_a):
+    """Four eyes: the admin who raised the order is refused with a coded 403."""
+    project_id = await _create_project(http_client, owner_a["headers"])
+    po = await _create_po(http_client, owner_a["headers"], project_id, quantity="1")
+    resp = await http_client.post(f"/api/v1/procurement/{po['id']}/approve/", headers=owner_a["headers"])
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["code"] == "po_self_approval"
+
+
+@pytest.mark.asyncio
+async def test_creator_cannot_approve_own_po_through_patch(http_client, owner_a):
+    """The PATCH door into ``approved`` holds the creator to the same rule."""
+    project_id = await _create_project(http_client, owner_a["headers"])
+    po = await _create_po(http_client, owner_a["headers"], project_id, quantity="1")
+    resp = await http_client.patch(
+        f"/api/v1/procurement/{po['id']}", json={"status": "approved"}, headers=owner_a["headers"]
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["code"] == "po_self_approval"
+
+
+@pytest.mark.asyncio
+async def test_approval_limits_are_listed_and_admin_configurable(http_client, owner_a, outsider_b):
+    """Defaults per currency are readable; only an administrator replaces them."""
+    project_id = await _create_project(http_client, owner_a["headers"])
+    resp = await http_client.get(
+        f"/api/v1/procurement/approval-limits/?project_id={project_id}", headers=owner_a["headers"]
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["defaults"]["manager"]["VND"] == "2500000000"
+    assert body["defaults"]["manager"]["USD"] == "100000.00"
+
+    resp = await http_client.put(
+        f"/api/v1/procurement/approval-limits/?project_id={project_id}",
+        json={"overrides": {"manager": {"VND": "5000000000"}}},
+        headers=owner_a["headers"],
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["effective"]["manager"]["VND"] == "5000000000"
+
+    resp = await http_client.put(
+        f"/api/v1/procurement/approval-limits/?project_id={project_id}",
+        json={"overrides": {}},
+        headers=outsider_b["headers"],
+    )
+    assert resp.status_code in DENIED, resp.text

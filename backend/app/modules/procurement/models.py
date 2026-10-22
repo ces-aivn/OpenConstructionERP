@@ -617,6 +617,10 @@ class ProcurementProjectSettings(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False, unique=True, index=True)
     order_owner: Mapped[str] = mapped_column(String(20), nullable=False, default="ocerp", server_default="ocerp")
     default_approval_chain: Mapped[list | None] = mapped_column(JSON, nullable=True)  # type: ignore[assignment]
+    # Purchase-order approval ceilings that override the defaults for this
+    # project, ``{role: {currency: amount}}``. NULL keeps the defaults. See
+    # ``procurement.approval_policy``; only an administrator may change it.
+    po_approval_limits: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # type: ignore[assignment]
     updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     def __repr__(self) -> str:

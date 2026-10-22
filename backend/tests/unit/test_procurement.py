@@ -292,7 +292,13 @@ async def test_create_po_persists_items_and_reaggregates_totals() -> None:
 
 
 @pytest.mark.asyncio
-async def test_issue_po() -> None:
+async def test_issue_po(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core import commitment_guard
+
+    # No commitment matrix behind this stub session. A test that started the
+    # app leaves the matrix checker registered process-wide, and it would ask
+    # a database this stub does not have.
+    monkeypatch.setattr(commitment_guard, "_CHECKER", {})
     svc = _make_service()
     po = await svc.create_po(_approvable_po_data())
     assert po.status == "draft"
@@ -449,19 +455,57 @@ async def test_patching_an_already_approved_po_does_not_commit_twice(
 
 
 @pytest.mark.asyncio
-async def test_patch_may_fix_and_approve_in_one_call() -> None:
-    """The gate reads the post-patch state, not the PO as it was read.
+async def test_patch_may_not_change_the_vendor_and_approve_in_one_call() -> None:
+    """Changing the commercial figures and approving them is two steps.
 
-    Repairing the purchase order and approving it in the same PATCH is
-    legitimate and must pass, otherwise the gate would force a pointless
-    two-step.
+    One PATCH that rewrites the vendor and approves would let one person
+    shape and sign off the commitment at once. The change is saved first and
+    the approval follows; the gate then reads the saved order.
     """
+    from fastapi import HTTPException
+
     svc = _make_service()
     po = await svc.create_po(_approvable_po_data(vendor_contact_id=None))
+    vendor = str(uuid.uuid4())
+
+    with pytest.raises(HTTPException) as refused:
+        await svc.update_po(po.id, POUpdate(vendor_contact_id=vendor, status="approved"))
+    assert refused.value.status_code == 409
+    assert refused.value.detail["code"] == "po_approve_with_changes"
+    assert refused.value.detail["field"] == "status"
+    assert "vendor" in refused.value.detail["params"]["changed"]
+
+    await svc.update_po(po.id, POUpdate(vendor_contact_id=vendor))
+    updated = await svc.update_po(po.id, POUpdate(status="approved"))
+    assert updated.status == "approved"
+
+
+@pytest.mark.asyncio
+async def test_patch_may_not_change_the_amounts_and_approve_in_one_call() -> None:
+    from fastapi import HTTPException
+
+    svc = _make_service()
+    po = await svc.create_po(_approvable_po_data())
+
+    with pytest.raises(HTTPException) as refused:
+        await svc.update_po(po.id, POUpdate(amount_subtotal="2000.00", status="approved"))
+    assert refused.value.detail["code"] == "po_approve_with_changes"
+
+
+@pytest.mark.asyncio
+async def test_approving_with_the_unchanged_figures_sent_back_is_one_call() -> None:
+    """A client that echoes the stored vendor and amounts is not changing them."""
+    svc = _make_service()
+    po = await svc.create_po(_approvable_po_data())
 
     updated = await svc.update_po(
         po.id,
-        POUpdate(vendor_contact_id=str(uuid.uuid4()), status="approved"),
+        POUpdate(
+            vendor_contact_id=po.vendor_contact_id,
+            amount_subtotal=po.amount_subtotal,
+            currency_code=po.currency_code,
+            status="approved",
+        ),
     )
     assert updated.status == "approved"
 

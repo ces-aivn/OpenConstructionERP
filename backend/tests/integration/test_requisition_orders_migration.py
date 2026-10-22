@@ -19,13 +19,18 @@ from sqlalchemy import inspect
 
 from tests._pg import transactional_session
 
-_PATH = Path(__file__).resolve().parents[2] / "alembic/versions/v96_requisition_orders_approvals_feed.py"
+_VERSIONS = Path(__file__).resolve().parents[2] / "alembic/versions"
+_PATH = _VERSIONS / "v96_requisition_orders_approvals_feed.py"
+# Later revisions that add a column to one of this revision's tables. The
+# models are the sum of every revision, so the model comparison runs these too
+# rather than letting either side carry a column the other does not.
+_LATER_REVISIONS = ("v201_po_approval_limits.py",)
 _TABLES = ("oe_procurement_project_settings", "oe_procurement_req_ext_line", "oe_procurement_req_change")
 _COLUMNS = {"order_owner", "approval_chain", "approval_step", "row_version", "client_request_id"}
 
 
-def _load():
-    spec = importlib.util.spec_from_file_location("requisition_orders_migration", _PATH)
+def _load(path: Path = _PATH):
+    spec = importlib.util.spec_from_file_location(path.stem, path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -58,6 +63,10 @@ def _walk(migration, connection, monkeypatch) -> None:
     assert "ix_procurement_req_change_cursor" in indexes
     req_indexes = {i["name"] for i in inspect(connection).get_indexes("oe_procurement_requisition")}
     assert "ix_oe_procurement_requisition_client_request_id" in req_indexes
+    for name in _LATER_REVISIONS:
+        later = _load(_VERSIONS / name)
+        monkeypatch.setattr(later, "op", Operations(MigrationContext.configure(connection)))
+        later.upgrade()
     _matches_the_models(connection)
 
 
