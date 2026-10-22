@@ -7,7 +7,7 @@ import { useNavigate, useLocation, Link } from 'react-router-dom';
 import {
   FolderPlus, FolderOpen, ArrowRight, MoreHorizontal, Copy, Trash2, Archive, ArchiveRestore, ExternalLink,
   Search, ChevronDown, ArrowUpDown, Star, Map as MapIcon, CloudSun,
-  Building2, DollarSign, Euro, PoundSterling, Globe2, MapPin, Layers, AlertTriangle,
+  Globe2, Layers, AlertTriangle,
 } from 'lucide-react';
 import { formatDistanceToNowStrict, isValid as isValidDate, parseISO } from 'date-fns';
 import { Button, Card, Badge, EmptyState, Skeleton, SkeletonGrid, Breadcrumb, ProjectMap, ProjectWeather, FileTypeChips, ConfirmDialog, ModuleGuideButton, RecoveryCard, type LatLng } from '@/shared/ui';
@@ -15,7 +15,7 @@ import { PageHeader } from '@/shared/ui/PageHeader';
 import { DismissibleInfo, IntroRichText } from '@/shared/ui/DismissibleInfo';
 import { useWidgetSettingsStore } from '@/stores/useWidgetSettingsStore';
 import { fmtNumber, getIntlLocale, fmtFixed } from '@/shared/lib/formatters';
-import { toNum } from '@/shared/lib/money';
+import { formatCompactMoney, toNum } from '@/shared/lib/money';
 import { useNameCollator } from '@/shared/lib/collator';
 import { getDateFnsLocale } from '@/shared/lib/dateFnsLocale';
 import { projectsApi, type Project } from './api';
@@ -27,7 +27,6 @@ import { matchesSearch } from '@/shared/lib/highlightMatch';
 import { CreateProjectModal } from './CreateProjectPage';
 import { projectsGuide } from './projectsGuide';
 import { ProjectStatusBadge, CURATED_PROJECT_STATUSES, useProjectStatusLabel } from './ProjectStatusBadge';
-import { BIMConverterStatusBanner } from '../bim/BIMConverterStatusBanner';
 import { getNumberLocale } from '@/stores/usePreferencesStore';
 import { invalidateProjectLists } from './invalidateProjectLists';
 import { DemoSeedingHint } from '@/features/processes/DemoSeedingHint';
@@ -103,28 +102,6 @@ export function isProjectFilterActive(
 ): boolean {
   // 'active' is the default view, so it is not a filter the user applied.
   return Boolean(searchQuery) || statusFilter !== 'active' || regionFilter !== 'all';
-}
-
-// Region tags + colours are derived from actual project data — no
-// region-specific list is hard-coded in the default UI per the
-// "no country-specific standards or city names in default UI" rule.
-// Avatar colours cycle through a palette indexed by region string.
-const REGION_AVATAR_PALETTE = [
-  'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
-  'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
-  'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-  'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
-  'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
-  'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300',
-  'bg-gray-100 text-gray-700 dark:bg-gray-900/40 dark:text-gray-300',
-];
-
-function getRegionAvatarClass(region?: string): string {
-  if (!region) return 'bg-oe-blue-subtle text-oe-blue-text';
-  // Stable hash → palette index so the same region always renders the same colour.
-  let h = 0;
-  for (let i = 0; i < region.length; i++) h = (h * 31 + region.charCodeAt(i)) >>> 0;
-  return REGION_AVATAR_PALETTE[h % REGION_AVATAR_PALETTE.length] ?? 'bg-oe-blue-subtle text-oe-blue-text';
 }
 
 /**
@@ -675,17 +652,17 @@ export function ProjectsPage() {
         onConfirm={() => purgeDemoMutation.mutate()}
       />
 
-      {/* Stats cards — 4-up portfolio summary, each card with primary
-          number + sub-line so no card is sparse. */}
+      {/* Portfolio summary: one strip with hairline dividers (the 1px gap
+          shows the border colour through), primary figure + one sub-line. */}
       {stats && projects && projects.length > 0 && (
         <>
-          <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border-light bg-border-light lg:grid-cols-4">
             {/* 1. Total Projects */}
-            <div className="rounded-xl border border-border-light bg-surface-elevated/90 p-3 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
-              <div className="text-2xs font-medium text-content-tertiary uppercase tracking-wider">
+            <div className="min-w-0 bg-surface-elevated px-4 py-3.5">
+              <div className="truncate text-xs font-medium text-content-secondary">
                 {t('projects.stats_total', { defaultValue: 'Total Projects' })}
               </div>
-              <div className="mt-1 text-xl font-bold text-content-primary tabular-nums leading-none">
+              <div className="mt-1 text-xl font-semibold text-content-primary tabular-nums leading-none">
                 {stats.totalProjects}
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-1">
@@ -707,11 +684,11 @@ export function ProjectsPage() {
             </div>
 
             {/* 2. Total BOQs */}
-            <div className="rounded-xl border border-border-light bg-surface-elevated/90 p-3 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
-              <div className="text-2xs font-medium text-content-tertiary uppercase tracking-wider">
+            <div className="min-w-0 bg-surface-elevated px-4 py-3.5">
+              <div className="truncate text-xs font-medium text-content-secondary">
                 {t('projects.stats_boqs', { defaultValue: 'Total BOQs' })}
               </div>
-              <div className="mt-1 text-xl font-bold text-content-primary tabular-nums leading-none">
+              <div className="mt-1 text-xl font-semibold text-content-primary tabular-nums leading-none">
                 {boqStats ? stats.totalBoqs.toLocaleString(getNumberLocale()) : (
                   <Skeleton width={40} height={20} className="inline-block align-middle" />
                 )}
@@ -729,8 +706,8 @@ export function ProjectsPage() {
             {/* 3. Total Value — never blend currencies into one scalar.
                 Single currency → one labelled total. Multiple → "Mixed
                 currencies" headline + a per-currency subtotal line. */}
-            <div className="rounded-xl border border-border-light bg-surface-elevated/90 p-3 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
-              <div className="text-2xs font-medium text-content-tertiary uppercase tracking-wider">
+            <div className="min-w-0 bg-surface-elevated px-4 py-3.5">
+              <div className="truncate text-xs font-medium text-content-secondary">
                 {t('projects.stats_value', { defaultValue: 'Total Value' })}
               </div>
               {!boqStats ? (
@@ -738,35 +715,31 @@ export function ProjectsPage() {
                   <Skeleton width={64} height={20} className="inline-block align-middle" />
                 </div>
               ) : stats.valueByCurrency.length === 0 ? (
-                <div className="mt-1 text-xl font-bold text-content-primary tabular-nums leading-none">
+                <div className="mt-1 text-xl font-semibold text-content-primary tabular-nums leading-none">
                   {currencyFmt.format(0)}
                 </div>
               ) : stats.multiCurrency ? (
                 <>
-                  <div className="mt-1 text-sm font-bold text-content-primary leading-none">
+                  <div className="mt-1.5 text-sm font-medium text-content-secondary leading-none">
                     {t('projects.stats_value_mixed', { defaultValue: 'Mixed currencies' })}
                   </div>
-                  <div className="mt-2 flex flex-wrap gap-1">
+                  <div className="mt-1.5 space-y-0.5">
                     {stats.valueByCurrency.map((c) => (
-                      <span
-                        key={c.currency || 'unknown'}
-                        className="inline-flex items-center gap-1 rounded-md bg-surface-secondary px-1.5 py-0.5 text-2xs font-semibold tabular-nums text-content-secondary"
-                      >
-                        {formatBigValue(c.total)}
-                        <span className="font-medium text-content-tertiary">
-                          {c.currency || t('common.unknown', { defaultValue: 'Unknown' })}
-                        </span>
-                      </span>
+                      <div key={c.currency || 'unknown'} className="text-base font-semibold tabular-nums text-content-primary">
+                        {c.currency
+                          ? formatCompactMoney(c.total, c.currency)
+                          : `${formatBigValue(c.total)} ${t('common.unknown', { defaultValue: 'Unknown' })}`}
+                      </div>
                     ))}
                   </div>
                 </>
               ) : (
                 <>
                   <div className="mt-1 flex items-baseline gap-1.5 leading-none">
-                    <span className="text-xl font-bold text-content-primary tabular-nums">
+                    <span className="text-xl font-semibold text-content-primary tabular-nums">
                       {formatBigValue(stats.valueByCurrency[0]!.total)}
                     </span>
-                    <span className="text-2xs font-semibold uppercase tracking-wider text-content-tertiary">
+                    <span className="text-xs text-content-tertiary">
                       {stats.valueByCurrency[0]!.currency}
                     </span>
                   </div>
@@ -780,8 +753,8 @@ export function ProjectsPage() {
             {/* 4. Avg Project Size — per-currency average; never a blended
                 scalar. Single currency → one labelled figure; multiple →
                 "Mixed currencies" + per-currency average chips. */}
-            <div className="rounded-xl border border-border-light bg-surface-elevated/90 p-3 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
-              <div className="text-2xs font-medium text-content-tertiary uppercase tracking-wider">
+            <div className="min-w-0 bg-surface-elevated px-4 py-3.5">
+              <div className="truncate text-xs font-medium text-content-secondary">
                 {t('projects.stats_avg', { defaultValue: 'Avg Project Size' })}
               </div>
               {!boqStats ? (
@@ -789,35 +762,31 @@ export function ProjectsPage() {
                   <Skeleton width={64} height={20} className="inline-block align-middle" />
                 </div>
               ) : stats.valueByCurrency.length === 0 ? (
-                <div className="mt-1 text-xl font-bold text-content-primary tabular-nums leading-none">
+                <div className="mt-1 text-xl font-semibold text-content-primary tabular-nums leading-none">
                   {currencyFmt.format(0)}
                 </div>
               ) : stats.multiCurrency ? (
                 <>
-                  <div className="mt-1 text-sm font-bold text-content-primary leading-none">
+                  <div className="mt-1.5 text-sm font-medium text-content-secondary leading-none">
                     {t('projects.stats_value_mixed', { defaultValue: 'Mixed currencies' })}
                   </div>
-                  <div className="mt-2 flex flex-wrap gap-1">
+                  <div className="mt-1.5 space-y-0.5">
                     {stats.valueByCurrency.map((c) => (
-                      <span
-                        key={c.currency || 'unknown'}
-                        className="inline-flex items-center gap-1 rounded-md bg-surface-secondary px-1.5 py-0.5 text-2xs font-semibold tabular-nums text-content-secondary"
-                      >
-                        {formatBigValue(c.avg)}
-                        <span className="font-medium text-content-tertiary">
-                          {c.currency || t('common.unknown', { defaultValue: 'Unknown' })}
-                        </span>
-                      </span>
+                      <div key={c.currency || 'unknown'} className="text-base font-semibold tabular-nums text-content-primary">
+                        {c.currency
+                          ? formatCompactMoney(c.avg, c.currency)
+                          : `${formatBigValue(c.avg)} ${t('common.unknown', { defaultValue: 'Unknown' })}`}
+                      </div>
                     ))}
                   </div>
                 </>
               ) : (
                 <>
                   <div className="mt-1 flex items-baseline gap-1.5 leading-none">
-                    <span className="text-xl font-bold text-content-primary tabular-nums">
+                    <span className="text-xl font-semibold text-content-primary tabular-nums">
                       {formatBigValue(stats.valueByCurrency[0]!.avg)}
                     </span>
-                    <span className="text-2xs font-semibold uppercase tracking-wider text-content-tertiary">
+                    <span className="text-xs text-content-tertiary">
                       {stats.valueByCurrency[0]!.currency}
                     </span>
                   </div>
@@ -978,12 +947,10 @@ export function ProjectsPage() {
         />
       ) : !projects || projects.length === 0 ? (
         <div className="space-y-4">
-          {/* Surface the BIM converter status here so a fresh-install user
-           *  can see at a glance whether RVT/IFC/DWG drag-and-drop will
-           *  work BEFORE creating the first project. Dismissible — once
-           *  acknowledged it stays out of the way until the user resets
-           *  the localStorage flag. */}
-          <BIMConverterStatusBanner dismissible />
+          {/* The project list carries projects only. Installing the BIM
+           *  converters is an administrator task and lives with the BIM
+           *  module and the module settings, not in front of a business user
+           *  looking for their projects. */}
           {/* Empty-state copy unified per Probe-D P2-11. Title +
               description follow the shared "No {entity} yet" / "Create
               your first {entity}" template; the description retains the
@@ -1271,6 +1238,7 @@ export function ProjectCard({
     tetelrend: 'Tételrend',
     gesn: 'GESN / FER',
     bc3: 'BC3',
+    vn_tt12: 'TT 12/2021/TT-BXD',
     untec: 'UNTEC',
     dpgf: 'DPGF',
     voci: 'VOCI',
@@ -1283,16 +1251,6 @@ export function ProjectCard({
     nlsfb: 'NL/SfB',
     knr: 'KNR',
   };
-
-  // Currency symbol icon — falls back to neutral DollarSign for unknown codes
-  // so we never render an empty chip. Tabular currency labels still appear
-  // alongside the icon for unambiguous reading.
-  const CurrencyIcon =
-    project.currency === 'EUR'
-      ? Euro
-      : project.currency === 'GBP'
-        ? PoundSterling
-        : DollarSign;
 
   // Last-modified relative time. We prefer updated_at when present so the
   // freshness signal reflects actual edits rather than only project age.
@@ -1342,7 +1300,7 @@ export function ProjectCard({
       // would also catch project-card-view-on-map on the button inside.
       data-testid="project-card"
       padding="none"
-      className={`group relative animate-card-in overflow-hidden rounded-xl bg-gradient-to-b from-surface-elevated to-surface-primary hover:shadow-xl hover:border-oe-blue/40 focus-within:ring-2 focus-within:ring-oe-blue/30 motion-safe:transition-all ${isArchived ? 'cursor-default opacity-90' : 'cursor-pointer'}`}
+      className={`group relative overflow-hidden hover:border-content-quaternary focus-within:ring-2 focus-within:ring-oe-blue/30 motion-safe:transition-colors ${isArchived ? 'cursor-default opacity-90' : 'cursor-pointer'}`}
       style={style}
       // An archived (deleted) project has no page to open: the project route
       // answers 404 for it. Its card offers Restore instead.
@@ -1371,7 +1329,7 @@ export function ProjectCard({
             <Link
               to={`/projects/${project.id}/geo`}
               onClick={(e) => e.stopPropagation()}
-              className="absolute top-2 right-2 z-10 inline-flex items-center gap-1 rounded-full border border-white/40 bg-white/85 px-2.5 py-1 text-2xs font-semibold text-oe-blue shadow-sm backdrop-blur-md transition-all hover:bg-white hover:shadow-md hover:scale-[1.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/60 dark:border-white/10 dark:bg-slate-900/70 dark:text-sky-300 dark:hover:bg-slate-900/90"
+              className="absolute top-2 right-2 z-10 inline-flex items-center gap-1 rounded border border-border bg-surface-elevated px-2 py-1 text-2xs font-semibold text-oe-blue-text shadow-sm transition-colors hover:bg-surface-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/60"
               title={t('projects.card.fly_to_on_map', {
                 defaultValue: 'Fly camera to {{name}} on the globe',
                 name: project.name,
@@ -1390,10 +1348,10 @@ export function ProjectCard({
       )}
       <div className="p-5">
         <div className="flex items-start justify-between gap-3">
-          <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-base font-bold ring-1 ring-inset ring-white/40 dark:ring-white/5 shadow-sm transition-transform duration-normal ease-oe group-hover:scale-105 ${getRegionAvatarClass(project.region)}`}>
-            {project.name.charAt(0).toUpperCase()}
-          </div>
-          <div className="flex items-center gap-1.5">
+          <h3 className="line-clamp-2 pt-2.5 text-base font-semibold leading-snug text-content-primary" title={project.name}>
+            {project.name}
+          </h3>
+          <div className="-mr-2 -mt-1 flex shrink-0 items-center gap-1.5">
             {/* Surface any non-active status (on hold / finished / cancelled /
                 archived) as a coloured pill. Active is the implied default,
                 so we omit its badge to keep the common case uncluttered. */}
@@ -1516,9 +1474,6 @@ export function ProjectCard({
           </div>
         )}
 
-        <h3 className="mt-4 text-base font-semibold tracking-tight text-content-primary truncate">
-          {project.name}
-        </h3>
         {isArchived && (
           <div
             className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-border-light bg-surface-secondary px-3 py-2"
@@ -1541,31 +1496,22 @@ export function ProjectCard({
           </div>
         )}
         {project.description && (
-          <p className="mt-1 text-xs leading-relaxed text-content-secondary line-clamp-2 transition-colors group-hover:text-content-primary/80">
+          <p className="mt-1 text-xs leading-relaxed text-content-secondary line-clamp-2">
             {project.description}
           </p>
         )}
-        <div className="mt-3.5 flex flex-wrap items-center gap-1.5">
-          <span className="inline-flex items-center gap-1 rounded-full border border-oe-blue/20 bg-oe-blue-subtle px-2 py-0.5 text-2xs font-medium text-oe-blue-text">
-            <Building2 size={11} strokeWidth={2.25} />
-            {standardLabels[project.classification_standard] ?? project.classification_standard}
+        {/* Plain facts in one line rather than a row of coloured chips. */}
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <span className="min-w-0 truncate text-xs text-content-tertiary">
+            {[
+              standardLabels[project.classification_standard] ?? project.classification_standard,
+              project.region,
+              project.currency,
+              project.address?.city,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
           </span>
-          <span className="inline-flex items-center gap-1 rounded-full border border-border-light bg-surface-secondary px-2 py-0.5 text-2xs font-medium text-content-secondary">
-            <CurrencyIcon size={11} strokeWidth={2.25} />
-            {project.currency}
-          </span>
-          {project.region && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-border-light bg-surface-secondary px-2 py-0.5 text-2xs font-medium text-content-secondary">
-              <Globe2 size={11} strokeWidth={2.25} />
-              {project.region}
-            </span>
-          )}
-          {project.address?.city && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-border-light bg-surface-secondary px-2 py-0.5 text-2xs font-medium text-content-secondary">
-              <MapPin size={11} strokeWidth={2.25} />
-              {project.address.city}
-            </span>
-          )}
           {/* Inline fallback: when the map widget is OFF we still want a
               discoverable jump-to-Geo affordance on geo-anchored projects.
               Hidden when the overlay version is already shown above. */}
@@ -1573,7 +1519,7 @@ export function ProjectCard({
             <Link
               to={`/projects/${project.id}/geo`}
               onClick={(e) => e.stopPropagation()}
-              className="inline-flex items-center gap-1 rounded-full border border-oe-blue/30 bg-oe-blue-subtle px-2 py-0.5 text-2xs font-semibold text-oe-blue-text transition-all hover:bg-oe-blue hover:text-white hover:shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/60"
+              className="inline-flex items-center gap-1 text-xs font-medium text-oe-blue-text hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/60"
               title={t('projects.card.fly_to_on_map', {
                 defaultValue: 'Fly camera to {{name}} on the globe',
                 name: project.name,
@@ -1595,22 +1541,17 @@ export function ProjectCard({
           )}
         </div>
       </div>
-      {/* Feature row: total cost as the visual anchor — gradient underline,
-       *  large tabular numerals, currency code aligned for legibility. */}
+      {/* Total value: the card's one large figure, in tabular numerals. */}
       {boqStats && boqStats.boqCount > 0 && boqStats.totalValue > 0 && (
-        <div className="relative px-5 pb-3">
-          <div className="rounded-xl border border-border-light bg-gradient-to-br from-oe-blue-subtle/60 via-surface-elevated to-surface-elevated px-4 py-3">
-            <div className="text-[10px] font-medium uppercase tracking-wider text-content-tertiary">
-              {t('projects.card_total_value', { defaultValue: 'Total value' })}
-            </div>
-            <div className="mt-0.5 flex items-baseline gap-1.5">
-              <span className="text-xl font-bold tabular-nums text-content-primary">
-                {currencyFmt.format(boqStats.totalValue)}
-              </span>
-              <span className="text-2xs font-semibold uppercase tracking-wider text-content-tertiary">
-                {project.currency}
-              </span>
-            </div>
+        <div className="px-5 pb-4">
+          <div className="text-xs text-content-tertiary">
+            {t('projects.card_total_value', { defaultValue: 'Total value' })}
+          </div>
+          <div className="mt-0.5 flex items-baseline gap-1.5">
+            <span className="text-xl font-semibold tabular-nums text-content-primary">
+              {currencyFmt.format(boqStats.totalValue)}
+            </span>
+            <span className="text-xs text-content-tertiary">{project.currency}</span>
           </div>
         </div>
       )}
@@ -1635,8 +1576,8 @@ export function ProjectCard({
               </span>
             )}
             {boqStats && boqStats.boqCount > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-md bg-surface-secondary px-1.5 py-0.5 text-2xs font-medium text-content-secondary">
-                <Layers size={10} strokeWidth={2.25} />
+              <span className="inline-flex items-center gap-1 text-2xs text-content-tertiary">
+                <Layers size={11} strokeWidth={2} />
                 <span className="tabular-nums">{boqStats.boqCount}</span>
                 <span>
                   {t('projects.boq_short', { defaultValue: 'BOQs' })}
@@ -1645,7 +1586,7 @@ export function ProjectCard({
             )}
             {openVariations > 0 && (
               <span
-                className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-1.5 py-0.5 text-2xs font-semibold text-amber-700 ring-1 ring-amber-200/60 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20"
+                className="inline-flex items-center gap-1 rounded bg-semantic-warning-bg px-1.5 py-0.5 text-2xs font-semibold text-semantic-warning"
                 title={t('projects.card_open_variations', {
                   defaultValue: 'Open variations',
                 })}
@@ -1657,7 +1598,7 @@ export function ProjectCard({
           </div>
           <ArrowRight
             size={14}
-            className="shrink-0 text-content-tertiary transition-transform duration-normal ease-oe group-hover:translate-x-0.5 group-hover:text-oe-blue"
+            className="shrink-0 text-content-quaternary transition-colors group-hover:text-oe-blue-text"
           />
         </div>
       </div>

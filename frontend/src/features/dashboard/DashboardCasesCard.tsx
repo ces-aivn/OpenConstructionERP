@@ -229,12 +229,12 @@ export function DashboardCasesCard() {
   return (
     <div
       data-testid="dashboard-cases-card"
-      className="rounded-xl border border-oe-blue/30 bg-gradient-to-r from-oe-blue/[0.07] via-oe-blue/[0.03] to-transparent p-4 shadow-xs animate-card-in"
+      className="rounded-lg border border-border-light bg-surface-elevated p-4 animate-card-in"
       style={{ animationDelay: '120ms' }}
     >
       <div className="flex flex-wrap items-start gap-4">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-oe-blue/10 text-oe-blue ring-1 ring-inset ring-oe-blue/20">
-          <GraduationCap size={20} strokeWidth={1.9} />
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border-light text-oe-blue-text">
+          <GraduationCap size={18} strokeWidth={1.75} />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -243,7 +243,7 @@ export function DashboardCasesCard() {
             </p>
             {/* Total library size, so the card advertises the full breadth of
                 guided cases even while it only previews part of it. */}
-            <span className="inline-flex shrink-0 items-center rounded-full bg-oe-blue/10 px-2 py-0.5 text-2xs font-semibold text-oe-blue ring-1 ring-inset ring-oe-blue/20">
+            <span className="inline-flex shrink-0 items-center rounded-md border border-border-light px-1.5 py-0.5 text-2xs font-medium tabular-nums text-content-secondary">
               {t('cases.dashboard_card.total', {
                 defaultValue: '{{count}} cases in total',
                 count: PLAYBOOKS.length,
@@ -271,7 +271,7 @@ export function DashboardCasesCard() {
         <button
           type="button"
           onClick={() => navigate('/cases')}
-          className="group inline-flex shrink-0 items-center gap-2 rounded-lg bg-oe-blue px-4 py-2.5 text-sm font-semibold text-content-inverse shadow-sm transition-all hover:bg-oe-blue-hover hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40"
+          className="group inline-flex shrink-0 items-center gap-2 rounded-md bg-oe-blue px-3.5 py-2 text-sm font-semibold text-content-inverse transition-colors hover:bg-oe-blue-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40"
         >
           {t('cases.dashboard_card.cta_all', {
             defaultValue: 'Browse all {{count}} cases',
@@ -293,7 +293,7 @@ export function DashboardCasesCard() {
               aria-label={t('cases.dashboard_card.smaller', {
                 defaultValue: 'Show this block smaller',
               })}
-              className="rounded-md p-1.5 text-content-tertiary transition-colors hover:bg-oe-blue/10 hover:text-oe-blue focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40"
+              className="rounded-md p-1.5 text-content-tertiary transition-colors hover:bg-surface-tertiary hover:text-content-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40"
             >
               <Minimize2 size={14} strokeWidth={2} aria-hidden="true" />
             </button>
@@ -306,7 +306,7 @@ export function DashboardCasesCard() {
               aria-label={t('cases.dashboard_card.bigger', {
                 defaultValue: 'Show this block bigger',
               })}
-              className="rounded-md p-1.5 text-content-tertiary transition-colors hover:bg-oe-blue/10 hover:text-oe-blue focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40"
+              className="rounded-md p-1.5 text-content-tertiary transition-colors hover:bg-surface-tertiary hover:text-content-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40"
             >
               <Maximize2 size={14} strokeWidth={2} aria-hidden="true" />
             </button>
@@ -320,7 +320,7 @@ export function DashboardCasesCard() {
             aria-label={t('cases.dashboard_card.hide_hint', {
               defaultValue: 'Hide this block. You can bring it back from Customize dashboard.',
             })}
-            className="rounded-md p-1.5 text-content-tertiary transition-colors hover:bg-oe-blue/10 hover:text-oe-blue focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40"
+            className="rounded-md p-1.5 text-content-tertiary transition-colors hover:bg-surface-tertiary hover:text-content-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40"
           >
             <EyeOff size={14} strokeWidth={2} aria-hidden="true" />
           </button>
@@ -333,7 +333,7 @@ export function DashboardCasesCard() {
           {/* Which half this is, then the adaptive eyebrow: resume /
               role-tuned / popular starting points. */}
           <div className="mb-1.5 flex items-center gap-1 text-2xs font-medium text-content-tertiary">
-            <span className="font-semibold uppercase tracking-wide text-content-secondary">
+            <span className="font-semibold text-content-secondary">
               {t('nav.cases', { defaultValue: 'Use cases' })}
             </span>
             <span aria-hidden="true">·</span>
@@ -457,9 +457,9 @@ export function DashboardCasesCard() {
               defaultValue: 'Browse all {{count}} cases',
               count: PLAYBOOKS.length,
             })}
-            className="group relative isolate flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-oe-blue/40 bg-oe-blue/[0.05] px-2 py-3 text-center transition duration-200 hover:-translate-y-0.5 hover:border-oe-blue/60 hover:bg-oe-blue/10 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40"
+            className="group relative isolate flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border px-2 py-3 text-center transition-colors duration-200 hover:border-oe-blue/50 hover:bg-surface-tertiary focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40"
           >
-            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-oe-blue/10 text-oe-blue ring-1 ring-inset ring-oe-blue/20 transition-transform group-hover:scale-105">
+            <span className="flex h-9 w-9 items-center justify-center rounded-full border border-border-light text-oe-blue-text">
               <ArrowRight size={18} strokeWidth={2} aria-hidden="true" />
             </span>
             <span className="text-xs font-semibold leading-snug text-oe-blue-text">

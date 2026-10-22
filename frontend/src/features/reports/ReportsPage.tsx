@@ -29,7 +29,7 @@ import {
   LineChart,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { Breadcrumb, EmptyState, SkeletonGrid, ModuleGuideButton } from '@/shared/ui';
+import { Breadcrumb, EmptyState, NoProjectSelected, SkeletonGrid, ModuleGuideButton } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { reportsGuide } from './reportsGuide';
 import { bidTotalCsvRow, csvCell, csvRow, tenderStatusLabel, type BidTotal } from './tenderCsv';
@@ -44,6 +44,7 @@ import { boqApi } from '@/features/boq/api';
 import { scheduleApi } from '@/features/schedule/api';
 import { costModelApi } from '@/features/costmodel/api';
 import { GeneratedReportsHistory } from './GeneratedReportsHistory';
+import { MarketFormsSection } from './MarketFormsSection';
 
 // HTML-escape user-controlled strings before they land in the HTML-report
 // generators below. Pre-fix (Wave V_REPORTING audit) values like
@@ -1214,18 +1215,18 @@ export function ReportsPage() {
       {/* No project selected - point at the global top-bar project selector
           rather than rendering a local picker (canon §4). */}
       {!selectedProjectId ? (
-        <EmptyState
-          icon={<FileText size={28} strokeWidth={1.5} />}
-          title={t('reports.no_project_title', { defaultValue: 'Select a project' })}
-          description={
-            !loadingProjects && projects.length === 0
-              ? t('reports.no_projects', { defaultValue: 'No projects available' })
-              : t('reports.no_project_desc', {
-                  defaultValue:
-                    'Pick a project from the selector in the top bar to generate its reports.',
-                })
-          }
-        />
+        !loadingProjects && projects.length === 0 ? (
+          <EmptyState
+            icon={<FileText size={28} strokeWidth={1.5} />}
+            title={t('reports.no_projects', { defaultValue: 'No projects available' })}
+          />
+        ) : (
+          <NoProjectSelected
+            description={t('reports.no_project_desc', {
+              defaultValue: 'Pick a project from the selector in the top bar to generate its reports.',
+            })}
+          />
+        )
       ) : (
       <>
       {/* BOQ selector - a within-project picker, kept per canon §4 exception. */}
@@ -1306,6 +1307,9 @@ export function ReportsPage() {
           </div>
         </div>
       </div>
+
+      {/* The forms of the project's market (VN, US), filled from its figures. */}
+      {selectedProjectId && <MarketFormsSection projectId={selectedProjectId} boqId={selectedBoqId} />}
 
       {/* Recently generated reports - surfaces backend history that was
           previously a blind spot for users (V_REPORTING audit). */}

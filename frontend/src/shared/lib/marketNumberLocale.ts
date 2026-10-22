@@ -28,23 +28,52 @@
  * boot, leaving an Indian workspace worse off than before the fix. Resolving
  * at read time cannot be clobbered because nothing is stored.
  *
- * Deliberately NOT per project. `useProjectContextStore` carries an id and a
- * name and no country, and its setter is called from sites that do not have
- * the project in hand (`setActiveProject(model.project_id, '')`), so a
- * per-project answer is not reachable from here without widening that call.
- * The workspace's applied regional pack is the granularity this product
- * actually has.
+ * The active project outranks the pack. A project carries its own language
+ * (`Project.locale`), and a US project written in US English printed
+ * "2.593.679.470,20 US$" for a reader whose interface is Vietnamese. The
+ * project context store remembers each project's language and reports the
+ * active one here through `setProjectNumberLocale`; the pack's tag stands in
+ * when no project is active or its language is unknown. The reader's own
+ * explicit number-format preference still outranks both.
  */
 import { useSyncExternalStore } from 'react';
 
 /** The active market's number locale, or `null` when no pack is applied. */
 let marketTag: string | null = null;
+/** The active project's number locale, or `null` when none is known. */
+let projectTag: string | null = null;
 
 const listeners = new Set<() => void>();
 
-/** Returns the market's number-locale tag, or `null`. */
+/** Returns the active project's number-locale tag, else the market's, or `null`. */
 export function getMarketNumberLocale(): string | null {
-  return marketTag;
+  return projectTag ?? marketTag;
+}
+
+/**
+ * Record (or clear) the active project's number locale. Same no-op rule as
+ * {@link setMarketNumberLocale}.
+ */
+export function setProjectNumberLocale(tag: string | null): void {
+  if (projectTag === tag) return;
+  projectTag = tag;
+  listeners.forEach((cb) => cb());
+}
+
+/**
+ * The number locale a project language writes in: `en` is US English, `vi`
+ * is Vietnam, a full tag is kept as given. `null` for a blank or malformed
+ * value, so a bad stored language falls back rather than throws.
+ */
+export function numberLocaleForProjectLanguage(language: string | null | undefined): string | null {
+  const raw = (language ?? '').trim();
+  if (!raw) return null;
+  const tag = raw === 'en' ? 'en-US' : raw === 'vi' ? 'vi-VN' : raw;
+  try {
+    return Intl.NumberFormat.supportedLocalesOf([tag]).length > 0 ? tag : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -28,7 +28,6 @@ import {
   FileSpreadsheet,
   CheckCircle2,
   Loader2,
-  DollarSign,
   FileText,
   Calendar,
   Upload,
@@ -37,7 +36,6 @@ import {
   Users,
   Lightbulb,
   CircleDashed,
-  Activity,
   LayoutGrid,
   ChevronDown,
   ChevronUp,
@@ -46,6 +44,7 @@ import {
 import { Card, CardHeader, CardContent, Button, Badge, Skeleton, ActivityFeed as CrossModuleActivityFeed, EmptyState, ModuleHelpButton, ModuleGuideButton, PartnerLogoBadge } from '@/shared/ui';
 import { dashboardGuide } from './dashboardGuide';
 import { pricedPositions, type PositionCounts } from './pricedPositions';
+import { formatCompactMoney } from './compactMoney';
 import { MultiCurrencyTotal } from '@/shared/ui/MultiCurrencyTotal';
 import { CompactProjectCard } from './components/CompactProjectCard';
 import { type ProjectPin } from './components/DashboardProjectsMap';
@@ -382,77 +381,49 @@ function KpiRibbon({
   const fallbackCurrency =
     currencyTotals[0]?.currency ?? projects?.[0]?.currency ?? getFallbackCurrency();
 
-  // Compact currency formatter using Intl.NumberFormat \u2014 handles every ISO
-  // 4217 code natively (BRL, INR, JPY, etc.). For values \u2265 1M we use the
-  // built-in compact notation; below that, the currency's own minor units. The
-  // ISO code is ALWAYS rendered next to the figure (Intl currency style emits
-  // the symbol/code), so a per-currency chip is never ambiguous.
-  //
-  // Below the threshold the decimals are deliberately NOT stated here. This
-  // read `maximumFractionDigits: compact ? 1 : 2` with no floor under it, which
-  // looks like "two decimals" and is not: with no `minimumFractionDigits` the
-  // engine takes the floor from the currency itself, so the ceiling only ever
-  // bit the currencies whose own count is not two. The tile printed a tenth of
-  // a yen, a unit the yen does not have, and dropped the third digit of a
-  // dinar, a unit the dinar does. EUR and USD render identically either way,
-  // which is why it read as correct for as long as it did. Saying nothing
-  // leaves the count to the currency, which is the one thing that knows it.
-  const formatMoney = (raw: number | string | null | undefined, code: string) => {
-    // Harden against backend Decimal-strings sneaking past TypeScript: any
-    // string that can't be parsed degrades to 0 rather than crashing.
-    const value = typeof raw === 'number' ? raw : Number(raw ?? 0);
-    if (!Number.isFinite(value)) return `0 ${code}`;
-    try {
-      const compact = value >= 1_000;
-      return new Intl.NumberFormat(getNumberLocale(), {
-        style: 'currency',
-        currency: code,
-        // A ceiling belongs to compact notation, where one decimal is the
-        // point of compacting. It does not belong to the full-length figure.
-        ...(compact ? { notation: 'compact' as const, minimumFractionDigits: 0, maximumFractionDigits: 1 } : {}),
-      }).format(value);
-    } catch {
-      // Unknown currency code \u2014 fall back to raw number with code suffix.
-      return `${value.toFixed(2)} ${code}`;
-    }
-  };
+  // Compact money from the shared helper: scale words spelled out in
+  // Vietnamese ("2,59 tỷ US$"), the engine's compact notation elsewhere
+  // ("$2.6B"), whole amounts under a thousand.
+  const formatMoney = (raw: number | string | null | undefined, code: string) =>
+    formatCompactMoney(raw, code, getNumberLocale());
 
-  // The Total Value tile value: a single labelled figure when all projects
-  // share one currency, or comma-joined per-currency chips when they don't.
-  // ``null`` means "still loading" (skeleton); an empty bucket list shows a
-  // labelled zero.
-  const totalValueDisplay = useMemo<string | null>(() => {
+  // The Total Value tile value: one labelled figure when all projects share
+  // one currency, or one line per currency when they don't (never summed, and
+  // never cut off mid-figure). ``null`` means "still loading" (skeleton); an
+  // empty bucket list shows a labelled zero.
+  const totalValueLines = useMemo<string[] | null>(() => {
     if (!loaded) return null;
-    if (currencyTotals.length === 0) return formatMoney(0, fallbackCurrency);
-    return currencyTotals
-      .map((ct) => formatMoney(ct.total_value, ct.currency))
-      .join(' \u00b7 ');
+    if (currencyTotals.length === 0) return [formatMoney(0, fallbackCurrency)];
+    return currencyTotals.map((ct) => formatMoney(ct.total_value, ct.currency));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, currencyTotals, fallbackCurrency]);
 
   const cards = [
     {
-      icon: <DollarSign size={20} strokeWidth={1.75} />,
-      value: totalValueDisplay,
+      value: totalValueLines
+        ? totalValueLines.length > 1
+          ? (
+              <span className="block space-y-0.5 text-base">
+                {totalValueLines.map((line) => <span key={line} className="block">{line}</span>)}
+              </span>
+            )
+          : totalValueLines[0]
+        : null,
       sublabel: multiCurrency
         ? t('dashboard.kpi_multi_currency', { defaultValue: 'multi-currency' })
         : '',
       label: t('dashboard.kpi_total_value', { defaultValue: 'Total Value' }),
-      color: 'text-oe-blue',
-      bg: 'bg-oe-blue-subtle',
+      color: 'text-content-primary',
     },
     {
-      icon: <FileText size={20} strokeWidth={1.75} />,
       value: loaded ? `${activeEstimates}` : null,
       sublabel: loaded
         ? t('dashboard.kpi_estimates_unit', { defaultValue: 'estimates' })
         : '',
       label: t('dashboard.kpi_active_estimates', { defaultValue: 'Active Estimates' }),
-      color: 'text-violet-600 dark:text-violet-400',
-      bg: 'bg-violet-500/10',
+      color: 'text-content-primary',
     },
     {
-      icon: <Calendar size={20} strokeWidth={1.75} />,
       value: loaded ? `${scheduleCount}` : null,
       sublabel: loaded
         ? scheduleCount > 0
@@ -460,11 +431,9 @@ function KpiRibbon({
           : t('dashboard.kpi_no_schedules', { defaultValue: 'No schedules' })
         : '',
       label: t('dashboard.kpi_schedule', { defaultValue: 'Schedule Status' }),
-      color: 'text-cyan-600 dark:text-cyan-400',
-      bg: 'bg-cyan-500/10',
+      color: 'text-content-primary',
     },
     {
-      icon: <ShieldCheck size={20} strokeWidth={1.75} />,
       // The percentage appears only when there are enough positions behind it
       // to mean something; below that the dashed circle reads as "not
       // measured". It covers an empty BOQ and a two-line BOQ alike, which is
@@ -493,8 +462,7 @@ function KpiRibbon({
       label: t('dashboard.kpi_priced_positions', { defaultValue: 'Priced positions' }),
       // No percentage, no colour verdict. A green tile over four positions
       // would be the same overclaim in a different form.
-      color: priced?.pct != null && priced.pct >= 80 ? 'text-semantic-success' : priced?.pct != null && priced.pct >= 50 ? 'text-[#b45309]' : 'text-content-tertiary',
-      bg: priced?.pct != null && priced.pct >= 80 ? 'bg-semantic-success-bg' : priced?.pct != null && priced.pct >= 50 ? 'bg-semantic-warning-bg' : 'bg-surface-secondary',
+      color: priced?.pct != null && priced.pct >= 80 ? 'text-semantic-success' : priced?.pct != null && priced.pct >= 50 ? 'text-semantic-warning' : 'text-content-primary',
       // An empty BOQ sends the user to the BOQ editor, which is where
       // positions and rates are written. It used to send them to /validation,
       // left over from when this tile was called "Quality Score".
@@ -502,13 +470,14 @@ function KpiRibbon({
     },
   ];
 
+  // One strip with hairline dividers (the 1px gap shows the border colour
+  // through), so the four figures read as one row of facts, not four cards.
   return (
     <div
-      className="mb-8 grid grid-cols-2 gap-3 lg:grid-cols-4 animate-card-in"
-      style={{ animationDelay: '50ms' }}
+      className="mb-8 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border-light bg-border-light lg:grid-cols-4"
       data-testid="dashboard-tour-kpi-ribbon"
     >
-      {cards.map((card, i) => {
+      {cards.map((card) => {
         const clickable = 'onClick' in card && typeof card.onClick === 'function';
         const TileTag = clickable ? 'button' : 'div';
         return (
@@ -516,25 +485,17 @@ function KpiRibbon({
             key={card.label}
             type={clickable ? 'button' : undefined}
             onClick={clickable ? card.onClick : undefined}
-            className={`group flex w-full items-center gap-3 rounded-xl border border-border-light bg-surface-elevated/90 p-4 text-left shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm animate-stagger-in ${
-              clickable ? 'cursor-pointer focus:outline-none focus:ring-2 focus:ring-oe-blue/30' : ''
+            className={`group flex w-full min-w-0 flex-col bg-surface-elevated px-4 py-3.5 text-left ${
+              clickable ? 'cursor-pointer transition-colors hover:bg-surface-tertiary focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-oe-blue' : ''
             }`}
-            style={{ animationDelay: `${80 + i * 50}ms` }}
           >
-            <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${card.bg} ${card.color} transition-transform duration-normal ease-oe group-hover:scale-105`}>
-              {card.icon}
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-lg font-bold tabular-nums text-content-primary leading-tight truncate">
-                  {card.value ?? (showFallback ? <span className="text-content-tertiary">--</span> : <span className="inline-block h-5 w-14 animate-pulse rounded bg-surface-tertiary" />)}
-                </span>
-                {'sublabel' in card && card.sublabel && (
-                  <span className="text-xs text-content-tertiary">{card.sublabel}</span>
-                )}
-              </div>
-              <div className="text-xs text-content-tertiary mt-0.5 truncate">{card.label}</div>
-            </div>
+            <span className="truncate text-xs font-medium text-content-secondary">{card.label}</span>
+            <span className={`mt-1.5 text-xl font-semibold leading-tight tabular-nums ${card.color}`}>
+              {card.value ?? (showFallback ? <span className="text-content-tertiary">--</span> : <span className="inline-block h-6 w-20 animate-pulse rounded bg-surface-tertiary" />)}
+            </span>
+            {'sublabel' in card && card.sublabel ? (
+              <span className="mt-1 truncate text-xs text-content-tertiary">{card.sublabel}</span>
+            ) : null}
           </TileTag>
         );
       })}
@@ -733,6 +694,17 @@ function TodaySnapshot({ cards }: { cards?: ProjectCardMetrics[] }) {
   const tileUrl = (singleProjectUrl: string) =>
     activeCard ? singleProjectUrl : '/projects';
 
+  // In portfolio mode the counts add up every project while the page a tile
+  // opens shows one, so the tile says so rather than reading as a figure that
+  // contradicts that page.
+  const scoped = (projectSublabel: string) =>
+    activeCard
+      ? projectSublabel
+      : t('dashboard.today_scope_portfolio', {
+          defaultValue: 'across {{count}} projects',
+          count: totals.projects,
+        });
+
   const items: Array<{
     id: string;
     value: number;
@@ -746,7 +718,7 @@ function TodaySnapshot({ cards }: { cards?: ProjectCardMetrics[] }) {
       id: 'tasks',
       value: totals.tasks,
       label: t('dashboard.today_tasks', { defaultValue: 'Open tasks' }),
-      sublabel: t('dashboard.today_tasks_sub', { defaultValue: 'awaiting your attention' }),
+      sublabel: scoped(t('dashboard.today_tasks_sub', { defaultValue: 'awaiting your attention' })),
       icon: <CheckCircle2 size={18} strokeWidth={1.75} />,
       tone: tone(totals.tasks, 10, 3),
       url: tileUrl('/tasks'),
@@ -755,7 +727,7 @@ function TodaySnapshot({ cards }: { cards?: ProjectCardMetrics[] }) {
       id: 'rfis',
       value: totals.rfis,
       label: t('dashboard.today_rfis', { defaultValue: 'Open RFIs' }),
-      sublabel: t('dashboard.today_rfis_sub', { defaultValue: 'awaiting response' }),
+      sublabel: scoped(t('dashboard.today_rfis_sub', { defaultValue: 'awaiting response' })),
       icon: <FileText size={18} strokeWidth={1.75} />,
       tone: tone(totals.rfis, 5, 1),
       url: tileUrl('/rfi'),
@@ -764,93 +736,58 @@ function TodaySnapshot({ cards }: { cards?: ProjectCardMetrics[] }) {
       id: 'incidents',
       value: totals.incidents,
       label: t('dashboard.today_incidents', { defaultValue: 'Safety incidents' }),
-      sublabel: t('dashboard.today_incidents_sub', { defaultValue: 'open this week' }),
+      sublabel: scoped(t('dashboard.today_incidents_sub', { defaultValue: 'open this week' })),
       icon: <AlertTriangle size={18} strokeWidth={1.75} />,
       tone: tone(totals.incidents, 1, 1),
       url: tileUrl('/safety'),
     },
   ];
 
-  const toneStyles: Record<
-    ItemTone,
-    { dot: string; value: string; iconColor: string; iconBg: string }
-  > = {
-    urgent: {
-      dot:       'bg-semantic-error',
-      value:     'text-semantic-error',
-      iconColor: 'text-semantic-error',
-      iconBg:    'bg-rose-50 dark:bg-rose-900/20',
-    },
-    attention: {
-      dot:       'bg-semantic-warning',
-      value:     'text-amber-600 dark:text-amber-400',
-      iconColor: 'text-amber-600 dark:text-amber-400',
-      iconBg:    'bg-amber-50 dark:bg-amber-900/20',
-    },
-    info: {
-      dot:       'bg-content-quaternary',
-      value:     'text-content-secondary',
-      iconColor: 'text-oe-blue',
-      iconBg:    'bg-oe-blue-subtle',
-    },
+  // Tone colours the figure and its small icon only; a zero stays neutral.
+  const toneValue: Record<ItemTone, string> = {
+    urgent: 'text-semantic-error',
+    attention: 'text-semantic-warning',
+    info: 'text-content-primary',
   };
 
   return (
-    <div
-      className="rounded-xl border border-border-light bg-surface-primary/70 p-4 animate-card-in"
-      style={{ animationDelay: '80ms' }}
-    >
-      <div className="flex items-center gap-2 mb-3">
-        <Activity size={14} className="text-oe-blue" strokeWidth={2} />
+    <div className="overflow-hidden rounded-lg border border-border-light bg-surface-elevated">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 border-b border-border-light px-4 py-2.5">
         <h3 className="text-sm font-semibold text-content-primary">
           {activeCard
             ? t('dashboard.today_title_single', { defaultValue: 'Today · {{project}}', project: activeProjectName || activeCard.name })
             : t('dashboard.today_title', { defaultValue: 'Today across your portfolio' })}
         </h3>
-        <span className="text-2xs text-content-tertiary tabular-nums">
+        <span className="text-xs text-content-tertiary tabular-nums">
           {activeCard
             ? t('dashboard.today_meta_single', { defaultValue: 'this project' })
             : t('dashboard.today_meta', { defaultValue: '{{count}} projects · pick one to drill in', count: totals.projects })}
         </span>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 gap-px bg-border-light sm:grid-cols-3">
         {items.map((it) => {
-          const s = toneStyles[it.tone];
           const hasItems = it.value > 0;
           return (
             <button
               key={it.id}
               onClick={() => navigate(it.url)}
-              className="group flex items-center gap-3 rounded-xl border border-border-light bg-surface-elevated/90 px-3.5 py-3 text-left shadow-xs transition-all duration-normal ease-oe hover:border-oe-blue/40 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30"
+              className="group flex items-start gap-3 bg-surface-elevated px-4 py-3 text-left transition-colors hover:bg-surface-tertiary focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-oe-blue"
             >
-              <span
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${s.iconBg} ${s.iconColor}`}
-              >
+              <span className={`mt-0.5 shrink-0 [&>svg]:h-4 [&>svg]:w-4 ${hasItems ? toneValue[it.tone] : 'text-content-tertiary'}`}>
                 {it.icon}
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline gap-2">
-                  <span
-                    className={`text-2xl font-bold leading-none tabular-nums ${hasItems ? s.value : 'text-content-tertiary'}`}
-                  >
+                  <span className={`text-xl font-semibold leading-none tabular-nums ${hasItems ? toneValue[it.tone] : 'text-content-tertiary'}`}>
                     {it.value}
                   </span>
-                  <span className="truncate text-xs font-medium text-content-secondary">
-                    {it.label}
-                  </span>
+                  <span className="truncate text-sm text-content-primary">{it.label}</span>
                 </div>
-                <div className="mt-1 truncate text-2xs text-content-tertiary">{it.sublabel}</div>
+                <div className="mt-1 truncate text-xs text-content-tertiary">{it.sublabel}</div>
               </div>
-              {hasItems && (
-                <span className={`relative flex h-1.5 w-1.5 shrink-0 ${s.dot} rounded-full`}>
-                  {it.tone === 'urgent' && (
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-semantic-error opacity-60" />
-                  )}
-                </span>
-              )}
               <ArrowRight
                 size={14}
-                className="shrink-0 text-content-quaternary opacity-0 transition-all group-hover:translate-x-0.5 group-hover:text-oe-blue group-hover:opacity-100"
+                className="mt-0.5 shrink-0 text-content-quaternary transition-colors group-hover:text-oe-blue-text"
               />
             </button>
           );
@@ -1227,24 +1164,18 @@ function SystemStatusSummary({
       icon: <Layers size={12} strokeWidth={2} />,
       value: projectCount,
       label: t('dashboard.ss_projects', { defaultValue: 'Projects' }),
-      color: 'text-oe-blue',
-      bg: 'bg-oe-blue-subtle',
       to: '/projects',
     },
     {
       icon: <FileSpreadsheet size={12} strokeWidth={2} />,
       value: boqBadgeCount,
       label: t('dashboard.ss_boqs', { defaultValue: 'BOQs' }),
-      color: 'text-[#7c3aed]',
-      bg: 'bg-[#7c3aed]/10',
       to: '/boq',
     },
     {
       icon: <Users size={12} strokeWidth={2} />,
       value: userCount,
       label: t('dashboard.ss_users', { defaultValue: 'Users' }),
-      color: 'text-[#16a34a]',
-      bg: 'bg-[#16a34a]/10',
       to: '/users',
     },
     // Without `users.list` the count is a meaningless 0, so the chip is left out.
@@ -1260,12 +1191,12 @@ function SystemStatusSummary({
           key={b.label}
           type="button"
           onClick={() => navigate(b.to)}
-          className={`inline-flex items-center gap-1.5 rounded-lg ${b.bg} px-2.5 py-1.5 transition-colors hover:brightness-95 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40 cursor-pointer`}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border-light bg-surface-elevated px-2.5 py-1.5 transition-colors hover:border-border hover:bg-surface-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40 cursor-pointer"
           aria-label={b.value === null ? b.label : `${b.value} ${b.label}`}
           aria-busy={b.value === null || undefined}
         >
-          <span className={b.color}>{b.icon}</span>
-          <span className={`text-xs font-bold tabular-nums ${b.color}`}>
+          <span className="text-content-tertiary">{b.icon}</span>
+          <span className="text-xs font-semibold tabular-nums text-content-primary">
             {b.value ?? (
               <span
                 className="inline-block h-3 w-4 animate-pulse rounded bg-surface-tertiary align-middle"
@@ -1273,7 +1204,7 @@ function SystemStatusSummary({
               />
             )}
           </span>
-          <span className="text-2xs text-content-tertiary">{b.label}</span>
+          <span className="text-xs text-content-secondary">{b.label}</span>
         </button>
       ))}
     </div>
@@ -1867,15 +1798,13 @@ function DashboardPageInner() {
       <button
         type="button"
         onClick={() => navigate(`/boq/${lastBoq.id}`)}
-        className="group flex w-full items-center gap-3 rounded-lg border border-border-light bg-surface-primary px-4 py-3 text-left transition-all duration-normal ease-oe hover:border-oe-blue/40 hover:bg-oe-blue-subtle/20 hover:shadow-sm animate-card-in focus:outline-none focus:ring-2 focus:ring-oe-blue/30"
+        className="group flex w-full items-center gap-3 rounded-lg border border-border-light bg-surface-elevated px-4 py-3 text-left transition-colors duration-normal ease-oe hover:border-border hover:bg-surface-tertiary animate-card-in focus:outline-none focus:ring-2 focus:ring-oe-blue/30"
         style={{ animationDelay: '60ms' }}
         title={t('dashboard.continue_work', { defaultValue: 'Continue your work' })}
       >
-        <span className="relative flex h-2 w-2 shrink-0">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-oe-blue/40 opacity-75" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-oe-blue" />
-        </span>
-        <span className="text-2xs uppercase tracking-wider font-semibold text-oe-blue shrink-0">
+        <span className="inline-flex h-2 w-2 shrink-0 rounded-full bg-oe-blue" aria-hidden />
+        {/* The label gives way on phones so the bill name keeps the room. */}
+        <span className="hidden sm:inline text-xs font-medium text-oe-blue-text shrink-0">
           {t('dashboard.continue_work', { defaultValue: 'Resume' })}
         </span>
         <span className="text-sm font-semibold text-content-primary truncate min-w-0">
@@ -2339,7 +2268,7 @@ function DashboardPageInner() {
                       localStorage.removeItem('oe_onboarding_completed_version');
                       localStorage.removeItem('oe_lang_explicit');
                     } catch { /* ignore */ }
-                    void apiDelete('/v1/users/me/onboarding/complete/').catch(() => {});
+                    void apiDelete('/v1/users/me/onboarding/complete/', undefined, { suppressErrorToast: true }).catch(() => {});
                     navigate('/onboarding', { replace: true });
                   }}
                 >
@@ -2560,22 +2489,11 @@ function AnalyticsSection({ projects }: { projects: ProjectSummary[] }) {
 
   const maxValue = Math.max(...stats.projectValues.map((p) => p.value), 1);
 
-  // Compact money with the ISO code always attached (e.g. "1.2M EUR").
-  // Used for the per-currency Total Value subtotals and the per-project
-  // bar labels so no figure is ever shown without its currency.
-  const fmtCompact = (value: number, code: string): string => {
-    const safe = Number.isFinite(value) ? value : 0;
-    const num =
-      safe >= 1_000_000
-        ? `${fmtFixed(safe / 1_000_000, 1)}M`
-        : safe >= 1_000
-          ? `${fmtFixed(safe / 1_000, 0)}K`
-          : safe.toLocaleString(getNumberLocale(), {
-              minimumFractionDigits: 0,
-              maximumFractionDigits: 0,
-            });
-    return `${num} ${code}`;
-  };
+  // Compact money with its currency always attached ("10,5 nghìn tỷ ₫",
+  // "$2.6B"). Used for the per-currency Total Value subtotals and the
+  // per-project bar labels so no figure is ever shown without its currency.
+  const fmtCompact = (value: number, code: string): string =>
+    formatCompactMoney(Number.isFinite(value) ? value : 0, code, getNumberLocale());
 
   // Status donut segments
 

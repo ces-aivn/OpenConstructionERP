@@ -154,6 +154,26 @@ def _sql_decimal(col: Any) -> Any:
     return case((col.op("~")(_NUMERIC_SHAPE_RE), cast(col, Numeric)), else_=0)
 
 
+async def _boq_grand_totals(session: AsyncSession, boq_ids: list[uuid.UUID]) -> dict[uuid.UUID, Decimal]:
+    """Grand total (direct cost plus markups) of each BOQ, as the BOQ itself reports it.
+
+    The same figure the BOQ list, detail and export print, so the portfolio
+    value of a project is what its bills add up to with overheads, profit and
+    tax, not their direct cost. A failure degrades to an empty mapping and the
+    caller keeps the direct cost for that read.
+    """
+    if not boq_ids:
+        return {}
+    try:
+        from app.modules.boq.service import BOQService  # noqa: PLC0415
+
+        totals = await BOQService(session).compute_boq_totals(boq_ids)
+    except Exception:
+        logger.warning("Dashboard: BOQ grand totals unavailable, falling back to direct cost", exc_info=True)
+        return {}
+    return {boq_id: _to_decimal(t.get("grand_total")) for boq_id, t in totals.items()}
+
+
 # ─── Widget aggregators ─────────────────────────────────────────────────────
 
 
@@ -276,9 +296,15 @@ async def compute_boq_summary(
     )
     pos_agg_rows = (await session.execute(pos_agg_stmt)).all()
 
+    # The value of a bill is its grand total, markups included; the SQL sum
+    # above is its direct cost and stays the fallback when the grand total
+    # cannot be read.
+    grand_by_boq = await _boq_grand_totals(session, [row[0] for row in pos_agg_rows])
+
     per_project: dict[uuid.UUID, dict[str, Any]] = defaultdict(
         lambda: {
             "total": Decimal("0"),
+            "direct": Decimal("0"),
             "positions": 0,
             "missing_qty": 0,
             "zero_price": 0,
@@ -286,10 +312,12 @@ async def compute_boq_summary(
     )
     per_boq: dict[uuid.UUID, dict[str, Any]] = {}
     for boq_id, project_id, positions, total_sum, missing_qty, zero_price in pos_agg_rows:
-        total = _to_decimal(total_sum)
+        direct = _to_decimal(total_sum)
+        total = grand_by_boq.get(boq_id, direct)
         bucket = per_project[project_id]
         bucket["positions"] += int(positions or 0)
         bucket["total"] += total
+        bucket["direct"] += direct
         bucket["missing_qty"] += int(missing_qty or 0)
         bucket["zero_price"] += int(zero_price or 0)
         per_boq[boq_id] = {"total": total, "positions": int(positions or 0)}
@@ -304,12 +332,14 @@ async def compute_boq_summary(
     # is financially meaningless - keep per-currency subtotals and flag
     # ``multi_currency`` (mirrors projects/router.py budget rollup).
     totals_by_currency_map: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    direct_by_currency_map: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
 
     for p in projects:
         bucket = per_project.get(
             p.id,
             {
                 "total": Decimal("0"),
+                "direct": Decimal("0"),
                 "positions": 0,
                 "missing_qty": 0,
                 "zero_price": 0,
@@ -322,6 +352,7 @@ async def compute_boq_summary(
                 "project_name": p.name,
                 "boq_count": boq_count_by_project.get(p.id, 0),
                 "total_value": _money(bucket["total"]),
+                "direct_cost": _money(bucket["direct"]),
                 "currency": currency,
                 "position_count": bucket["positions"],
                 "positions_missing_quantity": bucket["missing_qty"],
@@ -329,13 +360,15 @@ async def compute_boq_summary(
             },
         )
         totals_by_currency_map[currency] += bucket["total"]
+        direct_by_currency_map[currency] += bucket["direct"]
         overall_total += bucket["total"]
         overall_positions += bucket["positions"]
         overall_missing += bucket["missing_qty"]
         overall_zero_price += bucket["zero_price"]
 
     by_currency = [
-        {"currency": cur, "total_value": _money(total)} for cur, total in sorted(totals_by_currency_map.items())
+        {"currency": cur, "total_value": _money(total), "direct_cost": _money(direct_by_currency_map[cur])}
+        for cur, total in sorted(totals_by_currency_map.items())
     ]
     multi_currency = len(totals_by_currency_map) > 1
 

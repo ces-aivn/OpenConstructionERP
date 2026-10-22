@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from app.core.content_disposition import attachment_disposition
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
+from app.modules.reporting.market_forms import ClaimContext
 from app.modules.reporting.report_translations import resolve_report_locale
 from app.modules.reporting.schemas import (
     GeneratedReportResponse,
@@ -592,3 +593,178 @@ async def delete_report(
     report = await service.get_report(report_id)
     await verify_project_access(report.project_id, user_id, session)
     await service.delete_report(report_id)
+
+
+# ── Market forms (VN TT 11/2021, Phụ lục 03a; US AIA G702/G703) ───────────
+
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@router.get("/market-forms/")
+async def list_market_forms(
+    session: SessionDep,
+    project_id: uuid.UUID = Query(...),
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("reporting.read")),
+) -> dict[str, object]:
+    """The forms of the project's market, and the progress claims they can be drawn from.
+
+    Every form is listed when the project's country is unknown. ``claims`` are
+    the project's progress claims, newest first, for the forms drawn from one.
+    """
+    from sqlalchemy import select
+
+    from app.modules.contracts.models import Contract, ProgressClaim
+    from app.modules.projects.models import Project
+    from app.modules.reporting.market_forms import forms_for_country, market_for_country
+
+    await verify_project_access(project_id, user_id, session)
+    project = await session.get(Project, project_id)
+    country = getattr(project, "country_code", None)
+    rows = (
+        await session.execute(
+            select(ProgressClaim, Contract.code, Contract.title)
+            .join(Contract, Contract.id == ProgressClaim.contract_id)
+            .where(Contract.project_id == project_id)
+            .order_by(ProgressClaim.created_at.desc())
+            .limit(200)
+        )
+    ).all()
+    return {
+        "market": market_for_country(country),
+        "forms": [
+            {"id": f.id, "market": f.market, "source": f.source, "formats": list(f.formats)}
+            for f in forms_for_country(country)
+        ],
+        "claims": [
+            {
+                "id": str(claim.id),
+                "claim_number": claim.claim_number or "",
+                "period_end": claim.period_end or "",
+                "status": claim.status,
+                "contract_code": code or "",
+                "contract_title": title or "",
+            }
+            for claim, code, title in rows
+        ],
+    }
+
+
+def _xlsx_response(content: bytes, filename: str) -> Response:
+    return Response(
+        content=content,
+        media_type=_XLSX,
+        headers={"Content-Disposition": attachment_disposition(filename)},
+    )
+
+
+def _safe_name(text: str) -> str:
+    keep = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in text.strip())
+    return keep.strip("_")[:60] or "form"
+
+
+@router.get("/market-forms/vn-estimate-summary/")
+async def export_vn_estimate_summary(
+    session: SessionDep,
+    boq_id: uuid.UUID = Query(...),
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("reporting.read")),
+) -> Response:
+    """Bảng tổng hợp dự toán chi phí xây dựng (TT 11/2021) of one bill, as XLSX."""
+    from decimal import Decimal
+
+    from fastapi import HTTPException
+
+    from app.modules.boq.models import BOQ
+    from app.modules.boq.service import BOQService
+    from app.modules.projects.models import Project
+    from app.modules.reporting.market_forms import EstimateSummary, MarkupLine, render_estimate_summary_xlsx
+
+    boq = await session.get(BOQ, boq_id)
+    if boq is None:
+        raise HTTPException(
+            status_code=404, detail={"code": "boq_not_found", "message_key": "api_errors.boq_not_found"}
+        )
+    await verify_project_access(boq.project_id, user_id, session)
+    project = await session.get(Project, boq.project_id)
+    svc = BOQService(session)
+    structured = await svc.get_boq_structured_for_export(boq_id)
+    breakdown = await svc.get_cost_breakdown(boq_id)
+    summary = EstimateSummary(
+        project_name=getattr(project, "name", "") or "",
+        boq_name=boq.name,
+        currency=(getattr(project, "currency", "") or "").upper(),
+        direct_cost=Decimal(str(structured.direct_cost)),
+        by_type={c.type: Decimal(str(c.amount)) for c in breakdown.categories},
+        markups=[
+            MarkupLine(
+                name=m.name,
+                category=m.category,
+                percentage=Decimal(str(m.percentage)),
+                amount=Decimal(str(m.amount)),
+                apply_to=m.apply_to,
+            )
+            for m in structured.markups
+            if m.is_active
+        ],
+        tax_rate=Decimal(str(structured.tax_rate)) if structured.tax_rate is not None else None,
+        tax_amount=Decimal(str(structured.tax_amount or 0)),
+    )
+    content = render_estimate_summary_xlsx(summary)
+    return _xlsx_response(content, f"Tong_hop_du_toan_{_safe_name(boq.name)}.xlsx")
+
+
+async def _claim_context(session: SessionDep, payload: dict[str, object]) -> ClaimContext:
+    from app.modules.contracts.service import ContractsService
+    from app.modules.projects.models import Project
+
+    service = ContractsService(session)
+    contract = await service.get_contract(payload["contract_id"])  # type: ignore[arg-type]
+    project = await session.get(Project, contract.project_id)
+    counterparty = await service.resolve_counterparty_name(contract)
+    return ClaimContext(
+        project_name=getattr(project, "name", "") or "",
+        contract_title=contract.title or "",
+        contract_code=contract.code or "",
+        counterparty=counterparty or "",
+    )
+
+
+@router.get("/market-forms/vn-payment-03a/")
+async def export_vn_payment_03a(
+    session: SessionDep,
+    claim_id: uuid.UUID = Query(...),
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("reporting.read")),
+) -> Response:
+    """Phụ lục 03a for one progress claim, as XLSX."""
+    from app.modules.contracts.router import _verify_claim_access
+    from app.modules.contracts.service import ContractsService
+    from app.modules.reporting.market_forms import render_payment_03a_xlsx
+
+    await _verify_claim_access(session, claim_id, user_id)
+    payload = await ContractsService(session).build_payment_application(claim_id, locale="vi")
+    ctx = await _claim_context(session, payload)
+    content = render_payment_03a_xlsx(payload, ctx)
+    number = _safe_name(str(payload.get("application_number") or "claim"))
+    return _xlsx_response(content, f"Phu_luc_03a_{number}.xlsx")
+
+
+@router.get("/market-forms/aia-g702-g703/")
+async def export_aia_g702_g703(
+    session: SessionDep,
+    claim_id: uuid.UUID = Query(...),
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("reporting.read")),
+) -> Response:
+    """AIA G702/G703 for one progress claim, as XLSX (US, CA and AU projects)."""
+    from app.modules.contracts.router import _verify_claim_access
+    from app.modules.contracts.service import ContractsService
+    from app.modules.reporting.market_forms import render_aia_xlsx
+
+    await _verify_claim_access(session, claim_id, user_id)
+    payload = await ContractsService(session).build_aia_application(claim_id, locale="en")
+    ctx = await _claim_context(session, payload)
+    content = render_aia_xlsx(payload, ctx)
+    number = _safe_name(str(payload.get("application_number") or "claim"))
+    return _xlsx_response(content, f"AIA_G702_G703_{number}.xlsx")

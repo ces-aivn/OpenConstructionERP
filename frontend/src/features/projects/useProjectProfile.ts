@@ -22,6 +22,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
+import { sidebarNavGroups } from '@/app/layout/navCatalog';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { projectsApi, type ProjectProfileResult } from './api';
 
@@ -245,21 +246,46 @@ export function buildModuleGate(
     byRoute: (route: string) => {
       // App-shell routes are never project-scoped.
       if (NEVER_GATE_ROUTES.has(route)) return null;
-      const base = route.split('?')[0] ?? route;
-      // Resolve the backing module: explicit overrides first (for the
-      // routes whose slug ≠ module folder, e.g. /5d → costmodel), then
-      // fall back to the route slug with hyphens normalised to the
-      // underscore convention used by `ProjectModule.module_name`
-      // (e.g. /bid-management → bid_management). No per-module list to
-      // maintain — any module-backed route is gated automatically.
-      const moduleName =
-        ROUTE_TO_MODULE[route] ??
-        ROUTE_TO_MODULE[base] ??
-        base.replace(/^\//, '').replace(/-/g, '_');
+      const moduleName = routeModuleName(route);
       if (!moduleName) return null;
       const row = byName.get(moduleName);
       if (!row) return null; // route not a profile module → neutral
       return { enabled: row.enabled, ordinal: row.ordinal ?? null };
     },
   };
+}
+
+/**
+ * The backend module behind a sidebar route, or `''` for none.
+ *
+ * Explicit overrides first (routes whose slug differs from the module folder,
+ * e.g. /5d → costmodel), then the route slug with hyphens normalised to the
+ * underscore convention of `ProjectModule.module_name` (/bid-management →
+ * bid_management), so any module-backed route resolves without a list here.
+ */
+export function routeModuleName(route: string): string {
+  const base = route.split('?')[0] ?? route;
+  return ROUTE_TO_MODULE[route] ?? ROUTE_TO_MODULE[base] ?? base.replace(/^\//, '').replace(/-/g, '_');
+}
+
+/**
+ * How many sidebar rows a set of modules lights up: the number a project's
+ * focus-mode sidebar puts in front of its rows.
+ *
+ * A preset carries backend module ids, infrastructure included (users, teams,
+ * i18n, uploads …), so their raw count ("47 modules") overstated what the
+ * reader then finds in a menu of 37 rows. Counting the menu rows the modules
+ * back is the number the reader can check.
+ */
+export function sidebarRowCount(modules: Iterable<string>): number {
+  const wanted = new Set(modules);
+  const routes = new Set<string>();
+  for (const group of sidebarNavGroups) {
+    for (const item of group.items) {
+      if (NEVER_GATE_ROUTES.has(item.to)) continue;
+      const moduleName = routeModuleName(item.to);
+      if (moduleName && wanted.has(moduleName)) routes.add(item.to);
+    }
+  }
+  return routes.size;
 }

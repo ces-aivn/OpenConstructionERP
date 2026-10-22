@@ -143,7 +143,7 @@ export function UpcomingMilestonesCard() {
         <ul className="flex flex-col gap-2.5">
           {milestones.map((m) => (
             <li key={m.id} className="flex items-center gap-3">
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-amber-50 text-amber-600 dark:bg-amber-950/40">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center text-content-tertiary">
                 <Flag size={13} strokeWidth={1.75} />
               </div>
               <div className="min-w-0 flex-1">
@@ -171,7 +171,7 @@ interface DueChipProps {
   t: ReturnType<typeof useTranslation>['t'];
 }
 
-/** Small "in N days" / "overdue by N days" chip, coloured by urgency. */
+/** "in N days" / "overdue by N days", in the urgency colour only when it is close or late. */
 function DueChip({ days, t }: DueChipProps) {
   let label: string;
   let tone: string;
@@ -184,10 +184,10 @@ function DueChip({ days, t }: DueChipProps) {
       count: n,
       n,
     });
-    tone = 'bg-rose-50 text-rose-600 dark:bg-rose-950/40';
+    tone = 'text-rose-700 dark:text-rose-400';
   } else if (days === 0) {
     label = t('dashboard.milestones_today', { defaultValue: 'today' });
-    tone = 'bg-amber-50 text-amber-600 dark:bg-amber-950/40';
+    tone = 'text-amber-700 dark:text-amber-400';
   } else {
     label = t('dashboard.milestones_in_days', {
       defaultValue: 'in {{n}} days',
@@ -195,11 +195,11 @@ function DueChip({ days, t }: DueChipProps) {
       count: days,
       n: days,
     });
-    tone = days <= 3 ? 'bg-amber-50 text-amber-600 dark:bg-amber-950/40' : 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40';
+    tone = days <= 3 ? 'text-amber-700 dark:text-amber-400' : 'text-content-secondary';
   }
 
   return (
-    <span className={`shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${tone}`}>
+    <span className={`shrink-0 whitespace-nowrap text-xs font-medium tabular-nums ${tone}`}>
       {label}
     </span>
   );

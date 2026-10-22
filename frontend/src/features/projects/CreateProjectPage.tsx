@@ -5,6 +5,7 @@ import {
   type ChangeEvent, type KeyboardEvent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -33,8 +34,22 @@ import { useTelemetry } from '@/shared/lib/telemetry';
 import { lookupCountryDefault } from './currencyGroups';
 import { regionOptionLabel, type RegionOption } from './regionLabel';
 import { onlyChangedFields } from '@/shared/lib/apiHelpers';
-import { fmtFixed } from '@/shared/lib/formatters';
+import { fmtDate, fmtFixed } from '@/shared/lib/formatters';
+import { formatCurrency } from '@/shared/lib/money';
 import { PROJECT_LANGUAGES } from './projectLanguages';
+import { AmountInput } from './components/AmountInput';
+import { sidebarRowCount } from './useProjectProfile';
+import {
+  OPTION_LABEL_KEYS,
+  PROJECT_ROLES,
+  PROJECT_SIZES,
+  ROLE_OPT_LABELS,
+  SIZE_OPT_LABELS,
+  applyMarketPreset,
+  projectLanguageForUi,
+  standardOptionKey,
+  type TouchedFields,
+} from './projectCreateDefaults';
 
 // English fallbacks for the computed `project_wizard.activity_opt.*` keys. The default used to be
 // the raw value, so until the key lands in a locale the screen shows the bare
@@ -142,6 +157,7 @@ const STANDARD_GROUPS: OptionGroup[] = [
   {
     group: 'Common Standards',
     options: [
+      { value: 'vn_tt12', label: 'TT 12/2021/TT-BXD (Vietnam)' },
       { value: 'din276', label: 'DIN 276 (Germany / DACH)' },
       { value: 'nrm', label: 'NRM 1/2 (United Kingdom)' },
       { value: 'masterformat', label: 'MasterFormat (US / Canada)' },
@@ -213,11 +229,8 @@ const ACTIVITIES = [
   'consulting', 'facility_management',
 ];
 const PHASES = ['concept', 'design', 'tender', 'procurement', 'construction', 'handover'];
-const ROLES = [
-  'client_owner', 'general_contractor', 'bim_consultant', 'bim_manager',
-  'designer_architect', 'subcontractor', 'cost_engineer', 'developer',
-];
-const SIZES = ['small', 'medium', 'large', 'enterprise'];
+const ROLES: readonly string[] = PROJECT_ROLES;
+const SIZES: readonly string[] = PROJECT_SIZES;
 
 // Sensible activity/phase defaults per preset so a user who just picks a
 // preset and clicks through still gets a well-scored profile. These only
@@ -247,7 +260,7 @@ const NO_AXES: PresetAxes = { activity: [], phases: [] };
 const INITIAL_AXES: PresetAxes =
   PRESET_DEFAULTS.full_construction_lifecycle ?? NO_AXES;
 
-const STEP_COUNT = 5;
+const STEP_COUNT = 6;
 
 // Set of currency codes the picker actually offers (the "__custom__"
 // sentinel is excluded). Used to decide whether a saved preference can
@@ -319,6 +332,7 @@ export type ProjectCoreForm = Pick<
 export function projectCoreForm(
   project: Project | undefined,
   defaultCurrency: string,
+  defaultLocale = 'en',
 ): ProjectCoreForm {
   if (!project) {
     return {
@@ -327,7 +341,7 @@ export function projectCoreForm(
       region: '',
       classification_standard: '',
       currency: defaultCurrency,
-      locale: 'en',
+      locale: defaultLocale,
     };
   }
   return {
@@ -358,6 +372,9 @@ export function CreateProjectModal({
   // one that renders as EUR everywhere.
   const prefCurrency = usePreferencesStore((s) => s.currency);
   const defaultCurrency = preferredNewProjectCurrency(prefCurrency);
+  // A new project speaks the reader's interface language unless they pick
+  // another one; a Vietnamese screen no longer opens on English (US).
+  const defaultLocale = projectLanguageForUi(i18n.language);
 
   // Which create flow we're in. Always starts on the chooser so the
   // user is offered the wizard vs. the old single-window form.
@@ -380,8 +397,11 @@ export function CreateProjectModal({
   // Seeded from the same function the save compares against, so the two can
   // never drift apart. See `projectCoreForm`.
   const [form, setForm] = useState<CreateProjectData>(() =>
-    projectCoreForm(undefined, defaultCurrency),
+    projectCoreForm(undefined, defaultCurrency, defaultLocale),
   );
+  // Fields the user set by hand. A market's suggestions (currency, standard,
+  // language) never overwrite one of these.
+  const [touched, setTouched] = useState<TouchedFields>({});
 
   const [customRegion, setCustomRegion] = useState('');
   const [customStandard, setCustomStandard] = useState('');
@@ -442,11 +462,24 @@ export function CreateProjectModal({
     // is how a Croatian project stopped opening on DACH defaults.
     const countryDefault = isEdit ? null : lookupCountryDefault(sel.country_code);
     if (countryDefault) {
-      setForm((prev) => ({
-        ...prev,
-        region: prev.region ? prev.region : countryDefault.region,
-        currency: prev.currency && prev.currency !== defaultCurrency ? prev.currency : countryDefault.currency,
-      }));
+      setForm((prev) => {
+        const region = prev.region ? prev.region : countryDefault.region;
+        const suggested = applyMarketPreset(
+          region,
+          {
+            currency: prev.currency ?? '',
+            classification_standard: prev.classification_standard ?? '',
+            locale: prev.locale ?? defaultLocale,
+          },
+          touched,
+        );
+        return {
+          ...prev,
+          region,
+          ...suggested,
+          currency: touched.currency ? prev.currency : (suggested.currency || countryDefault.currency),
+        };
+      });
     }
     // OC-11: derive location precision from Nominatim addresstype.
     if (sel.addresstype) {
@@ -536,7 +569,8 @@ export function CreateProjectModal({
       setStep(1);
       setMaxStep(1);
       setConfirmingClose(false);
-      setForm(projectCoreForm(undefined, defaultCurrency));
+      setForm(projectCoreForm(undefined, defaultCurrency, defaultLocale));
+      setTouched({});
       setCustomRegion('');
       setCustomStandard('');
       setCustomCurrency('');
@@ -560,6 +594,7 @@ export function CreateProjectModal({
       setBudgetEstimate('');
       setPlannedStart('');
       setPlannedEnd('');
+      setAddressSearchQuery('');
       // Force the edit-mode prefill to re-run on (re)open; the prefill
       // effect then overrides the defaults above once data arrives.
       setPrefilledFor(null);
@@ -567,6 +602,9 @@ export function CreateProjectModal({
       // `setup_rerun` from the prefill effect instead.
       if (!isEdit) track('wizard_started', { mode: 'create' });
     }
+    // The interface language is read once per opening, so switching it while
+    // the dialog is open does not wipe what was typed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, isEdit, track, defaultCurrency]);
 
   const { data: existingProjects = [] } = useQuery<Project[]>({
@@ -610,6 +648,14 @@ export function CreateProjectModal({
     if (!open || !isEdit || !editProject) return;
     if (prefilledFor === editProject.id) return;
     setForm(projectCoreForm(editProject, defaultCurrency));
+    // Every field of an existing project is the user's own choice.
+    setTouched({ currency: true, classification_standard: true, locale: true });
+    setProjectCode(editProject.project_code ?? '');
+    setClientName(editProject.client_id ?? '');
+    setContractValue(editProject.contract_value ?? '');
+    setBudgetEstimate(editProject.budget_estimate ?? '');
+    setPlannedStart(editProject.planned_start_date ?? '');
+    setPlannedEnd(editProject.planned_end_date ?? '');
     if (editProfile) {
       setPreset(editProfile.profile.preset || 'custom');
       setActivity(editProfile.profile.activity ?? []);
@@ -669,16 +715,18 @@ export function CreateProjectModal({
   const effectiveCurrency =
     form.currency === '__custom__' ? customCurrency.trim() : (form.currency ?? '');
 
-  // Any meaningful input → closing should confirm before discarding.
-  const dirty =
-    step > 1 ||
-    trimmedName.length > 0 ||
-    !!form.description ||
-    !!form.region ||
-    !!form.currency ||
-    !!form.classification_standard ||
-    addressStreet !== '' || addressCity !== '' ||
-    addressCountry !== '' || addressPostal !== '';
+  // Anything the user typed or picked → closing asks before discarding. The
+  // values the form opened with (the preferred currency, the interface
+  // language) are not input: a dialog closed untouched closes at once.
+  const dirty = isEdit || isCreateFormDirty({
+    form,
+    baseline: projectCoreForm(undefined, defaultCurrency, defaultLocale),
+    extras: [
+      addressStreet, addressCity, addressCountry, addressPostal, addressSearchQuery,
+      projectCode, projectType, clientName, contractValue, budgetEstimate,
+      plannedStart, plannedEnd, customRegion, customStandard, customCurrency,
+    ],
+  });
 
   // Move focus into the step body when the step changes so keyboard /
   // screen-reader users land on the new content (step 1 keeps the
@@ -807,9 +855,8 @@ export function CreateProjectModal({
       if (isEdit && editProjectId) {
         // Rebuild the baseline the wizard was seeded with, so the save carries
         // only what the user actually edited. See `projectCoreForm`.
-        await projectsApi.update(
-          editProjectId,
-          onlyChangedFields(
+        await projectsApi.update(editProjectId, {
+          ...onlyChangedFields(
             {
               name: data.name,
               description: data.description,
@@ -821,7 +868,8 @@ export function CreateProjectModal({
             form,
             projectCoreForm(editProject, defaultCurrency),
           ),
-        );
+          ...changedContractFields(data, editProject),
+        });
         await projectsApi.applyProfile(editProjectId, buildSpec());
         return { id: editProjectId } as Project;
       }
@@ -891,8 +939,32 @@ export function CreateProjectModal({
     close();
   };
 
-  const set = (field: keyof CreateProjectData, value: string) =>
-    setForm((prev) => ({ ...prev, [field]: value }));
+  const set = (field: keyof CreateProjectData, value: string) => {
+    if (field === 'currency' || field === 'classification_standard' || field === 'locale') {
+      setTouched((prev) => ({ ...prev, [field]: true }));
+    }
+    setForm((prev) => {
+      const next = { ...prev, [field]: value };
+      // Picking a market suggests its currency, standard and language for the
+      // fields the user has not chosen. Never in edit mode: an existing
+      // project's settings are all deliberate.
+      if (field === 'region' && !isEdit) {
+        return {
+          ...next,
+          ...applyMarketPreset(
+            value,
+            {
+              currency: next.currency ?? '',
+              classification_standard: next.classification_standard ?? '',
+              locale: next.locale ?? defaultLocale,
+            },
+            touched,
+          ),
+        };
+      }
+      return next;
+    });
+  };
 
   const toggleIn = (
     list: string[],
@@ -915,6 +987,9 @@ export function CreateProjectModal({
   // a gate here — Next stays enabled so the two-click "proceed anyway"
   // confirm in next() is actually reachable (it wasn't before: a
   // disabled button can't fire the confirm).
+  // An end date before the start date is a typing slip, never a plan.
+  const plannedRangeInvalid = !!plannedStart && !!plannedEnd && plannedEnd < plannedStart;
+
   const canAdvance = (() => {
     if (step === 1) return !!trimmedName;
     if (step === 2) {
@@ -927,7 +1002,8 @@ export function CreateProjectModal({
         return false;
       return true;
     }
-    if (step === 3) return !!preset;
+    if (step === 3) return !plannedRangeInvalid;
+    if (step === 4) return !!preset;
     return true;
   })();
 
@@ -965,6 +1041,10 @@ export function CreateProjectModal({
     if (form.currency === '__custom__' && !effectiveCurrency)
       return t('project_wizard.need_custom_currency_quick', {
         defaultValue: 'Enter the custom currency code.',
+      });
+    if (plannedRangeInvalid)
+      return t('project_wizard.need_end_after_start', {
+        defaultValue: 'The planned end date is before the start date.',
       });
     if (form.classification_standard === '__custom__' && !effectiveStandard)
       return mode === 'classic'
@@ -1033,6 +1113,7 @@ export function CreateProjectModal({
   const STEP_TITLES = [
     t('project_wizard.step_basics', { defaultValue: 'Basics' }),
     t('project_wizard.step_region', { defaultValue: 'Region & currency' }),
+    t('project_wizard.step_contract', { defaultValue: 'Contract & budget' }),
     t('project_wizard.step_type', { defaultValue: 'Project type' }),
     t('project_wizard.step_scope', { defaultValue: 'Scope' }),
     t('project_wizard.step_review', { defaultValue: 'Site & review' }),
@@ -1211,9 +1292,10 @@ export function CreateProjectModal({
                     {t('project_wizard.choose_wizard_title', { defaultValue: 'Guided setup' })}
                   </span>
                   <p className="mt-1 text-xs leading-relaxed text-content-tertiary">
-                    {t('project_wizard.choose_wizard_blurb', {
+                    {t('project_wizard.choose_wizard_blurb_steps', {
                       defaultValue:
-                        '5 short steps - region, project type and scope. Pre-selects the right modules and a focused sidebar for the work you do.',
+                        '{{n}} short steps - region, contract and budget, project type and scope. Pre-selects the right modules and a focused sidebar for the work you do.',
+                      n: STEP_COUNT,
                     })}
                   </p>
                 </div>
@@ -1620,15 +1702,11 @@ export function CreateProjectModal({
                       text={t('projects.budget_estimate', { defaultValue: 'Budget estimate' })}
                       optionalText={t('projects.create.optional_badge', { defaultValue: 'Optional' })}
                     />
-                    <input
+                    <AmountInput
                       id="qc-budget"
-                      type="text"
-                      inputMode="decimal"
                       value={budgetEstimate}
-                      onChange={(e) => setBudgetEstimate(e.target.value)}
-                      maxLength={50}
+                      onChange={setBudgetEstimate}
                       placeholder={t('projects.budget_estimate_placeholder', { defaultValue: 'e.g. 1500000' })}
-                      className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary tabular-nums placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
                     />
                   </div>
                   <div>
@@ -1637,15 +1715,11 @@ export function CreateProjectModal({
                       text={t('projects.contract_value', { defaultValue: 'Contract value' })}
                       optionalText={t('projects.create.optional_badge', { defaultValue: 'Optional' })}
                     />
-                    <input
+                    <AmountInput
                       id="qc-contract"
-                      type="text"
-                      inputMode="decimal"
                       value={contractValue}
-                      onChange={(e) => setContractValue(e.target.value)}
-                      maxLength={50}
+                      onChange={setContractValue}
                       placeholder={t('projects.contract_value_placeholder', { defaultValue: 'e.g. 1800000' })}
-                      className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary tabular-nums placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
                     />
                   </div>
                 </div>
@@ -1670,7 +1744,7 @@ export function CreateProjectModal({
                     className="h-10 w-full max-w-[200px] rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary tabular-nums placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
                   />
                   <p className="mt-1 text-xs text-content-tertiary">
-                    {t('projects.regional_factor_hint', { defaultValue: 'Multiply all rates by this factor (e.g. 1.12 = +12% over base).' })}
+                    {t('projects.regional_factor_hint_vn_us', { defaultValue: 'Multiply all rates by this factor (e.g. Hanoi = 1.00, Ho Chi Minh City = 1.05; New York = 1.30, Los Angeles = 1.15).' })}
                   </p>
                 </div>
                 </div>
@@ -1835,14 +1909,54 @@ export function CreateProjectModal({
                   className="h-10 w-full max-w-[200px] rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary tabular-nums placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
                 />
                 <p className="mt-1 text-xs text-content-tertiary">
-                  {t('projects.regional_factor_hint', { defaultValue: 'Multiply all rates by this factor (e.g. 1.12 = +12% over base).' })}
+                  {t('projects.regional_factor_hint_vn_us', { defaultValue: 'Multiply all rates by this factor (e.g. Hanoi = 1.00, Ho Chi Minh City = 1.05; New York = 1.30, Los Angeles = 1.15).' })}
                 </p>
               </div>
             </div>
           )}
 
-          {/* Step 3 — Project type (preset) */}
+          {/* Step 3 — Contract & budget. The guided setup collects at least
+              what Quick create does: code, client, dates, budget, contract
+              value. All optional. */}
           {mode === 'wizard' && step === 3 && (
+            <div className="space-y-4">
+              <InfoHint text={t('project_wizard.contract_hint', { defaultValue: 'Optional. The budget and contract value appear on the project page, and the budget seeds the project budget. Amounts are in {{currency}}.', currency: effectiveCurrency || '—' })} />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <OptionalLabel htmlFor="wz-project-code" text={t('projects.project_code', { defaultValue: 'Project number / code' })} optionalText={t('projects.create.optional_badge', { defaultValue: 'Optional' })} />
+                  <input id="wz-project-code" type="text" value={projectCode} onChange={(e) => setProjectCode(e.target.value)} maxLength={50} placeholder={t('projects.project_code_placeholder', { defaultValue: 'Auto-generated if left blank' })} className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent" />
+                </div>
+                <div>
+                  <OptionalLabel htmlFor="wz-client" text={t('projects.client_owner', { defaultValue: 'Client / owner' })} optionalText={t('projects.create.optional_badge', { defaultValue: 'Optional' })} />
+                  <input id="wz-client" type="text" value={clientName} onChange={(e) => setClientName(e.target.value)} maxLength={36} placeholder={t('projects.client_owner_placeholder', { defaultValue: 'Client or owner name' })} className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent" />
+                </div>
+                <div>
+                  <OptionalLabel htmlFor="wz-start" text={t('projects.planned_start_date', { defaultValue: 'Planned start date' })} optionalText={t('projects.create.optional_badge', { defaultValue: 'Optional' })} />
+                  <input id="wz-start" type="date" value={plannedStart} onChange={(e) => setPlannedStart(e.target.value)} className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent" />
+                </div>
+                <div>
+                  <OptionalLabel htmlFor="wz-end" text={t('projects.planned_end_date', { defaultValue: 'Planned end date' })} optionalText={t('projects.create.optional_badge', { defaultValue: 'Optional' })} />
+                  <input id="wz-end" type="date" value={plannedEnd} min={plannedStart || undefined} onChange={(e) => setPlannedEnd(e.target.value)} aria-invalid={plannedRangeInvalid} className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent" />
+                  {plannedRangeInvalid && (
+                    <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+                      {t('project_wizard.need_end_after_start', { defaultValue: 'The planned end date is before the start date.' })}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <OptionalLabel htmlFor="wz-budget" text={t('projects.budget_estimate', { defaultValue: 'Budget estimate' })} optionalText={t('projects.create.optional_badge', { defaultValue: 'Optional' })} />
+                  <AmountInput id="wz-budget" value={budgetEstimate} onChange={setBudgetEstimate} placeholder={t('projects.budget_estimate_placeholder', { defaultValue: 'e.g. 1500000' })} />
+                </div>
+                <div>
+                  <OptionalLabel htmlFor="wz-contract" text={t('projects.contract_value', { defaultValue: 'Contract value' })} optionalText={t('projects.create.optional_badge', { defaultValue: 'Optional' })} />
+                  <AmountInput id="wz-contract" value={contractValue} onChange={setContractValue} placeholder={t('projects.contract_value_placeholder', { defaultValue: 'e.g. 1800000' })} />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Step 4 — Project type (preset) */}
+          {mode === 'wizard' && step === 4 && (
             <div className="space-y-3">
               <InfoHint text={t('project_wizard.type_hint', { defaultValue: 'Pick the closest match. This pre-selects the modules and route for your project - nothing is locked, you can refine on the next step.' })} />
               {presetsLoading && (
@@ -1898,9 +2012,9 @@ export function CreateProjectModal({
                       </p>
                       <p className="text-[11px] text-content-quaternary mt-1.5 flex items-center gap-1">
                         <Layers size={11} />
-                        {t('project_wizard.module_count', {
-                          defaultValue: '{{n}} modules',
-                          n: p.module_count,
+                        {t('project_wizard.menu_row_count', {
+                          defaultValue: '{{n}} menu items',
+                          n: sidebarRowCount(p.modules ?? []),
                         })}
                       </p>
                     </button>
@@ -1913,7 +2027,7 @@ export function CreateProjectModal({
                   value={size}
                   options={SIZES.map((s) => ({
                     value: s,
-                    label: t(`project_wizard.size_opt.${s}`, { defaultValue: cap(s) }),
+                    label: t(`project_wizard.size_opt.${s}`, { defaultValue: SIZE_OPT_LABELS[s] ?? cap(s) }),
                   }))}
                   onChange={setSize}
                 />
@@ -1922,7 +2036,7 @@ export function CreateProjectModal({
                   value={role}
                   options={ROLES.map((r) => ({
                     value: r,
-                    label: t(`project_wizard.role_opt.${r}`, { defaultValue: humanize(r) }),
+                    label: t(`project_wizard.role_opt.${r}`, { defaultValue: ROLE_OPT_LABELS[r] ?? humanize(r) }),
                   }))}
                   onChange={setRole}
                 />
@@ -1930,8 +2044,8 @@ export function CreateProjectModal({
             </div>
           )}
 
-          {/* Step 4 — Scope (activity / phases / focus) */}
-          {mode === 'wizard' && step === 4 && (
+          {/* Step 5 — Scope (activity / phases / focus) */}
+          {mode === 'wizard' && step === 5 && (
             <div className="space-y-5">
               <InfoHint text={t('project_wizard.scope_hint', { defaultValue: 'These refine which modules are emphasised. Defaults come from the project type you picked - adjust only if needed.' })} />
               <div>
@@ -1983,8 +2097,8 @@ export function CreateProjectModal({
             </div>
           )}
 
-          {/* Step 5 — Site & review */}
-          {mode === 'wizard' && step === 5 && (
+          {/* Step 6 — Site & review */}
+          {mode === 'wizard' && step === 6 && (
             <div className="space-y-4">
               <div className="rounded-xl border border-border-light bg-surface-secondary/30 p-4 space-y-3">
                 <div className="flex items-center gap-2">
@@ -2039,7 +2153,7 @@ export function CreateProjectModal({
                     value={
                       form.region === '__custom__'
                         ? (customRegion.trim() || '—')
-                        : (labelFor(REGION_GROUPS, form.region ?? '', i18n.language) || '—')
+                        : (labelFor(REGION_GROUPS, form.region ?? '', i18n.language, t) || '—')
                     }
                   />
                   <SummaryRow
@@ -2047,7 +2161,7 @@ export function CreateProjectModal({
                     value={
                       form.currency === '__custom__'
                         ? (customCurrency.trim() || '—')
-                        : (labelFor(CURRENCY_GROUPS, form.currency ?? '', i18n.language) || '—')
+                        : (labelFor(CURRENCY_GROUPS, form.currency ?? '', i18n.language, t) || '—')
                     }
                   />
                   <SummaryRow
@@ -2055,7 +2169,7 @@ export function CreateProjectModal({
                     value={
                       form.classification_standard === '__custom__'
                         ? (customStandard.trim() || '—')
-                        : (labelFor(STANDARD_GROUPS, form.classification_standard ?? '', i18n.language) || '—')
+                        : (labelFor(STANDARD_GROUPS, form.classification_standard ?? '', i18n.language, t) || '—')
                     }
                   />
                   <SummaryRow
@@ -2070,16 +2184,40 @@ export function CreateProjectModal({
                     value={fmtFixed(clampFactor(regionalFactorStr), 2)}
                   />
                   <SummaryRow
+                    label={t('projects.project_code', { defaultValue: 'Project number / code' })}
+                    value={projectCode.trim() || '—'}
+                  />
+                  <SummaryRow
+                    label={t('projects.client_owner', { defaultValue: 'Client / owner' })}
+                    value={clientName.trim() || '—'}
+                  />
+                  <SummaryRow
+                    label={t('projects.planned_start_date', { defaultValue: 'Planned start date' })}
+                    value={plannedStart ? fmtDate(plannedStart) : '—'}
+                  />
+                  <SummaryRow
+                    label={t('projects.planned_end_date', { defaultValue: 'Planned end date' })}
+                    value={plannedEnd ? fmtDate(plannedEnd) : '—'}
+                  />
+                  <SummaryRow
+                    label={t('projects.budget_estimate', { defaultValue: 'Budget estimate' })}
+                    value={budgetEstimate ? formatCurrency(budgetEstimate, effectiveCurrency) : '—'}
+                  />
+                  <SummaryRow
+                    label={t('projects.contract_value', { defaultValue: 'Contract value' })}
+                    value={contractValue ? formatCurrency(contractValue, effectiveCurrency) : '—'}
+                  />
+                  <SummaryRow
                     label={t('project_wizard.step_type', { defaultValue: 'Project type' })}
                     value={selectedPreset ? t(selectedPreset.label_key, { defaultValue: selectedPreset.label_en }) : humanize(preset)}
                   />
                   <SummaryRow
                     label={t('project_wizard.role', { defaultValue: 'Your role' })}
-                    value={t(`project_wizard.role_opt.${role}`, { defaultValue: humanize(role) })}
+                    value={t(`project_wizard.role_opt.${role}`, { defaultValue: ROLE_OPT_LABELS[role] ?? humanize(role) })}
                   />
                   <SummaryRow
                     label={t('project_wizard.size', { defaultValue: 'Project size' })}
-                    value={t(`project_wizard.size_opt.${size}`, { defaultValue: cap(size) })}
+                    value={t(`project_wizard.size_opt.${size}`, { defaultValue: SIZE_OPT_LABELS[size] ?? cap(size) })}
                   />
                   <SummaryRow
                     label={t('project_wizard.activities', { defaultValue: 'Activities' })}
@@ -2090,8 +2228,8 @@ export function CreateProjectModal({
                     value={String(phases.length)}
                   />
                   <SummaryRow
-                    label={t('project_wizard.modules', { defaultValue: 'Modules' })}
-                    value={selectedPreset ? String(selectedPreset.module_count) : '—'}
+                    label={t('project_wizard.menu_items', { defaultValue: 'Menu items' })}
+                    value={selectedPreset ? String(sidebarRowCount(selectedPreset.modules ?? [])) : '—'}
                   />
                   <SummaryRow
                     label={t('project_wizard.focus_mode', { defaultValue: 'Focus mode' })}
@@ -2252,13 +2390,77 @@ function humanize(s: string): string {
 
 /** Resolve a select value to its human label by scanning the option
  *  groups. Falls back to the raw value (custom entries, unknown keys). */
-function labelFor(groups: OptionGroup[], value: string, lang: string): string {
+function labelFor(groups: OptionGroup[], value: string, lang: string, t: TFunction): string {
   if (!value) return '';
   for (const g of groups) {
     const o = g.options.find((x) => x.value === value);
-    if (o) return regionOptionLabel(o, lang);
+    if (o) return optionLabel(o, lang, t);
   }
   return value;
+}
+
+/**
+ * The reader-language label of a picker option: a country by the runtime's own
+ * country names, a word option ("Custom...", "International / Multi-region")
+ * and a classification standard through their i18n keys, everything else as
+ * written.
+ */
+function optionLabel(o: RegionOption, lang: string, t: TFunction): string {
+  if (o.iso) return regionOptionLabel(o, lang);
+  const wordKey = OPTION_LABEL_KEYS[o.value];
+  if (wordKey) return t(wordKey, { defaultValue: o.label });
+  if (STANDARD_VALUES.has(o.value)) return t(standardOptionKey(o.value), { defaultValue: o.label });
+  return o.label;
+}
+
+/** Every value the standards picker offers, for {@link optionLabel}. */
+const STANDARD_VALUES: ReadonlySet<string> = new Set(
+  STANDARD_GROUPS.flatMap((g) => g.options.map((o) => o.value)),
+);
+
+/** Inputs of {@link isCreateFormDirty}. */
+export interface CreateFormDirtyInput {
+  form: CreateProjectData;
+  baseline: ProjectCoreForm;
+  /** Every free-text field outside the core form; any non-blank one is input. */
+  extras: readonly string[];
+}
+
+/**
+ * Whether closing the create dialog would throw away something the user did.
+ *
+ * Compared with the values the form opened with rather than with blanks: the
+ * currency is pre-selected from the reader's preference and the language from
+ * the interface, and counting those as input made an untouched dialog ask
+ * "discard this setup? This cannot be undone." before it would close.
+ */
+export function isCreateFormDirty({ form, baseline, extras }: CreateFormDirtyInput): boolean {
+  const core: (keyof ProjectCoreForm)[] = [
+    'name', 'description', 'region', 'classification_standard', 'currency', 'locale',
+  ];
+  if (core.some((k) => String(form[k] ?? '').trim() !== String(baseline[k] ?? '').trim())) return true;
+  return extras.some((v) => v.trim() !== '');
+}
+
+/**
+ * The contract and schedule fields an edit changed, as a patch. Blank clears a
+ * stored value (sent as null); an unchanged field is left out.
+ */
+export function changedContractFields(
+  data: CreateProjectData,
+  project: Project | undefined,
+): Partial<CreateProjectData> {
+  const keys = [
+    'project_code', 'client_id', 'contract_value', 'budget_estimate',
+    'planned_start_date', 'planned_end_date',
+  ] as const;
+  const patch: Partial<CreateProjectData> = {};
+  for (const k of keys) {
+    const next = data[k] ?? null;
+    const before = project?.[k] ?? null;
+    if ((next ?? '') !== (before ?? '')) patch[k] = next;
+  }
+  return patch;
 }
 
 function clampFactor(raw: string): number {
@@ -2401,7 +2603,7 @@ function GroupedSelectField({
           <optgroup key={g.group} label={t(`projects.group_${g.group.toLowerCase().replace(/[^a-z0-9]/g, '_')}`, { defaultValue: g.group })}>
             {g.options.map((o) => (
               <option key={o.value} value={o.value}>
-                {regionOptionLabel(o, i18n.language)}
+                {optionLabel(o, i18n.language, t)}
               </option>
             ))}
           </optgroup>

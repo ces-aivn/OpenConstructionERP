@@ -19,7 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useToastStore } from '@/stores/useToastStore';
-import { apiGet, apiPost } from '@/shared/lib/api';
+import { ApiError, apiGet, apiPost } from '@/shared/lib/api';
 import { isModuleLoaded, _resetModuleProbeCache } from '@/shared/lib/moduleProbe';
 import { formatElapsed } from '@/shared/lib/duration';
 import { Breadcrumb, DismissibleInfo, ModuleGuideButton } from '@/shared/ui';
@@ -135,6 +135,8 @@ export function ProjectIntelligencePage() {
   const [actions, setActions] = useState<ActionDef[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // A 401, read from the status: the message is translated for the reader.
+  const [authError, setAuthError] = useState(false);
   const [moduleDisabled, setModuleDisabled] = useState(false);
   const [enabling, setEnabling] = useState(false);
   const [enableError, setEnableError] = useState<string | null>(null);
@@ -175,6 +177,7 @@ export function ProjectIntelligencePage() {
         if (refresh) setRefreshing(true);
         else setLoading(true);
         setError(null);
+        setAuthError(false);
 
         const data = await apiGet<Summary>(
           `/v1/project_intelligence/summary/?project_id=${activeProjectId}${refresh ? '&refresh=true' : ''}`,
@@ -206,6 +209,7 @@ export function ProjectIntelligencePage() {
           setLineItems([]);
         }
       } catch (err: unknown) {
+        setAuthError(err instanceof ApiError && err.status === 401);
         setError(
           err instanceof Error ? err.message : 'Failed to load the dashboard',
         );
@@ -421,10 +425,7 @@ export function ProjectIntelligencePage() {
   }
 
   if (error) {
-    const isAuth =
-      error.includes('401') ||
-      error.includes('auth') ||
-      error.includes('Unauthorized');
+    const isAuth = authError;
     return (
       <div className="w-full py-12">
         <div className="text-center space-y-4">

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 import uuid
 from typing import Any
 
@@ -109,21 +110,91 @@ _SHORT_NAME_ALIASES: dict[str, str] = {
     "chat": "oe_chat",
 }
 
+# Record types that have no vector collection. They are answered by the SQL
+# track only, so the vector fan-out skips them.
+COLLECTION_CONTRACTS = "oe_contracts"
+COLLECTION_BOQ_DOCUMENTS = "oe_boqs"
+SQL_ONLY_COLLECTIONS: tuple[str, ...] = (COLLECTION_CONTRACTS, COLLECTION_BOQ_DOCUMENTS)
+SEARCHABLE_COLLECTIONS: tuple[str, ...] = (*ALL_COLLECTIONS, *SQL_ONLY_COLLECTIONS)
+SEARCH_LABELS: dict[str, str] = {
+    **COLLECTION_LABELS,
+    COLLECTION_CONTRACTS: "Contracts",
+    COLLECTION_BOQ_DOCUMENTS: "BOQs",
+}
+_SHORT_NAME_ALIASES.update(
+    {
+        "contracts": COLLECTION_CONTRACTS,
+        "contract": COLLECTION_CONTRACTS,
+        "boqs": COLLECTION_BOQ_DOCUMENTS,
+    }
+)
+
+
+def normalize_search_text(text: str) -> str:
+    """Lower-case *text*, drop diacritics and collapse whitespace.
+
+    Vietnamese readers type module names with or without tone marks
+    ("hợp đồng", "hop dong"), so keyword matching compares the bare
+    letters. ``đ`` has no combining mark to strip and is mapped by hand.
+    """
+    decomposed = unicodedata.normalize("NFD", (text or "").lower().replace("đ", "d"))
+    bare = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
+    return " ".join(bare.split())
+
+
+# A query that names a kind of record, in English or Vietnamese, lists the
+# newest records of that kind: nobody writes "contract" into a contract title,
+# so a text match alone answers "hợp đồng" with nothing. Keys are compared
+# after :func:`normalize_search_text`.
+_MODULE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    COLLECTION_CONTRACTS: ("contract", "contracts", "hop dong", "cac hop dong"),
+    COLLECTION_RISKS: ("risk", "risks", "risk register", "rui ro", "so rui ro", "so dang ky rui ro"),
+    COLLECTION_BOQ_DOCUMENTS: (
+        "boq",
+        "boqs",
+        "bill of quantities",
+        "bills of quantities",
+        "bang khoi luong",
+        "bang tien luong",
+        "du toan",
+    ),
+    COLLECTION_TASKS: ("task", "tasks", "cong viec", "nhiem vu"),
+    COLLECTION_RFI: ("rfi", "rfis", "yeu cau thong tin"),
+    COLLECTION_SUBMITTALS: ("submittal", "submittals", "ho so trinh duyet"),
+    COLLECTION_CHANGE_ORDERS: ("change order", "change orders", "lenh thay doi"),
+    COLLECTION_VARIATIONS: ("variation", "variations", "phat sinh"),
+    COLLECTION_DOCUMENTS: ("document", "documents", "tai lieu"),
+    COLLECTION_CORRESPONDENCE: ("correspondence", "cong van", "thu tu"),
+    COLLECTION_MOC: ("moc", "management of change", "quan ly thay doi"),
+}
+
+
+def module_intent(query: str) -> set[str]:
+    """Return the collections *query* names as a kind of record.
+
+    Only a query that is a module keyword as a whole counts; "contract
+    award" is an ordinary text query.
+    """
+    needle = normalize_search_text(query)
+    if not needle:
+        return set()
+    return {collection for collection, words in _MODULE_KEYWORDS.items() if needle in words}
+
 
 def _normalize_types(raw: list[str] | None) -> list[str]:
     """Resolve a list of user-supplied type names to canonical collections."""
     if not raw:
-        return list(ALL_COLLECTIONS)
+        return list(SEARCHABLE_COLLECTIONS)
     out: list[str] = []
     for name in raw:
         cleaned = (name or "").strip().lower()
         if not cleaned:
             continue
         canonical = _SHORT_NAME_ALIASES.get(cleaned, cleaned)
-        if canonical in ALL_COLLECTIONS and canonical not in out:
+        if canonical in SEARCHABLE_COLLECTIONS and canonical not in out:
             out.append(canonical)
     if not out:
-        return list(ALL_COLLECTIONS)
+        return list(SEARCHABLE_COLLECTIONS)
     return out
 
 
@@ -233,7 +304,7 @@ def _hit_from_row(
         id=str(row_id),
         score=rank_score,
         text=snippet,
-        module=COLLECTION_LABELS.get(collection, collection),
+        module=SEARCH_LABELS.get(collection, collection),
         project_id=project_id,
         tenant_id=tenant_id,
         payload=payload or {"title": title},
@@ -246,6 +317,11 @@ def _hit_from_row(
 # so the weakest surviving hit still reads as a match rather than as a
 # zero the reader would take for "irrelevant".
 _LEXICAL_FLOOR = 0.2
+
+# Score of a record listed because the query named its kind. It matched on
+# the module, not on its own text, so it reads as relevant but below any
+# record whose title answers the query.
+_BROWSE_SCORE = 0.5
 
 
 def _lexical_score(query: str, hit: VectorHit) -> float:
@@ -326,6 +402,7 @@ async def _sql_search_collection(
     tenant_id: str | None = None,
     allowed_project_ids: set[uuid.UUID] | None = None,
     limit: int = 10,
+    browse: bool = False,
 ) -> list[VectorHit]:
     """ILIKE substring search against *collection*, ranked by match quality.
 
@@ -345,6 +422,9 @@ async def _sql_search_collection(
         allowed_project_ids: Cross-project access fence. ``None`` means
             unrestricted, an empty set means nothing is readable.
         limit: Maximum rows to take from the backing table.
+        browse: The query named this kind of record (see
+            :func:`module_intent`), so the newest records are listed
+            without a text filter, in recency order.
 
     Returns:
         Hits in descending relevance order, each carrying a non-zero score.
@@ -357,7 +437,12 @@ async def _sql_search_collection(
         tenant_id=tenant_id,
         allowed_project_ids=allowed_project_ids,
         limit=limit,
+        browse=browse,
     )
+    if browse:
+        for hit in hits:
+            hit.score = _BROWSE_SCORE
+        return hits
     for hit in hits:
         hit.score = _lexical_score(query, hit)
     return sorted(hits, key=lambda hit: hit.score, reverse=True)
@@ -372,6 +457,7 @@ async def _sql_search_collection_raw(
     tenant_id: str | None = None,
     allowed_project_ids: set[uuid.UUID] | None = None,
     limit: int = 10,
+    browse: bool = False,
 ) -> list[VectorHit]:
     """ILIKE substring search against the table backing *collection*.
 
@@ -396,8 +482,8 @@ async def _sql_search_collection_raw(
     an empty set means "no accessible projects" so nothing is returned.
     Shared catalogs without a project column (costs) are exempt.
     """
-    pattern = f"%{query.strip()}%"
-    if not pattern.strip("%"):
+    pattern = "%" if browse else f"%{query.strip()}%"
+    if not browse and not pattern.strip("%"):
         return []
 
     project_uuid = _coerce_uuid(project_id)
@@ -418,6 +504,58 @@ async def _sql_search_collection_raw(
                 return stmt.where(sql_false())
             return stmt.where(project_col.in_(allowed_project_ids))
         return stmt
+
+    if collection == COLLECTION_CONTRACTS:
+        from app.modules.contracts.models import Contract
+
+        stmt = (
+            select(Contract)
+            .where(or_(Contract.title.ilike(pattern), Contract.code.ilike(pattern)))
+            .order_by(Contract.created_at.desc())
+            .limit(limit)
+        )
+        stmt = _scope(stmt, Contract.project_id)
+        contracts = (await session.execute(stmt)).scalars().all()
+        return [
+            _hit_from_row(
+                row_id=c.id,
+                title=(c.title or c.code or "")[:160],
+                snippet=" · ".join(part for part in (c.code, c.status) if part)[:220],
+                collection=collection,
+                project_id=str(c.project_id) if c.project_id else "",
+                payload={
+                    "title": (c.title or c.code or "")[:160],
+                    "code": c.code or "",
+                    "status": c.status or "",
+                    "contract_type": c.contract_type or "",
+                    "currency": c.currency or "",
+                },
+            )
+            for c in contracts
+        ]
+
+    if collection == COLLECTION_BOQ_DOCUMENTS:
+        from app.modules.boq.models import BOQ
+
+        stmt = (
+            select(BOQ)
+            .where(or_(BOQ.name.ilike(pattern), BOQ.description.ilike(pattern)))
+            .order_by(BOQ.created_at.desc())
+            .limit(limit)
+        )
+        stmt = _scope(stmt, BOQ.project_id)
+        boqs = (await session.execute(stmt)).scalars().all()
+        return [
+            _hit_from_row(
+                row_id=b.id,
+                title=(b.name or "")[:160],
+                snippet=(b.description or b.name or "")[:220],
+                collection=collection,
+                project_id=str(b.project_id) if b.project_id else "",
+                payload={"title": (b.name or "")[:160], "status": b.status or ""},
+            )
+            for b in boqs
+        ]
 
     if collection == COLLECTION_BOQ:
         from app.modules.boq.models import BOQ, Position
@@ -1027,12 +1165,19 @@ async def unified_search_service(
     import asyncio
 
     chosen = _normalize_types(types)
+    browse_collections = module_intent(query)
+
+    async def _no_vectors() -> list[VectorHit]:
+        return []
 
     # Vector track - best-effort, always tried first. Returns [] when
     # LanceDB is unavailable or the collection is empty (the helper
-    # logs and swallows internally).
+    # logs and swallows internally). SQL-only record types have no
+    # vector collection to ask.
     vector_coros = [
-        search_collection(
+        _no_vectors()
+        if collection in SQL_ONLY_COLLECTIONS
+        else search_collection(
             collection,
             query,
             project_id=project_id,
@@ -1041,7 +1186,7 @@ async def unified_search_service(
         )
         for collection in chosen
     ]
-    vector_rankings = await asyncio.gather(*vector_coros, return_exceptions=False)
+    vector_rankings = list(await asyncio.gather(*vector_coros, return_exceptions=False))
 
     # SQL track - always evaluated. Single shared session so all per-
     # collection queries share a single connection and roundtrip. The
@@ -1062,6 +1207,7 @@ async def unified_search_service(
                     tenant_id=tenant_id,
                     allowed_project_ids=allowed_project_ids,
                     limit=limit_per_collection,
+                    browse=collection in browse_collections,
                 )
             except Exception as exc:
                 logger.debug("_sql_search_collection(%s) failed: %s", collection, exc)
@@ -1097,7 +1243,7 @@ async def unified_search_service(
             title=h.title,
             snippet=h.snippet,
             text=h.text,
-            module=h.module or COLLECTION_LABELS.get(h.collection, h.collection),
+            module=h.module or SEARCH_LABELS.get(h.collection, h.collection),
             project_id=h.project_id,
             tenant_id=h.tenant_id,
             payload=h.payload,

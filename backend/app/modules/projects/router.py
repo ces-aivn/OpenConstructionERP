@@ -109,9 +109,51 @@ from app.modules.projects.service import (
     reset_match_settings,
     update_match_settings,
 )
+from app.modules.rfi.intl import OPEN_STATUSES as RFI_OPEN_STATUSES
 
 router = APIRouter(tags=["projects"])
 logger = logging.getLogger(__name__)
+
+
+def _positive_amount(raw: object) -> float:
+    """A stored money string as a float, or 0 when blank, invalid or negative."""
+    if raw is None or raw == "":
+        return 0.0
+    try:
+        value = Decimal(str(raw))
+    except (ArithmeticError, ValueError):
+        return 0.0
+    return float(value) if value.is_finite() and value > 0 else 0.0
+
+
+async def _boq_grand_totals_by_project(
+    session: AsyncSession,
+    boq_id_to_project: dict[str, str],
+) -> dict[str, Decimal]:
+    """Sum of each project's BOQ grand totals (direct cost plus markups).
+
+    Reads the same ``BOQService.compute_boq_totals`` figure the BOQ list,
+    detail, export and the portfolio dashboard print, so a project card never
+    shows the direct cost while every other screen shows the bill's total.
+    Returns an empty mapping when the totals cannot be computed; the caller
+    keeps its direct-cost figure in that case.
+    """
+    if not boq_id_to_project:
+        return {}
+    try:
+        from app.modules.boq.service import BOQService  # noqa: PLC0415
+
+        totals = await BOQService(session).compute_boq_totals([uuid.UUID(b) for b in boq_id_to_project])
+    except Exception:
+        logger.warning("Project cards: BOQ grand totals unavailable, keeping direct cost", exc_info=True)
+        return {}
+    out: dict[str, Decimal] = {}
+    for boq_id, entry in totals.items():
+        pid = boq_id_to_project.get(str(boq_id))
+        if not pid:
+            continue
+        out[pid] = out.get(pid, Decimal("0")) + Decimal(str(entry.get("grand_total") or 0))
+    return out
 
 
 def _get_service(session: SessionDep, settings: SettingsDep) -> ProjectService:
@@ -1035,6 +1077,14 @@ async def dashboard_cards(
                     base_by_project.get(pid, ""),
                 )
                 boq_values[pid] = boq_values.get(pid, 0.0) + float(converted)
+
+            # The card's value is what the project's bills add up to, markups
+            # included, exactly as the BOQ list, detail and the dashboard
+            # report it. The direct-cost sum above stays as the fallback when
+            # the grand totals cannot be computed.
+            grand_by_project = await _boq_grand_totals_by_project(session, boq_id_to_project)
+            for pid, grand in grand_by_project.items():
+                boq_values[pid] = float(grand)
     except Exception:
         logger.debug("Dashboard cards: BOQ query failed", exc_info=True)
 
@@ -1068,7 +1118,7 @@ async def dashboard_cards(
                 select(RFI.project_id, func.count(RFI.id))
                 .where(
                     RFI.project_id.in_(project_ids),
-                    RFI.status.in_(["draft", "open", "in_review"]),
+                    RFI.status.in_(sorted(RFI_OPEN_STATUSES)),
                 )
                 .group_by(RFI.project_id)
             )
@@ -1220,6 +1270,13 @@ async def project_dashboard(
         "status": project.status,
         "phase": getattr(project, "phase", None),
         "currency": project.currency,
+        # What the user entered when creating the project, so the overview can
+        # show it next to the computed figures. Money stays a Decimal string.
+        "budget_estimate": getattr(project, "budget_estimate", None),
+        "contract_value": getattr(project, "contract_value", None),
+        "planned_start_date": getattr(project, "planned_start_date", None),
+        "planned_end_date": getattr(project, "planned_end_date", None),
+        "project_code": getattr(project, "project_code", None),
     }
 
     # ── BOQ / Budget ─────────────────────────────────────────────────────────
@@ -1280,6 +1337,9 @@ async def project_dashboard(
                 )
             ).scalar_one()
             boq_total_value = round(total_result or 0.0, 2)
+            grand = await _boq_grand_totals_by_project(session, {str(b): str(project_id) for b in boq_ids})
+            if str(project_id) in grand:
+                boq_total_value = round(float(grand[str(project_id)]), 2)
 
             markups_from_boq = (
                 await session.execute(select(func.count(BOQMarkup.id)).where(BOQMarkup.boq_id.in_(boq_ids)))
@@ -1306,7 +1366,18 @@ async def project_dashboard(
         # the reported consumed %. There is no formal budget-revision
         # entity in the data model, so with no revision the revised budget
         # equals the original, and consumed % is actual / original.
-        original = boq_total_value if boq_total_value > 0 else planned_total
+        # The budget the user entered on the project is the original budget
+        # whenever there is one; the estimate (BOQ) and the planned cost lines
+        # stand in for it only when nobody set a budget. Without this a project
+        # created with a budget read "original 0" until a BOQ existed.
+        budget_entered = _positive_amount(getattr(project, "budget_estimate", None))
+        original = (
+            budget_entered
+            if budget_entered > 0
+            else boq_total_value
+            if boq_total_value > 0
+            else planned_total
+        )
         revised = original
         forecast = revised if revised > 0 else original
 
@@ -1359,10 +1430,11 @@ async def project_dashboard(
             ),
         }
     except Exception:
-        if boq_total_value > 0:
-            budget_section["original"] = _money(boq_total_value)
-            budget_section["revised"] = _money(boq_total_value)
-            budget_section["forecast"] = _money(boq_total_value)
+        fallback = _positive_amount(getattr(project, "budget_estimate", None)) or boq_total_value
+        if fallback > 0:
+            budget_section["original"] = _money(fallback)
+            budget_section["revised"] = _money(fallback)
+            budget_section["forecast"] = _money(fallback)
 
     # ── Schedule ───────────────────────────────────────────────────────────
     schedule_section: dict = {
@@ -1639,7 +1711,7 @@ async def project_dashboard(
             await session.execute(
                 select(func.count(RFI.id)).where(
                     RFI.project_id == project_id,
-                    RFI.status.in_(["draft", "open", "in_review"]),
+                    RFI.status.in_(sorted(RFI_OPEN_STATUSES)),
                 )
             )
         ).scalar_one()
@@ -1649,7 +1721,7 @@ async def project_dashboard(
             await session.execute(
                 select(func.count(RFI.id)).where(
                     RFI.project_id == project_id,
-                    RFI.status.in_(["draft", "open", "in_review"]),
+                    RFI.status.in_(sorted(RFI_OPEN_STATUSES)),
                     RFI.response_due_date < today_str,
                     RFI.response_due_date.isnot(None),
                 )

@@ -87,15 +87,15 @@ async def list_search_types(_user_id: CurrentUserId) -> dict[str, list[dict[str,
     Returns a structured list with both the canonical name and a human
     label so the frontend can build a multi-select filter dropdown.
     """
-    from app.core.vector_index import ALL_COLLECTIONS, COLLECTION_LABELS
+    from app.modules.search.service import SEARCH_LABELS, SEARCHABLE_COLLECTIONS
 
     return {
         "types": [
             {
                 "name": collection,
-                "label": COLLECTION_LABELS.get(collection, collection),
+                "label": SEARCH_LABELS.get(collection, collection),
                 "short": collection.removeprefix("oe_"),
             }
-            for collection in ALL_COLLECTIONS
+            for collection in SEARCHABLE_COLLECTIONS
         ]
     }

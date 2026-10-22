@@ -94,6 +94,14 @@ describe('hitToHref', () => {
     expect(hitToHref(hit({ collection: 'oe_requirements' }))).toBe('/bim/rules?tab=requirements');
   });
 
+  it('opens a contract and a whole BOQ found by the record search', () => {
+    // Contracts and BOQ headers are SQL-only record types the search service
+    // adds to the vector collections, so a query such as "hợp đồng" or "BOQ"
+    // lands on the record rather than on a dead row.
+    expect(hitToHref(hit({ collection: 'oe_contracts' }))).toBe(`/contracts?highlight=${ID}`);
+    expect(hitToHref(hit({ collection: 'oe_boqs' }))).toBe(`/boq/${ID}`);
+  });
+
   it('still refuses to invent a route for a collection it does not know', () => {
     // The modal renders this row non-navigable rather than letting the click
     // do nothing in silence.

@@ -44,14 +44,13 @@ interface MetricRowProps {
   count: number;
   total: number;
   percent: number;
-  color: string;
 }
 
-function MetricRow({ icon, label, count, total, percent, color }: MetricRowProps) {
+function MetricRow({ icon, label, count, total, percent }: MetricRowProps) {
   const pctDisplay = Math.round(percent * 100);
   return (
     <div className="flex items-center gap-3">
-      <div className={`shrink-0 h-7 w-7 rounded-md ${color} flex items-center justify-center`}>
+      <div className="shrink-0 flex h-7 w-5 items-center justify-center text-content-tertiary">
         {icon}
       </div>
       <div className="flex-1 min-w-0">
@@ -66,7 +65,7 @@ function MetricRow({ icon, label, count, total, percent, color }: MetricRowProps
         </div>
         <div className="h-1.5 rounded-full bg-surface-secondary overflow-hidden">
           <div
-            className={`h-full transition-all duration-700 ease-out ${color}`}
+            className="h-full bg-oe-blue transition-all duration-700 ease-out"
             style={{ width: `${pctDisplay}%` }}
           />
         </div>
@@ -120,20 +119,20 @@ export default function BIMCoverageCard() {
 
   const headlineColor =
     headlinePercent >= 75
-      ? 'text-emerald-600'
+      ? 'text-emerald-700 dark:text-emerald-400'
       : headlinePercent >= 40
-        ? 'text-amber-600'
-        : 'text-rose-600';
+        ? 'text-amber-700 dark:text-amber-400'
+        : 'text-rose-700 dark:text-rose-400';
 
   return (
     <div
-      className="mb-6 rounded-xl border border-border-light bg-surface-primary p-5 animate-card-in"
+      className="mb-6 rounded-lg border border-border-light bg-surface-elevated p-5 animate-card-in"
       style={{ animationDelay: '120ms' }}
     >
       <div className="flex items-start justify-between gap-3 mb-4">
         <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-amber-50 dark:bg-amber-950/40 flex items-center justify-center text-amber-600">
-            <Cuboid size={20} strokeWidth={1.75} />
+          <div className="h-9 w-9 rounded-md border border-border-light flex items-center justify-center text-content-secondary">
+            <Cuboid size={18} strokeWidth={1.75} />
           </div>
           <div>
             <h3 className="text-sm font-semibold text-content-primary">
@@ -151,10 +150,10 @@ export default function BIMCoverageCard() {
           </div>
         </div>
         <div className="text-right">
-          <div className={`text-2xl font-bold tabular-nums ${headlineColor}`}>
+          <div className={`text-2xl font-semibold tabular-nums ${headlineColor}`}>
             {headlinePercent}%
           </div>
-          <div className="text-[10px] uppercase tracking-wider text-content-quaternary">
+          <div className="text-xs text-content-tertiary">
             {t('dashboard.bim_coverage_headline', { defaultValue: 'avg coverage' })}
           </div>
         </div>
@@ -162,58 +161,52 @@ export default function BIMCoverageCard() {
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <MetricRow
-          icon={<Link2 size={12} className="text-oe-blue" />}
+          icon={<Link2 size={12} />}
           label={t('dashboard.bim_linked_boq', {
             defaultValue: 'Linked to BOQ',
           })}
           count={data.elements_linked_to_boq}
           total={totalElements}
           percent={data.percent_linked_to_boq}
-          color="bg-blue-50 dark:bg-blue-950/40"
         />
         <MetricRow
-          icon={<ShieldCheck size={12} className="text-emerald-600" />}
+          icon={<ShieldCheck size={12} />}
           label={t('dashboard.bim_costed', { defaultValue: 'Costed' })}
           count={data.elements_costed}
           total={totalElements}
           percent={data.percent_costed}
-          color="bg-emerald-50 dark:bg-emerald-950/40"
         />
         <MetricRow
-          icon={<ShieldCheck size={12} className="text-amber-600" />}
+          icon={<ShieldCheck size={12} />}
           label={t('dashboard.bim_validated', { defaultValue: 'Validated' })}
           count={data.elements_validated}
           total={totalElements}
           percent={data.percent_validated}
-          color="bg-amber-50 dark:bg-amber-950/40"
         />
         <MetricRow
-          icon={<FileText size={12} className="text-violet-600" />}
+          icon={<FileText size={12} />}
           label={t('dashboard.bim_with_documents', {
             defaultValue: 'With documents',
           })}
           count={data.elements_with_documents}
           total={totalElements}
           percent={data.percent_with_documents}
-          color="bg-violet-50 dark:bg-violet-950/40"
         />
         <MetricRow
-          icon={<CheckSquare size={12} className="text-rose-600" />}
+          icon={<CheckSquare size={12} />}
           label={t('dashboard.bim_with_tasks', { defaultValue: 'With tasks' })}
           count={data.elements_with_tasks}
           total={totalElements}
           percent={data.percent_with_tasks}
-          color="bg-rose-50 dark:bg-rose-950/40"
         />
         <MetricRow
-          icon={<Calendar size={12} className="text-cyan-600" />}
+          icon={<Calendar size={12} />}
           label={t('dashboard.bim_with_activities', {
             defaultValue: 'With 4D activities',
           })}
           count={data.elements_with_activities}
           total={totalElements}
           percent={data.percent_with_activities}
-          color="bg-cyan-50 dark:bg-cyan-950/40"
         />
       </div>
 

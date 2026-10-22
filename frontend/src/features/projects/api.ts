@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 import { apiGet, apiPost, apiPatch, apiDelete } from '@/shared/lib/api';
 import { fetchProjectList, fetchProjectListByStatus } from '@/shared/lib/projectList';
+import { useProjectContextStore } from '@/stores/useProjectContextStore';
 
 export interface ProjectAddress {
   street?: string | null;
@@ -72,6 +73,14 @@ export interface Project {
   custom_units?: string[];
   /** Optional budget target / estimate ceiling (decimal-string). */
   budget_estimate?: string | null;
+  /** Contract value entered on the project (decimal-string). */
+  contract_value?: string | null;
+  /** Planned start / end, ISO dates as entered. */
+  planned_start_date?: string | null;
+  planned_end_date?: string | null;
+  project_code?: string | null;
+  /** Client or owner as entered (free text, up to 36 characters). */
+  client_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -280,23 +289,40 @@ export interface DefaultVatApplyResult {
   invoices_updated: number;
 }
 
+/**
+ * Remember the language of every project a response carries, so the active
+ * project's money is written the way its language writes numbers. Returns
+ * the response unchanged.
+ */
+function remembered<T extends { id: string; locale?: string | null } | readonly { id: string; locale?: string | null }[]>(
+  data: T,
+): T {
+  try {
+    const rows = Array.isArray(data) ? data : [data];
+    useProjectContextStore.getState().rememberProjectLocales(rows as { id: string; locale?: string | null }[]);
+  } catch {
+    // Remembering is a formatting nicety; it never fails the request.
+  }
+  return data;
+}
+
 export const projectsApi = {
   // NOTE: kept as a zero-arg fn so it can be passed straight as a
   // react-query `queryFn` (callers do `queryFn: projectsApi.list`). For a
   // server-side status filter use `listByStatus` instead. Both read every
   // page; the server's default page is 50 projects.
-  list: () => fetchProjectList<Project[]>(),
+  list: () => fetchProjectList<Project[]>().then(remembered),
   /**
    * List projects filtered by status. Pass a concrete status (e.g.
    * 'archived') to return only those, or 'all' to include every status
    * (archived projects are excluded by the default `list`). The backend
    * accepts the `status` query param added for #274.
    */
-  listByStatus: (status: string) => fetchProjectListByStatus<Project[]>(status),
-  get: (id: string) => apiGet<Project>(`/v1/projects/${id}`),
-  create: (data: CreateProjectData) => apiPost<Project>('/v1/projects/', data),
+  listByStatus: (status: string) => fetchProjectListByStatus<Project[]>(status).then(remembered),
+  get: (id: string) => apiGet<Project>(`/v1/projects/${id}`).then(remembered),
+  create: (data: CreateProjectData) => apiPost<Project>('/v1/projects/', data).then(remembered),
   update: (id: string, data: UpdateProjectData) =>
-    apiPatch<Project>(`/v1/projects/${id}`, data),
+    apiPatch<Project>(`/v1/projects/${id}`, data).then(remembered),
   archive: (id: string) => apiDelete(`/v1/projects/${id}`),
   restore: (id: string) => apiPost<Project>(`/v1/projects/${id}/restore/`, {}),
   /**

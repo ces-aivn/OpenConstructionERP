@@ -23,9 +23,11 @@ The questions, by the defect class that produced them:
   the pack, a country row never adds another standard's "code required" rule,
   and every demo bill a pack installs clears the rules it would be validated
   with.
-* C2, locale: the pack's language is shipped and offered, it is the country's
-  own language when the interface has one, and the demos and onboarding speak
-  it too.
+* C2, locale: the pack opens in a language the interface offers, or in the
+  bundled English when the interface does not offer the pack's language (this
+  build offers Vietnamese and US English only); it is the country's own
+  language when the interface has one, and the demos and onboarding speak the
+  pack's language too.
 * C3, formats: the country has an exchange row, and the importer reads the
   numbers the market writes (decimal comma or decimal dot, the separators
   between thousands, a currency sign in front) as the number they are.
@@ -60,6 +62,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 BACKEND = REPO_ROOT / "backend"
 PACKS_DIR = REPO_ROOT / "packs"
 I18N_TS = REPO_ROOT / "frontend" / "src" / "app" / "i18n.ts"
+LOCALES_DIR = REPO_ROOT / "frontend" / "src" / "app" / "locales"
 
 # ── Discovery ────────────────────────────────────────────────────────────────
 
@@ -405,20 +408,59 @@ def test_a_country_pack_installs_only_demos_of_its_own_country(slug: str, demo_i
 
 
 @lru_cache(maxsize=1)
+def _i18n_source() -> str:
+    return I18N_TS.read_text(encoding="utf-8")
+
+
+@lru_cache(maxsize=1)
 def _offered() -> dict[str, str]:
-    """Offered interface language code -> the country its entry names."""
-    source = I18N_TS.read_text(encoding="utf-8")
-    entries = re.findall(r"\{\s*code:\s*'([A-Za-z-]+)'[^}]*?country:\s*'([a-z]+)'", source)
-    assert len(entries) > 20, "the language list in i18n.ts was not found"
+    """Offered interface language code -> the country its entry names.
+
+    The list is short in this build (Vietnamese and US English), so its size
+    proves nothing; instead the parse is checked against the number of
+    ``code:`` keys the ``SUPPORTED_LANGUAGES`` literal declares, so a regex that
+    drops an entry fails here rather than shrinking the population.
+    """
+    source = _i18n_source()
+    marker = "export const SUPPORTED_LANGUAGES"
+    assert marker in source, "the language list in i18n.ts was not found"
+    start = source.index(marker)
+    block = source[start : source.index("\n];", start)]
+    entries = re.findall(r"""\{\s*code:\s*['"]([A-Za-z-]+)['"][^}]*?country:\s*['"]([a-z]+)['"]""", block)
+    declared = len(re.findall(r"\bcode:", block))
+    assert entries and len(entries) == declared, (
+        f"read {len(entries)} of the {declared} languages SUPPORTED_LANGUAGES declares in i18n.ts"
+    )
     return dict(entries)
 
 
 @lru_cache(maxsize=1)
 def _english_day_first_regions() -> frozenset[str]:
-    source = I18N_TS.read_text(encoding="utf-8")
-    match = re.search(r"ENGLISH_DAY_FIRST_REGIONS[^=]*=\s*new Set\(\[([^\]]*)\]", source)
+    match = re.search(r"ENGLISH_DAY_FIRST_REGIONS[^=]*=\s*new Set\(\[([^\]]*)\]", _i18n_source())
     assert match, "ENGLISH_DAY_FIRST_REGIONS was not found in i18n.ts"
     return frozenset(re.findall(r"'([A-Z]{2})'", match.group(1)))
+
+
+@lru_cache(maxsize=1)
+def _english_fallback() -> str | None:
+    """What ``matchSupportedLanguage`` answers for English it has no closer entry for.
+
+    This build offers US English and no plain ``en``, so every English tag lands
+    on ``en-US``; None when i18n.ts has no such rule.
+    """
+    match = re.search(r"""base\s*===\s*['"]en['"]\s*\?\s*['"]([A-Za-z-]+)['"]\s*:\s*null""", _i18n_source())
+    return match.group(1) if match else None
+
+
+@lru_cache(maxsize=1)
+def _pack_fallback() -> str:
+    """The language ``normalizePackLocale`` opens a pack in when nothing offered answers its locale."""
+    match = re.search(
+        r"""normalizePackLocale\([^)]*\)[^{]*\{\s*return\s+matchSupportedLanguage\(\w+\)\s*\?\?\s*['"]([A-Za-z-]+)['"]""",
+        _i18n_source(),
+    )
+    assert match, "normalizePackLocale's fallback language was not found in i18n.ts"
+    return match.group(1)
 
 
 def _match_supported(tag: str) -> str | None:
@@ -432,7 +474,19 @@ def _match_supported(tag: str) -> str | None:
         if parts[0].lower() == "en" and parts[1].upper() in _english_day_first_regions() and "en-GB" in offered:
             return "en-GB"
     base = parts[0].lower()
-    return base if base in offered else None
+    if base in offered:
+        return base
+    return _english_fallback() if base == "en" else None
+
+
+def _opens_in(tag: str) -> str:
+    """``normalizePackLocale``: the language a pack with this locale opens the interface in."""
+    return _match_supported(tag) or _pack_fallback()
+
+
+def _language(tag: str) -> str:
+    """The base language of a tag as written, whatever the interface offers for it."""
+    return tag.strip().split("-")[0].lower()
 
 
 #: Countries whose pack speaks English although the interface offers a language
@@ -443,11 +497,21 @@ ENGLISH_BY_CHOICE: dict[str, str] = {
 
 
 @pytest.mark.parametrize("slug", SLUGS)
-def test_the_pack_language_is_shipped_and_offered(slug: str) -> None:
+def test_the_pack_opens_in_an_offered_language_or_the_bundled_fallback(slug: str) -> None:
+    """A pack can never force the interface into a language that has no strings.
+
+    This build offers Vietnamese and US English. A pack whose language is not
+    offered (the German, Japanese and other country packs) opens in the
+    bundled English that i18next falls back to, so that bundle has to ship.
+    """
     manifest = _manifests()[slug]
-    assert _match_supported(manifest.default_locale) is not None, (
-        f"{slug} asks for {manifest.default_locale!r}, which the interface neither ships nor falls back from"
+    resolved = _opens_in(manifest.default_locale)
+    fallback = _pack_fallback()
+    assert resolved in _offered() or resolved == fallback, (
+        f"{slug} asks for {manifest.default_locale!r} and opens in {resolved!r}, which is neither offered "
+        f"nor the {fallback!r} fallback"
     )
+    assert (LOCALES_DIR / f"{resolved}.ts").is_file(), f"{slug} opens in {resolved!r}, which ships no strings"
 
 
 @pytest.mark.parametrize("slug", COUNTRY_SLUGS)
@@ -469,6 +533,14 @@ def test_an_english_pack_outside_the_us_reads_dates_day_first(slug: str) -> None
     country = _country(manifest)
     resolved = _match_supported(manifest.default_locale)
     if not resolved or not resolved.startswith("en") or country in ("US", "CA"):
+        return
+    if "en-GB" not in _offered():
+        # This build offers one English, US English, and reads every English
+        # tag in it, so there is no day-first English to resolve to. The pack
+        # still has to land on the English that is offered.
+        assert resolved == _english_fallback() and resolved in _offered(), (
+            f"{slug} ({country}) resolves to {resolved!r}, which is not the English the interface offers"
+        )
         return
     assert resolved == "en-GB", f"{slug} ({country}) resolves to {resolved!r}, which prints month-first dates"
 
@@ -494,9 +566,12 @@ def test_a_demo_speaks_its_packs_language(slug: str, demo_id: str) -> None:
 
     manifest = _manifests()[slug]
     template = DEMO_TEMPLATES[demo_id]
-    pack_language = (_match_supported(manifest.default_locale) or "").split("-")[0]
-    demo_language = (_match_supported(template.locale) or template.locale or "").split("-")[0]
-    assert _match_supported(template.locale) is not None, f"{demo_id} carries {template.locale!r}, which is not offered"
+    # Compared as written rather than as resolved: with two interface
+    # languages a German pack and a French demo would both open in the English
+    # fallback and look alike, while the demo's documents would still be French.
+    pack_language = _language(manifest.default_locale)
+    demo_language = _language(template.locale or "")
+    assert demo_language, f"{demo_id} carries no locale"
     if demo_id in DEMOS_IN_ANOTHER_LANGUAGE_BY_CHOICE:
         return
     assert demo_language == pack_language, (
@@ -514,9 +589,11 @@ def test_the_onboarding_script_speaks_the_packs_language(slug: str) -> None:
     match = re.search(r"^locale:\s*[\"']?([A-Za-z-]+)", script.read_text(encoding="utf-8"), re.M)
     if match is None:
         return
-    assert _match_supported(match.group(1)) == _match_supported(manifest.default_locale), (
-        f"{slug}'s onboarding says locale {match.group(1)!r} and its manifest {manifest.default_locale!r}"
-    )
+    script_locale = match.group(1)
+    assert (_language(script_locale), _opens_in(script_locale)) == (
+        _language(manifest.default_locale),
+        _opens_in(manifest.default_locale),
+    ), f"{slug}'s onboarding says locale {script_locale!r} and its manifest {manifest.default_locale!r}"
 
 
 # ── C3: exchange formats and numbers ─────────────────────────────────────────

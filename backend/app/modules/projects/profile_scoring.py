@@ -139,6 +139,54 @@ ROLE_AFFINITY: dict[str, frozenset[str]] = {
             "carbon",
         }
     ),
+    # US delivery roles. A CM at-risk holds the trade contracts under a
+    # guaranteed maximum price, so it leans on the contractor's tools plus
+    # cost control; an owner's representative manages for the owner; an IPD
+    # partner shares one contract, one budget and one risk pool.
+    "construction_manager_at_risk": frozenset(
+        {
+            "procurement",
+            "subcontractors",
+            "contracts",
+            "schedule",
+            "schedule_advanced",
+            "costmodel",
+            "full_evm",
+            "changeorders",
+            "finance",
+            "risk",
+            "rfi",
+            "submittals",
+        }
+    ),
+    "owners_rep": frozenset(
+        {
+            "portal",
+            "finance",
+            "contracts",
+            "changeorders",
+            "risk",
+            "reporting",
+            "meetings",
+            "rfi",
+            "submittals",
+            "project_intelligence",
+        }
+    ),
+    "ipd_partner": frozenset(
+        {
+            "contracts",
+            "costmodel",
+            "full_evm",
+            "risk",
+            "bim_hub",
+            "cde",
+            "meetings",
+            "schedule",
+            "changeorders",
+            "finance",
+        }
+    ),
 }
 
 # ── Phase → modules typically active in that lifecycle phase ─────────────

@@ -259,6 +259,11 @@ export function hitToHref(hit: UnifiedSearchHit): string {
       return '/moc';
     case 'oe_cost_items':
       return '/costs';
+    case 'oe_contracts':
+      // ContractsPage reads `?highlight=` and scrolls the row into view.
+      return `/contracts?highlight=${encodeURIComponent(hit.id)}`;
+    case 'oe_boqs':
+      return `/boq/${encodeURIComponent(hit.id)}`;
     default:
       return '#';
   }
@@ -333,6 +338,14 @@ export function collectionLabel(t: TFunction, collection: string): string {
     case 'oe_cost_items':
       return t('global_search.collection.costs', {
         defaultValue: 'Cost Database',
+      });
+    case 'oe_contracts':
+      return t('global_search.collection.contracts', {
+        defaultValue: 'Contracts',
+      });
+    case 'oe_boqs':
+      return t('global_search.collection.boqs', {
+        defaultValue: 'Bills of Quantities',
       });
     default:
       // A collection this build has never heard of has no key to read, so

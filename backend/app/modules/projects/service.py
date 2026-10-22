@@ -15,6 +15,7 @@ import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -115,6 +116,10 @@ from app.modules.projects.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Category of the finance budget line written from the budget a user enters
+#: when creating a project. Rows a locked bill writes use ``estimate``.
+PROJECT_ENTRY_BUDGET_CATEGORY = "project_budget"
 
 
 async def purge_project_children_without_cascade(
@@ -485,6 +490,48 @@ class ProjectService:
 
     # ── Create ────────────────────────────────────────────────────────────
 
+    async def _seed_finance_budget_from_entry(self, project: Project) -> None:
+        """Seed the finance budget from the budget typed in at creation.
+
+        A project created with a budget used to keep that figure only on its
+        own row, so the finance budget, the budget overview and everything
+        that reads ``ProjectBudget`` showed zero. When the project has no
+        finance budget yet, one line carrying the entered amount is written
+        through the finance module's own service, in the project currency,
+        marked ``source=project_create`` so it can be told apart from rows a
+        locked bill writes. A finance failure never fails the project create.
+        """
+        raw = (project.budget_estimate or "").strip()
+        if not raw:
+            return
+        try:
+            amount = Decimal(raw)
+        except (InvalidOperation, ValueError):
+            return
+        if not amount.is_finite() or amount <= 0:
+            return
+        try:
+            from app.modules.finance.schemas import BudgetCreate
+            from app.modules.finance.service import FinanceService
+
+            async with self.session.begin_nested():
+                finance = FinanceService(self.session)
+                _existing, total = await finance.list_budgets(project_id=project.id)
+                if total:
+                    return
+                await finance.create_budget(
+                    BudgetCreate(
+                        project_id=project.id,
+                        category=PROJECT_ENTRY_BUDGET_CATEGORY,
+                        currency_code=(project.currency or "")[:3],
+                        original_budget=str(amount),
+                        revised_budget=str(amount),
+                        metadata={"source": "project_create"},
+                    )
+                )
+        except Exception:
+            logger.warning("Project %s: finance budget not seeded from the entered budget", project.id, exc_info=True)
+
     async def create_project(
         self,
         data: ProjectCreate,
@@ -829,6 +876,8 @@ class ProjectService:
             logger.info("Default team created for project %s", project.id)
         except Exception:
             logger.debug("Auto-create default team skipped (teams module may not be loaded)")
+
+        await self._seed_finance_budget_from_entry(project)
 
         await _safe_audit(
             self.session,
