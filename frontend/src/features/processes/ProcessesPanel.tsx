@@ -37,10 +37,11 @@ import { getErrorMessage } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
 import {
   CATEGORY_ORDER,
+  isAvailable,
   isControllable,
   isLoading,
-  isOn,
   ramOf,
+  summarizeServices,
   useApplyPreset,
   useProcessAction,
   useProcesses,
@@ -234,7 +235,19 @@ function ProcessRow({
                 {t('processes.required', { defaultValue: 'Always on' })}
               </span>
             )}
-            {p.env_locked && !p.required && (
+            {!isAvailable(p) && (
+              <span
+                className="inline-flex items-center gap-1 text-2xs font-medium text-content-tertiary"
+                data-testid="process-not-installed"
+                title={t('processes.not_installed_hint', {
+                  defaultValue: 'This server was installed without the package this service needs, so it cannot run here.',
+                })}
+              >
+                <Lock size={10} aria-hidden />
+                {t('processes.not_installed', { defaultValue: 'Not installed on this server' })}
+              </span>
+            )}
+            {p.env_locked && !p.required && isAvailable(p) && (
               <span
                 className="inline-flex items-center gap-1 text-2xs font-medium text-content-tertiary"
                 title={t('processes.env_locked_hint', {
@@ -421,8 +434,8 @@ export function ProcessesPanel() {
     [processes],
   );
   const maxRam = Math.max(1, ...processes.map(ramOf));
-  const running = processes.filter(isOn).length;
-  const usedMb = data?.total_ram_mb_estimate ?? 0;
+  const summary = summarizeServices(processes);
+  const usedMb = summary.inUseMb;
   const rssMb = data?.process_rss_mb ?? null;
   const budgetPct = Math.min(100, (usedMb / SERVER_BUDGET_MB) * 100);
 
@@ -524,17 +537,33 @@ export function ProcessesPanel() {
                   <span className="text-sm font-semibold text-content-primary" data-testid="processes-summary">
                     {t('processes.summary', {
                       defaultValue: '{{running}} of {{total}} on',
-                      running,
-                      total: processes.length,
+                      running: summary.on,
+                      total: summary.total,
                     })}
+                    {summary.errors > 0 &&
+                      `, ${t('processes.summary_errors', {
+                        defaultValue: '{{count}} with errors',
+                        count: summary.errors,
+                      })}`}
                   </span>
-                  <span className="text-xs tabular-nums text-content-secondary">
+                  <span className="text-xs tabular-nums text-content-secondary" data-testid="processes-memory">
                     {t('processes.memory_used', {
-                      defaultValue: 'about {{used}} of memory',
+                      defaultValue: 'about {{used}} in use now',
                       used: formatMb(t, usedMb),
                     })}
                   </span>
                 </div>
+                <p className="mt-1 text-2xs text-content-tertiary" data-testid="processes-memory-up-to">
+                  {t('processes.memory_up_to', {
+                    defaultValue: 'Up to {{value}} once every service that is on has loaded.',
+                    value: formatMb(t, summary.upToMb),
+                  })}
+                  {summary.notInstalled > 0 &&
+                    ` ${t('processes.summary_not_installed', {
+                      defaultValue: 'Not installed on this server: {{count}}.',
+                      count: summary.notInstalled,
+                    })}`}
+                </p>
                 {rssMb != null && (
                   <p className="mt-1 text-2xs text-content-tertiary">
                     {t('processes.rss', {

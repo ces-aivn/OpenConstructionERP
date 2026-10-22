@@ -59,6 +59,7 @@ import {
 } from './api';
 import { ConverterInstallProgressBar } from './ConverterInstallProgressBar';
 import { converterName, converterPlatformMessage, converterVersionLabel } from './converterText';
+import { ApiError } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
 
 /** Ids of converters surfaced on the BIM page. IFC was previously missing
@@ -365,10 +366,9 @@ export function BIMConverterStatusBanner({
       // Backend < v2.6.23 didn't have the per-converter verify endpoint —
       // surface a clear "upgrade your backend" message instead of a bare
       // "Not Found" so the user knows what to do.
-      const isMissingEndpoint =
-        err instanceof Error
-          && (err.message.includes('Not Found')
-              || err.message.includes('404'));
+      // Read from the status, never the text: the message is translated
+      // for the reader, so "Not Found" is not in it in Vietnamese.
+      const isMissingEndpoint = err instanceof ApiError && err.status === 404;
       if (isMissingEndpoint) {
         addToast(
           {

@@ -276,6 +276,106 @@ export function formatCompactCurrency(
   }
 }
 
+/**
+ * Whether `locale` writes compact money with spelled-out scale words.
+ *
+ * The engine's compact notation abbreviates Vietnamese magnitudes to "Tr",
+ * "T" and "NT", which a reader takes for typos ("2,6 T US$"). Vietnamese
+ * writes the scale words out: nghìn, triệu, tỷ, nghìn tỷ.
+ */
+export function spellsOutCompactScale(locale: string | null | undefined): boolean {
+  return (locale || '').toLowerCase().startsWith('vi');
+}
+
+const VI_SCALES: ReadonlyArray<{ size: number; word: string }> = [
+  { size: 1e15, word: 'triệu tỷ' },
+  { size: 1e12, word: 'nghìn tỷ' },
+  { size: 1e9, word: 'tỷ' },
+  { size: 1e6, word: 'triệu' },
+  { size: 1e3, word: 'nghìn' },
+];
+
+/** Decimals that keep about three significant digits: 2,59 · 57,2 · 105. */
+function scaledFractionDigits(scaled: number): number {
+  const abs = Math.abs(scaled);
+  if (abs < 10) return 2;
+  if (abs < 100) return 1;
+  return 0;
+}
+
+/** The symbol `locale` writes for `code` ("₫", "US$"), or the code itself. */
+function currencySymbolFor(code: string, locale: string): string {
+  try {
+    const key = `currencySymbolFor|${locale}|${code}`;
+    const part = reuseNumberFormat(key, () => new Intl.NumberFormat(locale, { style: 'currency', currency: code }))
+      .formatToParts(0)
+      .find((p) => p.type === 'currency');
+    return part?.value ?? code;
+  } catch {
+    return code;
+  }
+}
+
+export interface SpelledCompactMoneyOptions {
+  /** Write the ISO code after the amount instead of the currency symbol. */
+  showCode?: boolean;
+  signDisplay?: Intl.NumberFormatOptions['signDisplay'];
+}
+
+/**
+ * Compact money with the scale word spelled out, symbol last, the way an
+ * amount is read aloud in Vietnamese: "10,5 nghìn tỷ ₫", "2,59 tỷ US$",
+ * "57,2 triệu US$". Amounts under a thousand are written whole ("999 ₫").
+ *
+ * @param value Amount, number or Decimal string.
+ * @param currency ISO 4217 code; blank or malformed renders the number alone.
+ * @param locale BCP-47 tag of the reader, a Vietnamese one in practice.
+ */
+export function formatSpelledCompactMoney(
+  value: string | number | null | undefined,
+  currency: string | null | undefined,
+  locale: string,
+  options: SpelledCompactMoneyOptions = {},
+): string {
+  const amount = toNum(value);
+  const code = (currency || '').trim().toUpperCase();
+  const isValid = CURRENCY_CODE_RE.test(code);
+  const unit = !isValid ? '' : options.showCode ? code : currencySymbolFor(code, locale);
+  const scale = VI_SCALES.find((s) => Math.abs(amount) >= s.size);
+  const scaled = scale ? amount / scale.size : amount;
+  const digits = scale ? scaledFractionDigits(scaled) : 0;
+  let number: string;
+  try {
+    const key = `formatSpelledCompactMoney|${locale}|${digits}|${options.signDisplay ?? ''}`;
+    number = reuseNumberFormat(key, () => new Intl.NumberFormat(locale, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: digits,
+      ...(options.signDisplay ? { signDisplay: options.signDisplay } : {}),
+    })).format(scaled);
+  } catch {
+    // A malformed locale tag; keep the digits readable rather than throw.
+    number = `${fallbackSign(scaled, options.signDisplay)}${scaled.toFixed(digits)}`;
+  }
+  return [number, scale?.word, unit].filter(Boolean).join(' ');
+}
+
+/**
+ * Compact money for a tile, a card or a bar label in the reader's language:
+ * scale words spelled out in Vietnamese ({@link formatSpelledCompactMoney}),
+ * the engine's compact notation everywhere else ("$2.6B",
+ * {@link formatCompactCurrency}).
+ */
+export function formatCompactMoney(
+  value: string | number | null | undefined,
+  currency: string | null | undefined,
+  locale?: string,
+): string {
+  const loc = locale || getNumberLocale();
+  return spellsOutCompactScale(loc)
+    ? formatSpelledCompactMoney(value, currency, loc)
+    : formatCompactCurrency(value, currency, loc);
+}
+
 export function formatCurrency(
   v: string | number | null | undefined,
   currency?: string | null,

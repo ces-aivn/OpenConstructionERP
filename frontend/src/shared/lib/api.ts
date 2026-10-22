@@ -15,7 +15,14 @@ import { useDemoReadOnlyStore } from '@/stores/useDemoReadOnlyStore';
 import { useToastStore } from '@/stores/useToastStore';
 import { cacheResponse, getCachedResponse, queueMutation } from './offlineStore';
 import { logApiError, logError } from './errorLogger';
+import { isErrorReported } from './reportedErrors';
 import { getDigitSystem } from './intlLocale';
+import {
+  localizedApiErrorMessage,
+  parseApiErrorBody,
+  readableServerMessage,
+  readerReadsEnglish,
+} from './apiErrors';
 
 const BASE_URL = '/api';
 
@@ -122,6 +129,55 @@ export interface ApiRequestInit extends RequestInit {
    * "saved offline", and hand the screen `undefined` for its data.
    */
   readOnly?: boolean;
+  /**
+   * The caller reports a failed write itself in a way that is not a toast
+   * (an inline form message, a dialog), the write is a best-effort background
+   * save whose failure changes nothing the user sees, or the "write" is a
+   * lookup sent as a POST. Without it, a failed write that no screen reports
+   * within a moment gets one translated error toast, so a refusal such as a
+   * 409 is never silent. A mutation marked
+   * `meta: { suppressGlobalErrorToast: true }` gets the same opt-out through
+   * the mutation cache.
+   */
+  suppressErrorToast?: boolean;
+}
+
+/** How long a failed write waits for its screen to report it first. Longer
+ *  than the React Query mutation handler's own wait, so the two never both
+ *  speak about one failure. */
+export const UNHANDLED_ERROR_TOAST_DELAY_MS = 150;
+
+/**
+ * Raise one translated toast for a failed write nobody else reported.
+ *
+ * Skipped for statuses that already have a surface (401 signs out, 429 is
+ * toasted below, the demonstration refusals open their own dialog) and when
+ * any error toast appeared between the failure and the deadline, which is the
+ * screen or the mutation cache having said it in its own words. Also skipped
+ * when the error was marked as reported (see `reportedErrors.ts`) before the
+ * deadline: a mutation that shows its failure inline.
+ */
+export function reportUnhandledWriteError(error: ApiError): void {
+  if (error.status === 401 || error.status === 429) return;
+  if (isDemoReadOnlyRefusal(error.status, error.body) || isDemoUploadRefusal(error.status, error.body)) return;
+  const before = useToastStore.getState().history?.[0]?.id;
+  setTimeout(() => {
+    if (isErrorReported(error)) return;
+    const { history, addToast } = useToastStore.getState();
+    for (const entry of history ?? []) {
+      if (entry.id === before) break;
+      if (entry.type === 'error') return;
+    }
+    const fallbackTitle = 'The change was not saved';
+    let title: string = fallbackTitle;
+    try {
+      const translated = i18next.t('errors.request_failed_title', { defaultValue: fallbackTitle });
+      if (typeof translated === 'string' && translated.length > 0) title = translated;
+    } catch {
+      // i18next not ready yet: the English floor stands.
+    }
+    addToast({ type: 'error', title, message: error.message });
+  }, UNHANDLED_ERROR_TOAST_DELAY_MS);
 }
 
 /** Retrieve the stored JWT token from the auth store. */
@@ -239,6 +295,15 @@ export function extractErrorMessageFromBody(body: unknown): string | null {
   if (typeof body !== 'object') return null;
 
   const obj = body as Record<string, unknown>;
+
+  // A coded error (`code` / `message_key` at the top level or inside
+  // `detail`) is shown in the reader's language. A Pydantic validation list
+  // is rebuilt from its type and field for a reader who does not read English;
+  // an English reader keeps the server's own `field: message` wording.
+  const coded = Array.isArray(obj.detail) && !obj.code && !obj.message_key
+    ? (readerReadsEnglish() ? null : localizedApiErrorMessage(body))
+    : localizedApiErrorMessage(body);
+  if (coded) return coded;
 
   // FastAPI HTTPException — `detail` as a string
   if (typeof obj.detail === 'string' && obj.detail.length > 0) {
@@ -446,6 +511,13 @@ function statusFallbackMessage(status: number): string {
  * paths that need raw access (e.g. validation form binding).
  */
 export class ApiError extends Error {
+  /** Stable machine code of the error, when the server sent one. */
+  public readonly code?: string;
+  /** The request field the error is about, when the server named one. */
+  public readonly field?: string;
+  /** The locale key the server suggests for the message. */
+  public readonly messageKey?: string;
+
   constructor(
     public readonly status: number,
     public readonly statusText: string,
@@ -453,14 +525,20 @@ export class ApiError extends Error {
   ) {
     // The demonstration's refusal is the one body whose message we do not
     // pass on: see `demoRefusalMessage`. `body` is still kept intact below for
-    // anything that needs the raw answer.
+    // anything that needs the raw answer. Any other server sentence is shown
+    // only when the reader can read it: English text reaching a reader of
+    // another language is replaced by the translated message for the status.
     const fromBody = isDemoReadOnlyRefusal(status, body)
       ? demoRefusalMessage()
       : isDemoUploadRefusal(status, body)
         ? demoUploadRefusalMessage()
         : extractErrorMessageFromBody(body);
-    super(fromBody ?? statusFallbackMessage(status));
+    super(readableServerMessage(fromBody, statusFallbackMessage(status)));
     this.name = 'ApiError';
+    const info = parseApiErrorBody(body);
+    this.code = info.code;
+    this.field = info.field;
+    this.messageKey = info.messageKey;
   }
 }
 
@@ -759,7 +837,9 @@ async function request<TResponse>(
     // before, so every caller's own error handling - including whatever it
     // does to undo an optimistic update - runs unchanged.
     reportIfDemoReadOnly(response.status, errorBody);
-    throw new ApiError(response.status, response.statusText, errorBody);
+    const apiError = new ApiError(response.status, response.statusText, errorBody);
+    if (!isRead && !init?.suppressErrorToast) reportUnhandledWriteError(apiError);
+    throw apiError;
   }
 
   // 204 No Content – nothing to parse.

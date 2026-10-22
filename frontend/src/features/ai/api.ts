@@ -239,8 +239,20 @@ function getAuthHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+/** Whether AI features can answer for the signed-in user. */
+export interface AIAvailability {
+  configured: boolean;
+  provider: string | null;
+  /** `no_key` or `key_undecryptable` when not configured. */
+  reason: string | null;
+  /** The user may save provider keys in Settings > AI. */
+  can_configure: boolean;
+}
+
 export const aiApi = {
   getSettings: () => apiGet<AISettings>('/v1/ai/settings/'),
+
+  getAvailability: () => apiGet<AIAvailability>('/v1/ai/availability/'),
 
   updateSettings: (data: AISettingsUpdate) =>
     apiPatch<AISettings, AISettingsUpdate>('/v1/ai/settings/', data),

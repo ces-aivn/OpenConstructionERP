@@ -378,6 +378,8 @@ export function DatabaseSetupPage() {
             ? Promise.resolve(null)
             : apiPost<{ imported: number; skipped: number; region: string }>(
                 `/v1/catalog/import/${db.id}`,
+                undefined,
+                { suppressErrorToast: true },
               ).catch((e: unknown) => {
                 // eslint-disable-next-line no-console
                 console.warn(`[setup] catalog import for ${db.id} failed:`, e);
@@ -574,6 +576,8 @@ export function DatabaseSetupPage() {
           apiPost<Record<string, unknown>>(`/v1/costs/load-cwicr/${v.region}`),
           apiPost<{ imported: number; skipped: number; region: string }>(
             `/v1/catalog/import/${v.region}`,
+            undefined,
+            { suppressErrorToast: true },
           ).catch(() => null),
         ]);
 

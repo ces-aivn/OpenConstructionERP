@@ -50,6 +50,13 @@ export interface ProcessInfo {
   log_tail: string[];
   /** Waiting its turn in the serial start queue: shown as loading. */
   queued?: boolean;
+  /**
+   * False when a package the service needs is not installed on this server.
+   * Such a service is off and locked; it is reported as not installed rather
+   * than broken. Absent on older servers, which means available.
+   */
+  available?: boolean;
+  missing_libraries?: string[];
 }
 
 export interface ProcessesSnapshot {
@@ -177,9 +184,46 @@ export function isUnsupported(err: unknown): boolean {
   return err instanceof ApiError && (err.status === 404 || err.status === 403);
 }
 
+/** Whether the service can run on this server at all. */
+export function isAvailable(p: ProcessInfo): boolean {
+  return p.available !== false;
+}
+
 /** Whether the switch and restart can be used at all, whoever is looking. */
 export function isControllable(p: ProcessInfo): boolean {
-  return p.stoppable && !p.required && !p.env_locked;
+  return isAvailable(p) && p.stoppable && !p.required && !p.env_locked;
+}
+
+/** Statuses that hold the service's memory right now. */
+const RESIDENT: ReadonlySet<ProcessStatus> = new Set(['starting', 'running', 'degraded']);
+
+export interface ServicesSummary {
+  /** Services this server can run (not-installed ones left out). */
+  total: number;
+  /** Doing their job or ready to: running, or on and loading on first use. */
+  on: number;
+  errors: number;
+  notInstalled: number;
+  /** Memory the services hold right now. */
+  inUseMb: number;
+  /** Memory with every switched-on service loaded. */
+  upToMb: number;
+}
+
+/**
+ * The one set of figures the header button, the panel summary and the
+ * profile cards read, so the counts and the memory they show always agree.
+ */
+export function summarizeServices(processes: ProcessInfo[]): ServicesSummary {
+  const available = processes.filter(isAvailable);
+  return {
+    total: available.length,
+    on: available.filter(isOn).length,
+    errors: available.filter((p) => p.status === 'error').length,
+    notInstalled: processes.length - available.length,
+    inUseMb: available.filter((p) => RESIDENT.has(p.status)).reduce((s, p) => s + ramOf(p), 0),
+    upToMb: available.filter((p) => p.enabled).reduce((s, p) => s + p.ram_mb_estimate, 0),
+  };
 }
 
 /** On means doing its job or ready to: running, or enabled and loading on first use. */

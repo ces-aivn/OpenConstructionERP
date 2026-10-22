@@ -25,7 +25,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useToastStore } from '@/stores/useToastStore';
-import { apiGet } from '@/shared/lib/api';
+import { ApiError, apiGet } from '@/shared/lib/api';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { ConfirmDialog } from '@/shared/ui/ConfirmDialog';
 import {
@@ -185,7 +185,8 @@ export function FolderPermissionsModal({
     } catch (e) {
       const msg = (e as Error).message;
       // Common errors: 409 duplicate, 400 bad role, 403 not owner.
-      const isDuplicate = /409|already/i.test(msg);
+      // Read from the status: the message is translated for the reader.
+      const isDuplicate = (e instanceof ApiError && e.status === 409) || /already/i.test(msg);
       const friendly = isDuplicate
         ? t('files.permissions.error_duplicate', {
             defaultValue: 'This member already has access at this level.',

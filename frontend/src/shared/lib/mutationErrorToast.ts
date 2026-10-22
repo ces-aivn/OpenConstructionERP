@@ -16,7 +16,22 @@
  * in the meantime. A screen that only rolls back and says nothing still gets
  * the generic message.
  */
+import i18next from 'i18next';
+
 import { useToastStore } from '@/stores/useToastStore';
+
+import { markErrorReported } from './reportedErrors';
+
+/** Translate with an English floor: before i18next is ready `t` can answer
+ *  with nothing, and a toast with no title reads as a glitch. */
+function tr(key: string, fallback: string): string {
+  try {
+    const text = i18next.t(key, { defaultValue: fallback });
+    return typeof text === 'string' && text.length > 0 ? text : fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 /**
  * How long the generic toast waits for the screen to speak first. Long enough
@@ -37,10 +52,19 @@ export interface FailedMutation {
  * Wired into the `MutationCache` in `main.tsx`.
  */
 export function notifyMutationError(error: unknown, mutation: FailedMutation | undefined): void {
-  const message = error instanceof Error ? error.message : 'Operation failed';
+  const message =
+    error instanceof Error
+      ? error.message
+      : tr('errors.unknown', 'Something went wrong. Please try again.');
   const status = (error as { status?: number } | null)?.status;
   const isAuthFailure = status === 401 || status === 403 || message.includes('401');
-  if (isAuthFailure || mutation?.meta?.suppressGlobalErrorToast === true) return;
+  if (mutation?.meta?.suppressGlobalErrorToast === true) {
+    // The screen shows this failure inline: keep the API client's deferred
+    // "not saved" toast quiet as well.
+    markErrorReported(error);
+    return;
+  }
+  if (isAuthFailure) return;
 
   // History gets an entry for every toast, merged duplicates included, so the
   // newest entry marks where this failure started.
@@ -54,6 +78,10 @@ export function notifyMutationError(error: unknown, mutation: FailedMutation | u
       if (entry.type === 'error') return;
     }
     if (import.meta.env.DEV) console.warn('Mutation error:', message);
-    addToast({ type: 'error', title: 'Operation failed', message });
+    addToast({
+      type: 'error',
+      title: tr('errors.operation_failed_title', 'Operation failed'),
+      message,
+    });
   }, MUTATION_ERROR_TOAST_DELAY_MS);
 }

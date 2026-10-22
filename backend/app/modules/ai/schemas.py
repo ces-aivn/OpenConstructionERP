@@ -144,6 +144,22 @@ class AISettingsUpdate(BaseModel):
         return v
 
 
+class AIAvailabilityResponse(BaseModel):
+    """Whether the AI features can answer for the current user.
+
+    Read on app start so the assistant button and AI suggestions are hidden
+    until a provider is configured, instead of failing when first used.
+    """
+
+    configured: bool
+    provider: str | None = None
+    #: Machine code when not configured: ``no_key`` or ``key_undecryptable``.
+    reason: str | None = None
+    #: The caller may save provider keys (``ai.settings.update``), so the UI
+    #: can point them to Settings > AI rather than hide the feature silently.
+    can_configure: bool = False
+
+
 class AISettingsResponse(BaseModel):
     """AI settings returned from the API.
 

@@ -169,7 +169,9 @@ function classifyDescribeError(err: unknown): ClassifiedDescribeError {
   const message = getErrorMessage(err);
   if (err instanceof ApiError) {
     const status = err.status;
-    const lower = message.toLowerCase();
+    // Classify on the server's own words: the shown message is translated
+    // for a reader of another language and no longer carries them.
+    const lower = (extractErrorMessageFromBody(err.body) ?? message).toLowerCase();
     const looksGone = lower.includes('expired') || lower.includes('not found or expired');
     const looksNoData =
       lower.includes('no converter') ||

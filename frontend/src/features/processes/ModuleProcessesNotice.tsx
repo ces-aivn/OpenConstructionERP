@@ -13,7 +13,16 @@ import { AlertTriangle, Loader2, Power } from 'lucide-react';
 import { getErrorMessage } from '@/shared/lib/api';
 import { fmtList } from '@/shared/lib/formatters';
 import { useToastStore } from '@/stores/useToastStore';
-import { isControllable, isLoading, isUnsupported, ramOf, useEnsureModule, useProcessAction, useProcesses } from './api';
+import {
+  isAvailable,
+  isControllable,
+  isLoading,
+  isUnsupported,
+  ramOf,
+  useEnsureModule,
+  useProcessAction,
+  useProcesses,
+} from './api';
 import { formatMb, processName, processOffImpact, useIsProcessAdmin } from './labels';
 import { useProcessesUi } from './useProcessesUi';
 
@@ -35,8 +44,14 @@ export function ModuleProcessesNotice({
   const openPanel = useProcessesUi((s) => s.openPanel);
   const addToast = useToastStore((s) => s.addToast);
 
+  // A service this server cannot run (its package is not installed) is not
+  // offered here: turning it on could only fail.
   const off = (data?.processes ?? []).filter(
-    (p) => p.modules.includes(moduleId) && !exclude.includes(p.id) && (!p.enabled || p.status === 'error' || isLoading(p)),
+    (p) =>
+      p.modules.includes(moduleId) &&
+      !exclude.includes(p.id) &&
+      isAvailable(p) &&
+      (!p.enabled || p.status === 'error' || isLoading(p)),
   );
   if (off.length === 0 || isUnsupported(error)) return null;
 

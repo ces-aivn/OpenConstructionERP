@@ -176,39 +176,42 @@ async def prewarm_cost_caches() -> None:
 
     # These caches are read by every user, so they hold shared rows only; a
     # caller's own catalogues are merged in live by the routes that serve them.
-    async with async_session_factory() as session, cost_scope.shared_scope():
-        active = (CostItem.is_active.is_(True), CostItem.region.isnot(None), CostItem.region != "")
-        r = await session.execute(select(distinct(CostItem.region)).where(*active))
-        regions = sorted(row[0] for row in r.all())
-        _region_cache["regions"] = regions
+    # ``shared_scope`` is a plain (not async) context manager, so it wraps the
+    # session rather than sharing its ``async with``.
+    with cost_scope.shared_scope():
+        async with async_session_factory() as session:
+            active = (CostItem.is_active.is_(True), CostItem.region.isnot(None), CostItem.region != "")
+            r = await session.execute(select(distinct(CostItem.region)).where(*active))
+            regions = sorted(row[0] for row in r.all())
+            _region_cache["regions"] = regions
 
-        s = await session.execute(
-            select(CostItem.region, func.count(CostItem.id).label("cnt"))
-            .where(*active)
-            .group_by(CostItem.region)
-            .order_by(func.count(CostItem.id).desc())
-        )
-        _region_cache["stats"] = [{"region": row[0], "count": row[1]} for row in s.all()]
+            s = await session.execute(
+                select(CostItem.region, func.count(CostItem.id).label("cnt"))
+                .where(*active)
+                .group_by(CostItem.region)
+                .order_by(func.count(CostItem.id).desc())
+            )
+            _region_cache["stats"] = [{"region": row[0], "count": row[1]} for row in s.all()]
 
-        coll_expr = CostItem.classification["collection"].as_string()
-        c = await session.execute(
-            select(distinct(coll_expr))
-            .where(CostItem.is_active.is_(True))
-            .where(coll_expr.isnot(None))
-            .where(coll_expr != "")
-            .order_by(coll_expr)
-        )
-        _region_cache["categories_all"] = [row[0] for row in c.all() if row[0]]
-        _region_cache["ts"] = time.monotonic()
+            coll_expr = CostItem.classification["collection"].as_string()
+            c = await session.execute(
+                select(distinct(coll_expr))
+                .where(CostItem.is_active.is_(True))
+                .where(coll_expr.isnot(None))
+                .where(coll_expr != "")
+                .order_by(coll_expr)
+            )
+            _region_cache["categories_all"] = [row[0] for row in c.all() if row[0]]
+            _region_cache["ts"] = time.monotonic()
 
-        svc = CostItemService(session)
-        for reg in regions:
-            try:
-                raw = await svc.category_tree(region=reg, depth=4)
-                nodes = [CategoryTreeNode.model_validate(n) for n in raw]
-                _category_tree_cache[f"tree::{reg}::d=4::p="] = {"nodes": nodes, "ts": time.monotonic()}
-            except Exception:
-                logger.debug("Pre-warm tree failed for region=%s", reg, exc_info=True)
+            svc = CostItemService(session)
+            for reg in regions:
+                try:
+                    raw = await svc.category_tree(region=reg, depth=4)
+                    nodes = [CategoryTreeNode.model_validate(n) for n in raw]
+                    _category_tree_cache[f"tree::{reg}::d=4::p="] = {"nodes": nodes, "ts": time.monotonic()}
+                except Exception:
+                    logger.debug("Pre-warm tree failed for region=%s", reg, exc_info=True)
     logger.info("Cost-DB caches pre-warmed for %d regions", len(regions))
 
 

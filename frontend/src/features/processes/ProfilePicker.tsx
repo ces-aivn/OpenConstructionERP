@@ -12,7 +12,7 @@ import clsx from 'clsx';
 import { AlertTriangle, Check, Feather, Lock, Scale, Sparkles, type LucideIcon } from 'lucide-react';
 
 import { formatMb } from './labels';
-import type { ProcessInfo, ProcessPreset } from './api';
+import { isAvailable, type ProcessInfo, type ProcessPreset } from './api';
 
 /** The memory floor the core is sized for (docs/INSTALL_LINUX.md). */
 export const SERVER_BUDGET_MB = 3072;
@@ -22,7 +22,8 @@ export function presetSet(processes: ProcessInfo[], preset: ProcessPreset): Set<
   const on = new Set<string>();
   for (const p of processes) {
     let want: boolean;
-    if (p.env_locked) want = p.enabled;
+    if (!isAvailable(p)) want = false;
+    else if (p.env_locked) want = p.enabled;
     else if (preset === 'all') want = true;
     else if (preset === 'recommended') want = p.default_enabled || p.required;
     else want = p.required;
@@ -85,7 +86,7 @@ export function ProfilePicker({ processes, isAdmin, pending, onApply }: Props) {
   const { t } = useTranslation();
   const [confirming, setConfirming] = useState<ProcessPreset | null>(null);
   const active = activePreset(processes);
-  const locked = processes.filter((p) => p.env_locked).length;
+  const locked = processes.filter((p) => p.env_locked && isAvailable(p)).length;
 
   const choose = (preset: ProcessPreset) => {
     if (preset === active) return;
@@ -138,7 +139,7 @@ export function ProfilePicker({ processes, isAdmin, pending, onApply }: Props) {
               </p>
               <p className="mt-1.5 tabular-nums text-content-tertiary">
                 {t('processes.profile_summary', {
-                  defaultValue: 'About {{ram}} of memory. Services on: {{services}}',
+                  defaultValue: 'Up to {{ram}} of memory with every service loaded. Services on: {{services}}',
                   ram: formatMb(t, ram),
                   services: count,
                 })}

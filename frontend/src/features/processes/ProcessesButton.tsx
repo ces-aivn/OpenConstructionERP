@@ -11,7 +11,7 @@ import { Suspense, lazy, useEffect, useRef } from 'react';
 import { Cpu, Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 import { fmtList } from '@/shared/lib/formatters';
-import { isLoading, isOn, isUnsupported, overallHealth, useProcesses } from './api';
+import { isLoading, isUnsupported, overallHealth, summarizeServices, useProcesses } from './api';
 import { processName, useIsProcessAdmin } from './labels';
 import { useProcessesUi } from './useProcessesUi';
 import { ProcessesStartWatch } from './ProcessesStartWatch';
@@ -46,8 +46,7 @@ export function ProcessesButton() {
   }, [isAdmin, data, openWizard]);
 
   const processes = data?.processes ?? [];
-  const running = processes.filter(isOn).length;
-  const errors = processes.filter((p) => p.status === 'error').length;
+  const { on: running, errors } = summarizeServices(processes);
   const loading = processes.filter(isLoading);
   // A failed refetch keeps the last good answer; only no answer at all reads as an error.
   const unreachable = isError && !data;

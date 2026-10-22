@@ -9,13 +9,30 @@ const SEQUENCE_TIMEOUT = 500;
 /** Tags where we should never intercept keyboard input. */
 const INTERACTIVE_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
-/** Check whether the active element is an interactive form control. */
-function isTyping(): boolean {
-  const el = document.activeElement;
-  if (!el) return false;
-  if (INTERACTIVE_TAGS.has(el.tagName)) return true;
-  if ((el as HTMLElement).isContentEditable) return true;
-  return false;
+/**
+ * Data grids where a plain key is data entry. A focused cell starts its editor
+ * on a printable key, and a cell editor can take a moment to take the focus
+ * (its popup frame or the cell itself holds it meanwhile), so neither the cell
+ * nor anything around it is a place for single-key shortcuts.
+ */
+const DATA_ENTRY_SURFACES = '.ag-root-wrapper, .ag-popup-editor, .ag-popup, [role="grid"], [role="treegrid"]';
+
+/**
+ * True when a keystroke aimed at ``el`` is someone typing: a form field, an
+ * editable element, or anything inside a data grid or its cell editors. Global
+ * single-key shortcuts must leave such keys alone.
+ */
+export function isTypingTarget(el: EventTarget | Element | null | undefined): boolean {
+  if (!el || typeof (el as Element).tagName !== 'string') return false;
+  const element = el as HTMLElement;
+  if (INTERACTIVE_TAGS.has(element.tagName.toUpperCase())) return true;
+  if (element.isContentEditable === true) return true;
+  return typeof element.closest === 'function' && element.closest(DATA_ENTRY_SURFACES) !== null;
+}
+
+/** Check whether the focus is somewhere a key is text, not a shortcut. */
+function isTyping(event?: KeyboardEvent): boolean {
+  return isTypingTarget(document.activeElement) || isTypingTarget(event?.target ?? null);
 }
 
 export interface UseKeyboardShortcutsOptions {
@@ -104,8 +121,8 @@ export function useKeyboardShortcuts({
     };
 
     const handler = (e: KeyboardEvent) => {
-      // Never intercept when the user is typing in a form field.
-      if (isTyping()) {
+      // Never intercept when the user is typing in a form field or a grid.
+      if (isTyping(e)) {
         clearPending();
         return;
       }

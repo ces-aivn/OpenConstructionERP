@@ -36,6 +36,7 @@ from app.core.i18n import get_locale
 from app.core.validation.messages import translate
 from app.dependencies import (
     CurrentUserId,
+    CurrentUserPayload,
     RequirePermission,
     SessionDep,
     check_ai_rate_limit,
@@ -44,6 +45,7 @@ from app.dependencies import (
 from app.modules.ai.ai_client import (
     DEFAULT_MODELS,
     SELF_HOSTED_PROVIDERS,
+    ai_availability,
     call_ai,
     default_model_for,
     resolve_provider_key_model,
@@ -51,6 +53,7 @@ from app.modules.ai.ai_client import (
     self_hosted_endpoints,
 )
 from app.modules.ai.schemas import (
+    AIAvailabilityResponse,
     AISettingsResponse,
     AISettingsUpdate,
     CreateBOQFromEstimateRequest,
@@ -180,6 +183,34 @@ _AI_PROVIDERS: list[dict[str, Any]] = [
 async def list_ai_providers() -> list[dict[str, Any]]:
     """Return the list of supported AI providers."""
     return _AI_PROVIDERS
+
+
+# ── Availability ─────────────────────────────────────────────────────────────
+
+
+@router.get("/availability/", response_model=AIAvailabilityResponse)
+async def get_ai_availability(
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    service: AIService = Depends(_get_service),
+) -> AIAvailabilityResponse:
+    """Whether AI features can answer for the caller, and who can fix it.
+
+    Open to every signed-in user: it reveals only a yes/no and the provider
+    name, never a key. Reads the saved settings without creating a row.
+    """
+    from app.core.permissions import permission_registry
+
+    settings = await service.settings_repo.get_by_user_id(uuid.UUID(user_id))
+    configured, provider, reason = ai_availability(settings)
+    role = str(payload.get("role") or "")
+    can_configure = bool(role) and permission_registry.role_has_permission(role, "ai.settings.update")
+    return AIAvailabilityResponse(
+        configured=configured,
+        provider=provider,
+        reason=reason,
+        can_configure=can_configure,
+    )
 
 
 # ── AI Settings ──────────────────────────────────────────────────────────────

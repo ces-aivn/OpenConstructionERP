@@ -262,7 +262,9 @@ def _contacts(
             primary_phone="+44 20 7946 0000",
             country_code="GB",
             vat_number="GB123456789",
-            prequalification_status="approved",
+            # Not "approved": approval needs insurance, which a spreadsheet row
+            # cannot carry, so the importer refuses an approved row by design.
+            prequalification_status="pending",
             payment_terms_days=30,
         ),
         SimpleNamespace(

@@ -99,7 +99,7 @@ export const useViewModeStore = create<ViewModeState>((set, get) => ({
     // Best-effort: an offline session keeps the local choice. Before sign-in
     // there is nobody to store it for, and the 401 would only land in the
     // bug-report buffer.
-    if (currentUser) apiPut(ENDPOINT, { mode }).catch(() => undefined);
+    if (currentUser) apiPut(ENDPOINT, { mode }, { suppressErrorToast: true }).catch(() => undefined);
   },
 
   toggle: () => {

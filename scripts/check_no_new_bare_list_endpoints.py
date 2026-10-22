@@ -137,6 +137,15 @@ CANNOT_TRUNCATE: frozenset[str] = frozenset(
         # would hide a record type from the route form, so an admin could not
         # put that record under approval at all: a correctness bug, not a page.
         "enterprise_workflows/router.py::list_entity_types",
+        # A fixed catalogue of inspection checklist templates compiled into
+        # inspections/checklist_templates.py, one entry per kind of work a
+        # developer writes a template for, never added at runtime or per
+        # tenant. The route returns every template offered for the requested
+        # inspection type, its default first, with no query and no LIMIT. An
+        # inspector picking where a checklist starts has to see every template
+        # on offer; a short answer would hide one from the picker, a
+        # correctness bug rather than a page.
+        "inspections/router.py::list_checklist_templates",
     }
 )
 

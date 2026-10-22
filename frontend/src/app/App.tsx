@@ -40,7 +40,7 @@ import { hydrateInfoBlocksFromServer } from '@/stores/useInfoBlockPrefsStore';
 import { useViewModeDefault } from './layout/useViewModeDefault';
 import { ddcVerifyIntegrity, ddcInjectMeta, DDC_ORIGIN } from '@/shared/lib/ddc-integrity';
 import { NavigationProgress } from '@/shared/lib/navigationProgress';
-import { useKeyboardShortcuts } from '@/shared/hooks/useKeyboardShortcuts';
+import { isTypingTarget, useKeyboardShortcuts } from '@/shared/hooks/useKeyboardShortcuts';
 import { useTranslation } from 'react-i18next';
 import { ProjectRouteGate } from './ProjectRouteGate';
 import { getLanguageByCode } from './i18n';
@@ -991,7 +991,8 @@ function GlobalShortcuts() {
           return next;
         });
       }
-      if (e.key === '/' && !mod) {
+      // A plain '/' in a data grid cell (or its editor) is typed text.
+      if (e.key === '/' && !mod && !isTypingTarget(e.target) && !isTypingTarget(document.activeElement)) {
         e.preventDefault();
         // Opening the palette closes the global search modal.
         closeGlobalSearch();

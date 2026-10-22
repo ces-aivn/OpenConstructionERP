@@ -668,7 +668,7 @@ export function markOnboardingCompleted(): void {
   // "finish" save. Fire-and-forget: the local flag already stops a re-prompt
   // on this browser, and the dashboard first-run redirect reads the server
   // flag for fresh browsers and brand-new accounts.
-  void apiPost('/v1/users/me/onboarding/complete/', undefined).catch(() => {
+  void apiPost('/v1/users/me/onboarding/complete/', undefined, { suppressErrorToast: true }).catch(() => {
     /* non-critical */
   });
 }

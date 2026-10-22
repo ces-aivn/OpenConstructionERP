@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { aiApi } from './api';
 import { matchElementsApi } from '../match-elements/api';
 import { intakeApi } from './intake/api';
-import { apiGet, apiPost } from '@/shared/lib/api';
+import { apiGet, apiPost, UNHANDLED_ERROR_TOAST_DELAY_MS } from '@/shared/lib/api';
 import { queueMutation } from '@/shared/lib/offlineStore';
 
 vi.mock('@/shared/lib/errorLogger', () => ({ logError: vi.fn(), logApiError: vi.fn() }));
@@ -12,7 +12,7 @@ vi.mock('@/shared/lib/offlineStore', () => ({
   cacheResponse: vi.fn(), getCachedResponse: vi.fn().mockResolvedValue(null), queueMutation: vi.fn(),
 }));
 vi.mock('@/stores/useAuthStore', () => ({ useAuthStore: { getState: () => ({ accessToken: 'test-token' }) } }));
-vi.mock('@/stores/useToastStore', () => ({ useToastStore: { getState: () => ({ addToast: vi.fn() }) } }));
+vi.mock('@/stores/useToastStore', () => ({ useToastStore: { getState: () => ({ addToast: vi.fn(), history: [] }) } }));
 
 const file = new File(['sample'], 'sample.png', { type: 'image/png' });
 const quick = { description: 'A small building' };
@@ -138,6 +138,9 @@ it.each(slowCalls)('%s preserves a server refusal and never repeats the request'
   }));
   vi.stubGlobal('fetch', fetch);
   await expect(operation()).rejects.toThrow('Readable refusal');
+  // The only timer left may be the short wait before the unreported-write
+  // toast; the call's own deadline must already be gone.
+  await vi.advanceTimersByTimeAsync(UNHANDLED_ERROR_TOAST_DELAY_MS);
   expect(vi.getTimerCount()).toBe(0);
   expect(fetch).toHaveBeenCalledTimes(1);
 });

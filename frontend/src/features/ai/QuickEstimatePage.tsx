@@ -52,7 +52,7 @@ import { aiGuide } from './aiGuide';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { aiApi, type QuickEstimateRequest, type EstimateJobResponse, type EstimateItem, type CadExtractResponse, type EnrichResult, type EnrichedItem, type CostMatch, type CadColumnsResponse, type CadGroupResponse, type CadDynamicGroup, type CadGroupElementsResponse } from './api';
-import { apiGet, apiPost } from '@/shared/lib/api';
+import { ApiError, apiGet, apiPost } from '@/shared/lib/api';
 import { fetchProjectList } from '@/shared/lib/projectList';
 import { hasLlmKey } from '@/features/ai-estimator/useAiReadiness';
 import {
@@ -1567,6 +1567,15 @@ function CadConverterSection({
   );
 }
 
+/**
+ * The CAD upload session the request named is gone (404 or 410): the user
+ * has to upload the file again. Read from the status, since the message is
+ * translated for a reader of another language.
+ */
+function isCadSessionGone(err: unknown): boolean {
+  return err instanceof ApiError && (err.status === 404 || err.status === 410);
+}
+
 // ── Main page ────────────────────────────────────────────────────────────────
 
 export function QuickEstimatePage() {
@@ -2520,7 +2529,7 @@ export function QuickEstimatePage() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to create BOQ';
       // Handle session expiry
-      if (msg.includes('expired') || msg.includes('not found')) {
+      if (isCadSessionGone(err)) {
         addToast({
           type: 'error',
           title: t('ai.session_expired', { defaultValue: 'Session expired' }),
@@ -2559,7 +2568,7 @@ export function QuickEstimatePage() {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Export failed';
-      if (msg.includes('expired') || msg.includes('not found')) {
+      if (isCadSessionGone(err)) {
         addToast({
           type: 'error',
           title: t('ai.session_expired', { defaultValue: 'Session expired' }),

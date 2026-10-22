@@ -2305,7 +2305,7 @@ export function SettingsPage() {
                             localStorage.removeItem('oe_onboarding_completed_version');
                             localStorage.removeItem('oe_lang_explicit');
                           } catch { /* ignore storage errors */ }
-                          void apiDelete('/v1/users/me/onboarding/complete/').catch(() => {});
+                          void apiDelete('/v1/users/me/onboarding/complete/', undefined, { suppressErrorToast: true }).catch(() => {});
                           window.location.href = '/onboarding';
                         }}
                       >

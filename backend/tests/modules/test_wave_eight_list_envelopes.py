@@ -148,10 +148,15 @@ async def test_the_total_is_the_registers_size_not_the_pages(monkeypatch) -> Non
             # about. A route filling `total` from `len(items)` returns 2.
             return [_subcontractor_row(), _subcontractor_row()], 137
 
+    async def _insurance_states(rows: list[Any]) -> dict[uuid.UUID, str]:
+        # The register also says whether each row is insured; judged for the
+        # page it shows, never for the count.
+        return {row.id: "missing" for row in rows}
+
     monkeypatch.setattr(
         subcontractors_router,
         "SubcontractorService",
-        lambda _session: SimpleNamespace(subs=_StubRepo()),
+        lambda _session: SimpleNamespace(subs=_StubRepo(), insurance_states=_insurance_states),
     )
 
     result = await subcontractors_router.list_subcontractors(
@@ -171,6 +176,7 @@ async def test_the_total_is_the_registers_size_not_the_pages(monkeypatch) -> Non
     assert result.offset == 0
     assert result.limit == 50
     assert len(result.items) == 2
+    assert [item.insurance_state for item in result.items] == ["missing", "missing"]
 
     # The point of the wave.
     assert result.total == 137

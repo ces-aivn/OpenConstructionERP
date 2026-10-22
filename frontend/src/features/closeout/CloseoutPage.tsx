@@ -54,6 +54,13 @@ import {
 } from './api';
 import BindDocumentModal from './BindDocumentModal';
 import { fmtDate } from '@/shared/lib/formatters';
+import { ApiError } from '@/shared/lib/api';
+
+/** The project has no closeout package yet: read from the status, since the
+ *  message is translated for a reader of another language. */
+function isNoPackageYet(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404;
+}
 
 // English fallbacks for the computed `closeout.project_type.*` keys. The default used to be
 // the raw value, so until the key lands in a locale the screen shows the bare
@@ -120,16 +127,13 @@ export default function CloseoutPage() {
     enabled: !!activeProjectId,
     retry: (failureCount, error) => {
       // 404 = no package created yet; do not retry that.
-      const msg = (error as Error)?.message ?? '';
-      if (msg.includes('404') || msg.toLowerCase().includes('no closeout package')) return false;
+      if (isNoPackageYet(error)) return false;
       return failureCount < 2;
     },
   });
 
   const pkg = packageQuery.data;
-  const notFound =
-    packageQuery.isError &&
-    ((packageQuery.error as Error)?.message ?? '').toLowerCase().includes('closeout package');
+  const notFound = packageQuery.isError && isNoPackageYet(packageQuery.error);
 
   const refetchPackage = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ['closeout-package', activeProjectId] });

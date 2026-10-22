@@ -934,9 +934,17 @@ async def commercial_records(http_client, rw_project_world):
     assert invoice.status_code in (200, 201), f"invoice seed failed: {invoice.status_code} {invoice.text}"
     invoice_id = invoice.json()["id"]
 
+    # A purchase order must name its supplier, so O registers one first.
+    supplier = await http_client.post(
+        "/api/v1/contacts/",
+        json={"contact_type": "supplier", "company_name": f"A-owned supplier {uuid.uuid4().hex[:6]}"},
+        headers=owner,
+    )
+    assert supplier.status_code in (200, 201), f"supplier seed failed: {supplier.status_code} {supplier.text}"
+
     po = await http_client.post(
         "/api/v1/procurement/",
-        json={"project_id": project_id, "po_type": "A-OWNED-PO"},
+        json={"project_id": project_id, "po_type": "A-OWNED-PO", "vendor_contact_id": supplier.json()["id"]},
         headers=owner,
     )
     assert po.status_code in (200, 201), f"purchase-order seed failed: {po.status_code} {po.text}"

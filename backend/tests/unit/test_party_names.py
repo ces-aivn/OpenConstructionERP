@@ -34,9 +34,11 @@ import pytest
 
 from app.core.party_names import canonical_id, contact_display_name, resolve_party_names
 
-FIRM = uuid.uuid4()
-PERSON = uuid.uuid4()
-USER = uuid.uuid4()
+# Fixed ids: they appear in parametrize ids, and pytest-xdist workers must
+# collect identical test names.
+FIRM = uuid.UUID("0ddad9a6-c360-4706-9c4f-839acc344681")
+PERSON = uuid.UUID("5b1f3c2e-8d4a-4e6b-9f7c-1a2b3c4d5e6f")
+USER = uuid.UUID("9e8d7c6b-5a4f-4321-8fed-cba987654321")
 
 
 # ── Stubs ────────────────────────────────────────────────────────────────

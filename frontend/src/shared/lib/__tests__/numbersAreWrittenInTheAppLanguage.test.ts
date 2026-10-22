@@ -388,16 +388,6 @@ const FIXED_ALLOWED: ReadonlyArray<{ file: string; snippet: string; why: string 
     why: 'The value of an <input type="number"> and of the invoice line posted to the API; both parse a plain decimal.',
   },
   {
-    file: 'features/finance/markInvoicePaid.ts',
-    snippet: 'amount: cash.toFixed(2),',
-    why: 'Body of the record-payment POST, which the server parses as a decimal.',
-  },
-  {
-    file: 'features/finance/markInvoicePaid.ts',
-    snippet: 'withholding_amount: withheld.toFixed(2),',
-    why: 'The same record-payment request. Grouping it would reach the server as a different number.',
-  },
-  {
     file: 'features/procurement/ProcurementPage.tsx',
     snippet: 'amount_subtotal: String(poSubtotal.toFixed(2)),',
     why: 'Body of the purchase order POST, read by the server rather than by a person.',
@@ -431,16 +421,6 @@ const FIXED_ALLOWED: ReadonlyArray<{ file: string; snippet: string; why: string 
     file: 'features/projects/CreateProjectPage.tsx',
     snippet: 'setRegionalFactorStr(clampFactor(regionalFactorStr).toFixed(2))',
     why: 'Normalises the text in a numeric field on blur; the same string is parsed on submit.',
-  },
-  {
-    file: 'features/dashboard/components/DashboardBackdrop.tsx',
-    snippet: 'const a1 = (0.2 * effIntensity).toFixed(3);',
-    why: 'An alpha channel interpolated into rgba(), which the CSS parser reads.',
-  },
-  {
-    file: 'features/dashboard/components/DashboardBackdrop.tsx',
-    snippet: 'const a2 = (0.06 * effIntensity).toFixed(3);',
-    why: 'An alpha channel interpolated into rgba(), which the CSS parser reads.',
   },
   {
     file: 'shared/lib/formatters.ts',
@@ -681,8 +661,6 @@ describe('every number and date is written in the language the reader picked', (
     // with. A list long enough to skim is a list nobody reads.
     expect(FIXED_ALLOWED.map((a) => `${a.file} :: ${a.snippet}`)).toEqual([
       "features/finance/invoiceLines.ts :: return Number.isFinite(value) ? value.toFixed(decimals) : '';",
-      'features/finance/markInvoicePaid.ts :: amount: cash.toFixed(2),',
-      'features/finance/markInvoicePaid.ts :: withholding_amount: withheld.toFixed(2),',
       'features/procurement/ProcurementPage.tsx :: amount_subtotal: String(poSubtotal.toFixed(2)),',
       'features/procurement/ProcurementPage.tsx :: amount_total: String(poTotal.toFixed(2)),',
       'features/procurement/ProcurementPage.tsx :: updated.amount = (qty * rate).toFixed(2);',
@@ -690,8 +668,6 @@ describe('every number and date is written in the language the reader picked', (
       'features/bim/AddToBOQModal.tsx :: setQuantity(quantitySuggestion.value.toFixed(3));',
       'features/bim/AddToBOQModal.tsx :: setQuantity(d.quantity.toFixed(3));',
       'features/projects/CreateProjectPage.tsx :: setRegionalFactorStr(clampFactor(regionalFactorStr).toFixed(2))',
-      'features/dashboard/components/DashboardBackdrop.tsx :: const a1 = (0.2 * effIntensity).toFixed(3);',
-      'features/dashboard/components/DashboardBackdrop.tsx :: const a2 = (0.06 * effIntensity).toFixed(3);',
       'shared/lib/formatters.ts :: if (!Number.isFinite(value)) return value.toFixed(decimals);',
       'shared/lib/formatters.ts :: if (!Number.isFinite(value)) return value.toPrecision(digits);',
       "shared/lib/formatters.ts :: return Number.isFinite(value) ? value.toFixed(decimals) : '';",

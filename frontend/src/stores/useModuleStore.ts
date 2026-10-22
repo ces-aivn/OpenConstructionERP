@@ -267,7 +267,7 @@ export const useModuleStore = create<ModuleStore>((set, get) => ({
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       const prefs = get().enabledModules;
-      apiPatch('/v1/users/me/module-preferences/', { modules: prefs }).catch(() => {
+      apiPatch('/v1/users/me/module-preferences/', { modules: prefs }, { suppressErrorToast: true }).catch(() => {
         // Server may not support this endpoint yet — ignore
       });
     }, 1000);

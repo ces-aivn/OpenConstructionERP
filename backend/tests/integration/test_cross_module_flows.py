@@ -51,11 +51,10 @@ async def shared_client():
             yield ac
 
 
-@pytest_asyncio.fixture(scope="module")
-async def shared_auth(shared_client: AsyncClient) -> dict[str, str]:
+async def _register_admin(shared_client: AsyncClient, prefix: str) -> dict[str, str]:
     """Register a unique admin user and return Authorization headers."""
     unique = uuid.uuid4().hex[:8]
-    email = f"crossmod-{unique}@test.io"
+    email = f"{prefix}-{unique}@test.io"
     password = f"CrossMod{unique}9"
 
     reg = await shared_client.post(
@@ -92,6 +91,18 @@ async def shared_auth(shared_client: AsyncClient) -> dict[str, str]:
 
 
 @pytest_asyncio.fixture(scope="module")
+async def shared_auth(shared_client: AsyncClient) -> dict[str, str]:
+    """The admin who drives every flow."""
+    return await _register_admin(shared_client, "crossmod")
+
+
+@pytest_asyncio.fixture(scope="module")
+async def shared_approver_auth(shared_client: AsyncClient) -> dict[str, str]:
+    """A second admin: whoever raises a purchase order cannot approve it (four eyes)."""
+    return await _register_admin(shared_client, "crossmod-approver")
+
+
+@pytest_asyncio.fixture(scope="module")
 async def shared_user_id(shared_auth: dict[str, str]) -> str:
     """Extract user ID from the module-scoped JWT token."""
     from jose import jwt
@@ -120,6 +131,11 @@ def auth(shared_auth: dict[str, str]) -> dict[str, str]:
 @pytest.fixture
 def user_id(shared_user_id: str) -> str:
     return shared_user_id
+
+
+@pytest.fixture
+def approver_auth(shared_approver_auth: dict[str, str]) -> dict[str, str]:
+    return shared_approver_auth
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -413,7 +429,9 @@ class TestInspectionFailCreatesDefect:
 class TestPOIssueUpdatesBudget:
     """Issue a PO and verify the finance dashboard reflects it."""
 
-    async def test_po_issue_updates_budget(self, client: AsyncClient, auth: dict, user_id: str) -> None:
+    async def test_po_issue_updates_budget(
+        self, client: AsyncClient, auth: dict, approver_auth: dict, user_id: str
+    ) -> None:
         # 1. Create project
         project_id = await _create_project(client, auth)
 
@@ -477,9 +495,10 @@ class TestPOIssueUpdatesBudget:
 
         # 3.5 Approve the PO (TOP-30 #10: a PO must be approved before it can
         # be issued; approval is what commits the amount against the budget).
+        # A second person approves: the creator may not approve their own order.
         resp = await client.post(
             f"/api/v1/procurement/{po_id}/approve/",
-            headers=auth,
+            headers=approver_auth,
         )
         # Same lazy-load caveat as issue below.
         assert resp.status_code in (200, 500), f"PO approve unexpected status: {resp.text}"
@@ -619,6 +638,8 @@ class TestNCRCreatesVariation:
                 "corrective_action": "Core testing to verify strength. If insufficient, demolish and re-pour.",
                 "cost_impact": "45000",
                 "schedule_impact_days": 14,
+                # An NCR must name who is answerable for correcting it.
+                "responsible_party_name": "Betonwerk Süd GmbH",
             },
             headers=auth,
         )

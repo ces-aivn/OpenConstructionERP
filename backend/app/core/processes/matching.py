@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
+import importlib.util
 import logging
 
 from app.core.processes.base import OneShotProcess, ResidentProcess
@@ -59,6 +61,30 @@ def disabled_matching_models() -> list[str]:
     except Exception:  # a status probe must never break a match
         logger.debug("Could not read matching model state", exc_info=True)
         return []
+
+
+#: Optional packages each model loads; the ``[semantic]`` extra ships them.
+CWICR_LIBRARIES = ("qdrant_client", "FlagEmbedding")
+RERANKER_LIBRARIES = ("FlagEmbedding",)
+
+
+@functools.cache
+def _installed(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def missing_libraries(modules: tuple[str, ...]) -> list[str]:
+    """The packages in ``modules`` this installation cannot import.
+
+    An installation without the ``[semantic]`` extra cannot load either model.
+    Reporting that as "not installed" keeps the processes center from showing
+    two services in error, and the cost pages from offering to turn on a
+    model that can only fail to load.
+    """
+    return [m for m in modules if not _installed(m)]
 
 
 async def _load_cwicr() -> None:
@@ -123,6 +149,15 @@ def register_matching_processes(registry: ProcessRegistry) -> None:
         "restart_policy": "never",
         "state_get": state_get,
     }
+
+    # ``missing_libraries`` is looked up at call time, so a test can stand in
+    # for the installed set.
+    def cwicr_missing() -> list[str]:
+        return missing_libraries(CWICR_LIBRARIES)
+
+    def reranker_missing() -> list[str]:
+        return missing_libraries(RERANKER_LIBRARIES)
+
     registry.register(
         ProcessSpec(
             id="cwicr_ranker",
@@ -130,6 +165,7 @@ def register_matching_processes(registry: ProcessRegistry) -> None:
             estimated_ram_mb=800,
             factory=lambda: ResidentProcess(load=_load_cwicr, unload=_unload_cwicr),
             logger_names=["app.modules.costs.qdrant_adapter", "app.core.match_service.ranker_qdrant"],
+            missing_libraries=cwicr_missing,
             **common,  # type: ignore[arg-type]
         )
     )
@@ -139,6 +175,7 @@ def register_matching_processes(registry: ProcessRegistry) -> None:
             estimated_ram_mb=600,
             factory=lambda: ResidentProcess(load=_load_reranker, unload=_unload_reranker),
             logger_names=["app.core.match_service.reranker_bge"],
+            missing_libraries=reranker_missing,
             **common,  # type: ignore[arg-type]
         )
     )
@@ -150,6 +187,7 @@ def register_matching_processes(registry: ProcessRegistry) -> None:
             dependencies=["cwicr_ranker"],
             factory=lambda: OneShotProcess(run=_run_catalogue_indexer),
             logger_names=["app.modules.costs.match_index"],
+            missing_libraries=cwicr_missing,
             # Manual: opening the costs or match module must not run it, only
             # an index request does (``match_index._ensure_running``).
             **{**common, "start_mode": "manual"},  # type: ignore[arg-type]

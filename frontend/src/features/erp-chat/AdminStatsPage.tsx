@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ThumbsUp, ThumbsDown, Cpu, Database, Activity } from 'lucide-react';
 import { getAdminStats } from './api';
+import { ApiError } from '@/shared/lib/api';
 import type { AdminStats } from './types';
 import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
 import { getNumberLocale } from '@/stores/usePreferencesStore';
@@ -106,7 +107,7 @@ export default function AdminStatsPage() {
       .catch((err: unknown) => {
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : String(err);
-        setError(msg.includes('403') ? 'Manager role required to view this page.' : msg);
+        setError(err instanceof ApiError && err.status === 403 ? 'Manager role required to view this page.' : msg);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

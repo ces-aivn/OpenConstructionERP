@@ -14,7 +14,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { X, Search, FileText, Link2, Loader2 } from 'lucide-react';
-import { apiGet, type Page } from '@/shared/lib/api';
+import { ApiError, apiGet, type Page } from '@/shared/lib/api';
 import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { createDocumentBIMLink } from './api';
 import type { BIMElementData } from '@/shared/ui/BIMViewer';
@@ -95,9 +95,12 @@ export default function LinkDocumentToBIMModal({
           });
           created++;
         } catch (e: unknown) {
-          // 409 / "already linked" is fine in bulk mode — keep going
+          // 409 / "already linked" is fine in bulk mode — keep going. The
+          // status decides: the message is translated for the reader.
           const err = e as { message?: string };
-          if (!err?.message?.toLowerCase().includes('already')) {
+          const alreadyLinked =
+            (e instanceof ApiError && e.status === 409) || !!err?.message?.toLowerCase().includes('already');
+          if (!alreadyLinked) {
             // Re-throw other errors so the toast surfaces them
             throw e;
           }

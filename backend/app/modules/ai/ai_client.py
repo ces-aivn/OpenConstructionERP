@@ -1618,6 +1618,29 @@ def _resolve_provider_and_key(settings: Any, preferred_model: str | None) -> tup
     raise ValueError(msg)
 
 
+def ai_availability(settings: Any) -> tuple[bool, str | None, str | None]:
+    """Say whether AI calls can work for these settings, without making one.
+
+    Runs the same provider choice a real call makes (saved keys, a saved
+    self-hosted endpoint, then environment / config file keys) but binds
+    nothing for the request, so it is safe to call from a status endpoint.
+
+    Args:
+        settings: The caller's AISettings row, or ``None`` when they have none.
+
+    Returns:
+        ``(configured, provider, reason)``. ``reason`` is ``None`` when
+        configured, ``"key_undecryptable"`` when a saved key can no longer be
+        read, and ``"no_key"`` otherwise.
+    """
+    try:
+        provider, _key = _resolve_provider_and_key(settings, None)
+    except ValueError as exc:
+        reason = "key_undecryptable" if "could not be decrypted" in str(exc) else "no_key"
+        return False, None, reason
+    return True, provider, None
+
+
 def resolve_provider_key_model(
     settings: Any,
     preferred_model: str | None = None,

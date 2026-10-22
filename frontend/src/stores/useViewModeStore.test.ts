@@ -50,7 +50,7 @@ describe('useViewModeStore', () => {
     useViewModeStore.getState().applyDefault('advanced');
 
     expect(useViewModeStore.getState().mode).toBe('simple');
-    expect(apiPut).toHaveBeenCalledWith('/v1/users/me/view-mode/', { mode: 'simple' });
+    expect(apiPut).toHaveBeenCalledWith('/v1/users/me/view-mode/', { mode: 'simple' }, { suppressErrorToast: true });
   });
 
   it('the server choice wins over what this browser remembers', async () => {

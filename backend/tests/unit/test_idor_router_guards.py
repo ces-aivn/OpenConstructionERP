@@ -496,6 +496,8 @@ ROUTER_HANDLERS: dict[str, list[str]] = {
         "get_contingency_position",
         "confirm_contingency_drawdown",
         "reverse_contingency_drawdown",
+        # Stored Monte Carlo runs
+        "list_simulation_runs",
     ],
     "takeoff": [
         "delete_document",
@@ -739,6 +741,7 @@ ROUTER_HANDLERS: dict[str, list[str]] = {
     "tendering": [
         "get_package",
         "get_package_scope",
+        "set_package_scope",
         "update_package",
         "create_bid",
         "list_bids",

@@ -201,6 +201,7 @@ const KEPT_AS_PLAIN_COMMAS: readonly Excluded[] = [
   { file: 'features/boq/CostBreakdownPanel.tsx', sites: 1, why: 'CSS value list' },
   { file: 'features/pointcloud/PointCloudViewer.tsx', sites: 1, why: 'CSS value list' },
   { file: 'shared/ui/BIMViewer/BIMViewer.tsx', sites: 4, why: 'CSS value list' },
+  { file: 'features/boq/grid/keystrokeBuffer.ts', sites: 1, why: 'CSS selector list passed to Element.matches' },
 
   // Prompt text assembled for a model, not prose shown to a reader.
   { file: 'shared/ui/BIMViewer/elementQuestion.ts', sites: 7, why: 'LLM prompt construction' },
@@ -259,7 +260,7 @@ describe('the rest of the product', () => {
     // root, or a regex that quietly stopped matching, returns an empty map and
     // every assertion after this one passes while checking nothing at all.
     expect(files.length).toBeGreaterThan(2000);
-    expect([...found.values()].reduce((a, b) => a + b, 0)).toBe(35);
+    expect([...found.values()].reduce((a, b) => a + b, 0)).toBe(36);
   });
 
   it('routes every list a reader sees through the helper, except the recorded ones', () => {

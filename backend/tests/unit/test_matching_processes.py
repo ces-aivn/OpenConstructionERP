@@ -8,9 +8,11 @@ import pytest
 
 import app.core.processes as processes_pkg
 from app.core.match_service import reranker_bge
-from app.core.processes import InMemoryProcessStore, ProcessRegistry, ProcessStatus
+from app.core.processes import InMemoryProcessStore, ProcessRegistry, ProcessStatus, matching
 from app.core.processes.matching import matching_model_allowed, register_matching_processes
 from app.modules.costs import qdrant_adapter
+
+_REAL_MISSING_LIBRARIES = matching.missing_libraries
 
 
 async def _until(cond: object, timeout: float = 10.0) -> None:
@@ -26,6 +28,12 @@ class _Client:
 
     def close(self) -> None:
         self.closed = True
+
+
+@pytest.fixture(autouse=True)
+def _models_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The models' packages are optional; these tests fake the loads instead."""
+    monkeypatch.setattr(matching, "missing_libraries", lambda modules: [])
 
 
 @pytest.fixture
@@ -223,3 +231,38 @@ async def test_upgrade_ignores_semantic_switch(reg: ProcessRegistry, semantic_sw
     await reg.disable("cwicr_ranker")
     assert reg.store.rows["cwicr_ranker"] is False  # type: ignore[attr-defined]
     assert semantic_switch["on"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_model_whose_package_is_missing_is_reported_not_installed_not_broken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OE_TEST_FAST_STARTUP", raising=False)
+    monkeypatch.setattr(matching, "missing_libraries", lambda modules: [m for m in modules if m == "FlagEmbedding"])
+    registry = ProcessRegistry(store=InMemoryProcessStore())
+    registry.stagger_s = 0
+    # An upgraded installation, where both models would otherwise be on.
+    await registry.load(fresh_install=lambda: False)
+    register_matching_processes(registry)
+    monkeypatch.setattr(processes_pkg, "process_registry", registry)
+    try:
+        for pid in ("cwicr_ranker", "bge_reranker", "match_catalogue_indexer"):
+            item = registry.describe(pid)
+            assert item["available"] is False
+            assert item["missing_libraries"] == ["FlagEmbedding"]
+            assert item["enabled"] is False
+            assert item["status"] == "disabled"
+        out = registry.ensure_for_module("costs")
+        assert out["queued"] == []
+        await asyncio.sleep(0.05)
+        assert registry.status("cwicr_ranker") is ProcessStatus.DISABLED
+        assert registry.status("bge_reranker") is ProcessStatus.DISABLED
+        with pytest.raises(processes_pkg.ProcessError, match="not installed"):
+            await registry.enable("bge_reranker")
+        assert matching_model_allowed("cwicr_ranker") is False
+    finally:
+        await registry.stop_all()
+
+
+def test_the_installed_check_names_only_the_packages_that_cannot_be_imported() -> None:
+    assert _REAL_MISSING_LIBRARIES(("json", "no_such_package_for_tests")) == ["no_such_package_for_tests"]

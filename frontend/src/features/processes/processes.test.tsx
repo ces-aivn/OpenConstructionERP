@@ -21,7 +21,8 @@ vi.mock('@/stores/useAuthStore', () => ({
 }));
 
 import { ApiError, apiGet, apiPost } from '@/shared/lib/api';
-import { overallHealth, processesForModules, resetEnsured } from './api';
+import { overallHealth, processesForModules, resetEnsured, summarizeServices } from './api';
+import { activePreset, presetSet } from './ProfilePicker';
 import { ProcessesButton } from './ProcessesButton';
 import { ProcessesPanel } from './ProcessesPanel';
 import { ModuleProcessesNotice } from './ModuleProcessesNotice';
@@ -422,5 +423,54 @@ describe('ModuleProcessesNotice', () => {
     renderWith(<ModuleProcessesNotice moduleId="costs" />);
     await screen.findByTestId('module-processes-notice-costs');
     expect(screen.queryByTestId('module-processes-turn-on')).toBeNull();
+  });
+});
+
+describe('one set of figures for the services', () => {
+  const services = () => [
+    proc({ id: 'a', status: 'running', enabled: true, ram_mb_estimate: 300 }),
+    proc({ id: 'b', status: 'idle', enabled: true, ram_mb_estimate: 500 }),
+    proc({ id: 'c', status: 'error', enabled: true, ram_mb_estimate: 100 }),
+    proc({ id: 'd', status: 'disabled', enabled: false, ram_mb_estimate: 50 }),
+    proc({
+      id: 'ranker',
+      status: 'disabled',
+      enabled: false,
+      env_locked: true,
+      available: false,
+      missing_libraries: ['FlagEmbedding'],
+      ram_mb_estimate: 800,
+    }),
+  ];
+
+  it('counts and sums the same way for the header, the summary and the profiles', () => {
+    const s = summarizeServices(services());
+    expect(s).toEqual({ total: 4, on: 2, errors: 1, notInstalled: 1, inUseMb: 300, upToMb: 900 });
+    // The active profile names exactly the services that are on or failing.
+    expect(activePreset(services())).toBe(null);
+    expect(presetSet(services(), 'all').has('ranker')).toBe(false);
+    expect(presetSet(services(), 'all').size).toBe(s.total);
+  });
+
+  it('shows a service whose package is missing as not installed, not as an error', async () => {
+    vi.mocked(apiGet).mockResolvedValue(snapshot(services()));
+    useProcessesUi.setState({ panelOpen: true });
+    renderWith(<ProcessesPanel />);
+    const row = await screen.findByTestId('process-row-ranker');
+    expect(within(row).getByTestId('process-not-installed')).toBeInTheDocument();
+    expect(screen.getByTestId('processes-summary')).toHaveTextContent('2 of 4 on, 1 with errors');
+    expect(screen.getByTestId('processes-memory')).toHaveTextContent('300 MB');
+    expect(screen.getByTestId('processes-memory-up-to')).toHaveTextContent('900 MB');
+    expect(screen.getByTestId('processes-memory-up-to')).toHaveTextContent('Not installed on this server: 1');
+  });
+
+  it('does not offer to turn on a service this server cannot run', async () => {
+    vi.mocked(apiGet).mockResolvedValue(
+      snapshot([proc({ id: 'ranker', available: false, env_locked: true, missing_libraries: ['FlagEmbedding'] })]),
+    );
+    const { container } = renderWith(<ModuleProcessesNotice moduleId="costs" />);
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(container.querySelector('[data-testid^="module-processes-notice"]')).toBeNull();
   });
 });

@@ -96,6 +96,11 @@ class ProcessSpec:
         state_set: Writes that switch when the process is turned on or off.
             Leave it out to follow the switch for the default only and keep
             individual choices in the table.
+        missing_libraries: Names the optional Python packages the process
+            needs and this installation lacks; an empty list means it can run.
+            A process with a missing package is off and locked: starting it
+            could only fail, so it is reported as not installed instead of
+            sitting in ``error`` and counting as a broken service.
     """
 
     id: str
@@ -117,6 +122,7 @@ class ProcessSpec:
     logger_names: list[str] = field(default_factory=list)
     state_get: Callable[[], bool | None] | None = None
     state_set: Callable[[bool], object] | None = None
+    missing_libraries: Callable[[], list[str]] | None = None
 
 
 class _BufferHandler(logging.Handler):
@@ -275,7 +281,19 @@ class ProcessRegistry:
 
     # -- desired state -----------------------------------------------------
 
+    def _missing(self, entry: _Entry) -> list[str]:
+        """Optional packages the process needs and this installation lacks."""
+        if entry.spec.missing_libraries is None:
+            return []
+        try:
+            return list(entry.spec.missing_libraries())
+        except Exception:
+            logger.warning("missing_libraries of %s failed", entry.spec.id, exc_info=True)
+            return []
+
     def _env(self, entry: _Entry) -> bool | None:
+        if self._missing(entry):
+            return False
         if entry.spec.env_override is None:
             return None
         try:
@@ -634,6 +652,9 @@ class ProcessRegistry:
     # -- admin actions -----------------------------------------------------
 
     def _check_mutable(self, entry: _Entry) -> None:
+        missing = self._missing(entry)
+        if missing:
+            raise ProcessError(f"'{entry.spec.id}' is not installed on this server (missing: {', '.join(missing)})")
         if self._env(entry) is not None:
             raise ProcessError(f"'{entry.spec.id}' is controlled by an environment setting")
         if entry.spec.required:
@@ -810,6 +831,7 @@ class ProcessRegistry:
         """Serialise one process for the API."""
         entry = self._get(process_id)
         spec = entry.spec
+        missing = self._missing(entry)
         return {
             "id": spec.id,
             "name_key": f"processes.{spec.id}.name",
@@ -823,6 +845,8 @@ class ProcessRegistry:
             "required": spec.required,
             "stoppable": spec.stoppable,
             "env_locked": self._env(entry) is not None,
+            "available": not missing,
+            "missing_libraries": missing,
             "status": entry.status.value,
             "queued": entry.queued,
             "ram_mb_estimate": spec.estimated_ram_mb,
